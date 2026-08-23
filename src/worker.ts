@@ -16,6 +16,7 @@ import {
   ACTION_KEYS,
   DATA_KEYS,
   DECISION_LOG_LIMIT,
+  idNamesClaude,
   PLUGIN_VERSION,
   ROUTE_KEYS,
   STATE_KEYS,
@@ -332,9 +333,40 @@ export function createPlugin() {
       }
 
       const ids = new Set<string>();
+      const claudeFamilies = new Set(
+        resolved.providers.claudeFamilies.map((entry) => entry.toLowerCase()),
+      );
       for (const model of resolved.models) {
         if (ids.has(model.id)) errors.push(`duplicate model id: ${model.id}`);
         ids.add(model.id);
+
+        // The TOG-237 mislabel, in both directions.
+        //
+        // An ERROR when the id names Claude and the declared family does not.
+        // The engine no longer *routes* on this — `idNamesClaude` governs the
+        // Claude block regardless — so this config is no longer a bypass. It is
+        // still refused rather than warned, because a model table that
+        // contradicts itself about which rows are Claude is a table nobody
+        // should be reasoning about owner rule 1 from, and the operator should
+        // find out at write time rather than by reading a trace during an
+        // incident.
+        const declaredClaude = claudeFamilies.has(model.family.toLowerCase());
+        if (idNamesClaude(model.id) && !declaredClaude) {
+          errors.push(
+            `model ${model.id} has a Claude/Anthropic id but declares family "${model.family}", which is not in providers.claudeFamilies (${resolved.providers.claudeFamilies.join(", ") || "empty"}). ` +
+              "Before TOG-237 this silently exempted the model from the Claude block; it no longer does, but the table must not disagree with itself. " +
+              "Set the family to a configured Claude family, or add this family to providers.claudeFamilies.",
+          );
+        }
+        // A WARNING the other way. This one only ever *widens* the Claude block,
+        // so it cannot leak — but it is usually a typo, and it silently confines
+        // a non-Anthropic model to `claudeFamilyProvider`, which looks like an
+        // outage rather than a misconfiguration.
+        if (declaredClaude && !idNamesClaude(model.id)) {
+          warnings.push(
+            `model ${model.id} declares Claude family "${model.family}" but its id does not name Claude or Anthropic — it will be confined to ${resolved.providers.claudeFamilyProvider} by the Claude block. Intended?`,
+          );
+        }
       }
       const classKeys = new Set<string>();
       for (const entry of resolved.taskClasses) {

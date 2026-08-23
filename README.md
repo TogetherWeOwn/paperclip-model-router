@@ -169,7 +169,16 @@ are deliberately the safe end of each switch.
 | `preferenceOrder` | string[] | `[]` | Tie-break order among permitted providers. Earlier is preferred. |
 | `claudePaygEnabled` | boolean | `false` | Claude pay-as-you-go. While `false`, Claude-family models may only use `claudeFamilyProvider`. |
 | `claudeFamilyProvider` | string | `"teamclaude"` | The single provider Claude may use while PAYG is off. |
-| `claudeFamilies` | string[] | `["claude"]` | Which `models[].family` values the Claude block governs. Case-insensitive. |
+| `claudeFamilies` | string[] | `["claude"]` | Which **additional** `models[].family` values the Claude block governs, case-insensitively. This list can only ever **widen** the block. A model whose `id` matches `/claude|anthropic/i` is governed whatever its family says, and no config can opt it out — see below. |
+
+> **The Claude block is not configurable off.** Membership is
+> `id matches /claude|anthropic/i` **OR** `family is in claudeFamilies`. Until
+> v0.2.2 it was the family alone, so `{"id": "claude-opus-5", "family": "gpt"}`
+> exempted a Claude model from the block entirely and OpenRouter served it with
+> no error, no warning and no trace line (TOG-237). Owner rule 1 is
+> non-negotiable, so it no longer rests on the model table being labelled
+> correctly. A table that disagrees with itself is refused at write time and
+> reported in the trace, but it is not a bypass.
 
 ### `models` — the model tier table
 
@@ -179,7 +188,7 @@ company** actually pays.
 | Key | Type | Required | Meaning |
 |---|---|---|---|
 | `id` | string | yes | Model id Paperclip names. OmniRoute resolves it to a provider. |
-| `family` | string | yes | Family grouping; `claude` (per `claudeFamilies`) is governed by the Claude block. |
+| `family` | string | yes | Family grouping; a family in `claudeFamilies` is governed by the Claude block. It is a **label, not a permission** — an `id` naming Claude or Anthropic is governed regardless, and a row whose id names Claude while its family does not is **rejected** by both the config schema and `onValidateConfig`. |
 | `tier` | `small` \| `standard` \| `strong` \| `frontier` | yes | Tier for ceiling comparisons. |
 | `quality` | number 0–100 | yes | Quality on this company's scale, compared against task-class floors. |
 | `costPerMTokIn` | number | yes | USD per million input tokens. |

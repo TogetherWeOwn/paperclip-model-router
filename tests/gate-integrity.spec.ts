@@ -11,15 +11,26 @@
  * that claim.
  */
 
+import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { describe, expect, it } from "vitest";
 
 import { resolveConfig } from "../src/config/resolve.js";
 import { validateSecretRefShape } from "../src/config/secret-ref.js";
 import { selectModel } from "../src/engine/select.js";
 import type { RouterConfig } from "../src/config/types.js";
+import manifest from "../src/manifest.js";
+import { createPlugin } from "../src/worker.js";
 import { fixtureConfig, readFixture } from "./helpers.js";
 
 const A = fixtureConfig("company-a");
+
+/** The plugin definition, for the validator half of these attacks. */
+async function validator() {
+  const harness = createTestHarness({ manifest, config: readFixture("company-a") });
+  const { definition } = createPlugin();
+  await definition.setup(harness.ctx);
+  return definition;
+}
 
 /** company-a, with a surgical change. Everything here is config, never code. */
 function companyA(mutate: (raw: Record<string, any>) => void): RouterConfig {
@@ -80,6 +91,208 @@ describe("the Claude block cannot be crossed by the fallback", () => {
     expect(decision.outcome).toBe("selected");
     expect(decision.modelId).toBe("qwen3-coder");
     expect(decision.fallbackUsed).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TOG-237: the Claude block cannot be switched off by mislabelling the family.
+//
+// Everything above this block attacks the ENGINE. This one attacks the CONFIG,
+// one layer earlier — it never asks the Claude block a question it could fail,
+// it arranges for the block never to be asked at all.
+// ---------------------------------------------------------------------------
+
+describe("the Claude block cannot be crossed by a mislabelled family", () => {
+  /** The attack config, exactly as an operator would POST it. */
+  function mislabelled(family: string) {
+    const raw = readFixture("company-a") as Record<string, any>;
+    // The only provider this company may use is OpenRouter — teamclaude is not
+    // permitted, so a correctly-labelled Claude model here is claude-blocked.
+    raw.providers.permitted = ["openrouter"];
+    raw.providers.preferenceOrder = ["openrouter"];
+    raw.providers.claudePaygEnabled = false;
+    // One row: a Claude model filed under a family the Claude block does not
+    // govern, reachable only via OpenRouter.
+    raw.models = [
+      {
+        id: "claude-opus-5",
+        family,
+        tier: "frontier",
+        quality: 95,
+        costPerMTokIn: 15,
+        costPerMTokOut: 75,
+        contextWindow: 200_000,
+        capabilities: ["tools"],
+        providers: ["openrouter"],
+        enabled: true,
+      },
+    ];
+    raw.taskClasses = [];
+    return raw;
+  }
+
+  it("a Claude model filed under family `gpt` is not served by OpenRouter", () => {
+    const raw = mislabelled("gpt");
+    const config = resolveConfig(raw);
+
+    // The config really does exempt it: `gpt` is not in `claudeFamilies`, and
+    // the model's only provider is not `claudeFamilyProvider`.
+    expect(config.providers.claudePaygEnabled).toBe(false);
+    expect(config.providers.claudeFamilies).not.toContain("gpt");
+    expect(config.models[0]!.providers).toEqual(["openrouter"]);
+
+    const decision = selectModel({ descriptor: {}, config });
+
+    // On v0.2.1 this returned `selected claude-opus-5` with `rejections: []`
+    // and not one trace line about the Claude block. The gate did not fail —
+    // it was never asked, because membership was read off a field the config
+    // supplies. It is now read off the model id.
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ modelId: "claude-opus-5", stage: "claude-block" }),
+    );
+    expect(decision.outcome).toBe("no-eligible-model");
+    expect(decision.modelId).toBeNull();
+  });
+
+  it("says so in the trace instead of failing silently", () => {
+    const decision = selectModel({ descriptor: {}, config: resolveConfig(mislabelled("gpt")) });
+    const trace = decision.trace.join("\n");
+    expect(trace).toContain("config mislabels 1 model(s) as non-Claude");
+    expect(trace).toContain('claude-opus-5 declares family "gpt"');
+    // ...and the rejection names the reason it was caught, not just the block.
+    const rejection = decision.rejections.find((entry) => entry.stage === "claude-block");
+    expect(rejection?.reason).toContain("classified by id");
+  });
+
+  it("holds for every shape of mislabel, including the ones a typo produces", () => {
+    // A family that is empty, absent, capitalised differently from anything in
+    // `claudeFamilies`, or simply another vendor's name. None of them is a way
+    // out of the block.
+    for (const family of ["gpt", "GPT", "unknown", "", "qwen", "anthropic", "Claude-3", "claude "]) {
+      const raw = mislabelled(family);
+      if (family === "") delete raw.models[0].family;
+      const config = resolveConfig(raw);
+      const decision = selectModel({ descriptor: {}, config });
+      expect(decision.outcome, `family=${JSON.stringify(family)} was served`).toBe(
+        "no-eligible-model",
+      );
+    }
+  });
+
+  it("is not crossable by the fallback, the pin, or stickiness either", () => {
+    // The three routes TOG-228 closed for a correctly-labelled Claude model.
+    // They stay closed for a mislabelled one, because all three are judged
+    // against the same `claude-block` rejection.
+    const withFallback = resolveConfig({
+      ...mislabelled("gpt"),
+      routing: { enabled: true, fallbackModelId: "claude-opus-5", stickyModelWithinIssue: true },
+    });
+    expect(selectModel({ descriptor: {}, config: withFallback }).outcome).toBe("no-eligible-model");
+
+    const config = resolveConfig(mislabelled("gpt"));
+    const pinned = selectModel({
+      descriptor: { pinnedModelId: "claude-opus-5", pinReason: "operator override" },
+      config,
+    });
+    expect(pinned.outcome).toBe("no-eligible-model");
+    expect(pinned.pin).toMatchObject({ honored: false });
+
+    const sticky = selectModel({
+      descriptor: { issueId: "issue-1" },
+      config,
+      signals: { stickyModelId: "claude-opus-5" },
+    });
+    expect(sticky.outcome).toBe("no-eligible-model");
+  });
+
+  it("still lets the mislabelled model through to teamclaude, which is the point", () => {
+    // The block confines Claude to one provider; it does not ban Claude. A
+    // mislabel must not turn into an outage for the permitted route.
+    const raw = mislabelled("gpt");
+    raw.providers.permitted = ["openrouter", "teamclaude"];
+    raw.models[0].providers = ["teamclaude", "openrouter"];
+    const decision = selectModel({ descriptor: {}, config: resolveConfig(raw) });
+    expect(decision.outcome).toBe("selected");
+    expect(decision.modelId).toBe("claude-opus-5");
+    // ...and the operator is still told the table contradicts itself.
+    expect(decision.trace.join("\n")).toContain("config mislabels");
+  });
+
+  it("the pooled quota pause reaches a mislabelled Claude model too", () => {
+    // It draws on the same teamclaude pool whatever the config calls it, so a
+    // mislabel must not exempt it from the quota gate either.
+    const raw = mislabelled("gpt");
+    raw.providers.permitted = ["openrouter", "teamclaude"];
+    raw.models[0].providers = ["teamclaude"];
+    const decision = selectModel({
+      descriptor: {},
+      config: resolveConfig(raw),
+      signals: { claudeQuotaUtilization: 0.99 },
+    });
+    expect(decision.gates.claudeQuota).toBe("halt");
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ modelId: "claude-opus-5", stage: "quota-gate" }),
+    );
+    expect(decision.outcome).toBe("no-eligible-model");
+  });
+
+  it("configuration can still WIDEN the Claude block, only never narrow it", () => {
+    // The id check is a floor, not a replacement. A company that files a
+    // non-Anthropic model under a Claude family still gets it confined.
+    const raw = readFixture("company-a") as Record<string, any>;
+    raw.providers.permitted = ["openrouter"];
+    raw.providers.claudeFamilies = ["claude", "house-brand"];
+    raw.models = [
+      {
+        id: "qwen3-coder",
+        family: "house-brand",
+        tier: "small",
+        quality: 45,
+        costPerMTokIn: 0.3,
+        costPerMTokOut: 1.2,
+        contextWindow: 128_000,
+        capabilities: [],
+        providers: ["openrouter"],
+        enabled: true,
+      },
+    ];
+    raw.taskClasses = [];
+    const decision = selectModel({ descriptor: {}, config: resolveConfig(raw) });
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ modelId: "qwen3-coder", stage: "claude-block" }),
+    );
+    expect(decision.outcome).toBe("no-eligible-model");
+  });
+
+  it("onValidateConfig refuses the attack config outright", async () => {
+    const plugin = await validator();
+    const result = await plugin.onValidateConfig!(mislabelled("gpt"));
+
+    // v0.2.1 reported `ok: true` on exactly this config.
+    expect(result.ok).toBe(false);
+    expect(result.errors?.join(" ")).toContain("claude-opus-5");
+    expect(result.errors?.join(" ")).toContain("providers.claudeFamilies");
+  });
+
+  it("onValidateConfig warns, but does not refuse, the harmless inversion", async () => {
+    const plugin = await validator();
+    const raw = readFixture("company-a") as Record<string, any>;
+    raw.models = [{ ...raw.models[0], family: "claude" }]; // qwen3-coder, filed as claude
+    const result = await plugin.onValidateConfig!(raw);
+
+    // This only ever widens the block, so it cannot leak — but it silently
+    // confines a non-Anthropic model and looks like an outage.
+    expect(result.ok).toBe(true);
+    expect(result.warnings?.join(" ")).toContain("qwen3-coder");
+    expect(result.warnings?.join(" ")).toContain("does not name Claude or Anthropic");
+  });
+
+  it("onValidateConfig still accepts the shipped fixtures", async () => {
+    const plugin = await validator();
+    for (const fixture of ["company-a", "company-b"]) {
+      const result = await plugin.onValidateConfig!(readFixture(fixture));
+      expect(result.ok, `${fixture}: ${result.errors?.join("; ")}`).toBe(true);
+    }
   });
 });
 
