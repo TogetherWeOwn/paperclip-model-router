@@ -74,10 +74,19 @@ release by `.github/workflows/release.yml`.
 
 ```bash
 # pinned to a known-good version, and rollable back to any earlier one
-gh release download v0.1.0 \
+gh release download v0.1.1 \
   --repo TogetherWeOwn/paperclip-model-router --pattern '*.tgz' --dir /tmp
-tar -xzf /tmp/togetherweown-paperclip-model-router-0.1.0.tgz -C /opt/paperclip-plugins
-paperclipai plugin install /opt/paperclip-plugins/package
+mkdir -p /opt/paperclip-plugins/model-router
+tar -xzf /tmp/togetherweown-paperclip-model-router-0.1.1.tgz \
+  -C /opt/paperclip-plugins/model-router --strip-components=1
+
+# The tarball ships dist/ but not node_modules, and the plugin SDK is
+# deliberately left out of the bundle. Resolve it before installing, or the
+# worker fails at start with ERR_MODULE_NOT_FOUND.
+cd /opt/paperclip-plugins/model-router
+npm install --omit=dev --ignore-scripts
+
+paperclipai plugin install /opt/paperclip-plugins/model-router
 
 # or, for development, from a checkout on the host
 git clone git@github.com:TogetherWeOwn/paperclip-model-router.git
