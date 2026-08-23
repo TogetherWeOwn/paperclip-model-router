@@ -81,8 +81,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
+      # The gitleaks *Action* requires a paid licence for organizations. The
+      # scanner itself is open source, so run the pinned binary directly —
+      # same scan, no licence server in the critical path of every push.
+      - name: Install gitleaks
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+          GITLEAKS_VERSION: 8.21.2
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan the working tree
+        run: gitleaks dir . --config .gitleaks.toml --redact --no-banner --verbose
+
+      - name: Scan the full history
+        run: gitleaks git . --config .gitleaks.toml --redact --no-banner
