@@ -42,16 +42,12 @@ jobs:
       - name: Assert the runtime entrypoints exist
         run: test -f dist/manifest.js && test -f dist/worker.js
 
-      # The manifest is what the host validates at install time. Loading the
-      # built artifact here catches a manifest that only compiles in source form.
-      - name: Load the built manifest
-        run: |
-          node --input-type=module -e "
-            const m = (await import('./dist/manifest.js')).default;
-            if (m.apiVersion !== 1) throw new Error('unexpected apiVersion ' + m.apiVersion);
-            if (!m.instanceConfigSchema) throw new Error('manifest has no instanceConfigSchema');
-            console.log('manifest ok:', m.id, m.version);
-          "
+      # Validate the BUILT artifact with the host's own install-time validators
+      # (`pluginManifestV1Schema` and the Ajv config validator), so a manifest
+      # or config schema the host would reject fails here rather than at
+      # install time on a live instance.
+      - name: Validate against the host's install-time schemas
+        run: npm run verify:host
 
   version-sync:
     name: version and changelog

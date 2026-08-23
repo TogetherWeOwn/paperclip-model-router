@@ -268,8 +268,18 @@ and resolved at runtime:
 
 ```bash
 npm ci
-npm run verify        # typecheck + tests + build
+npm run verify        # typecheck + tests + build + host-schema validation
+npm run verify:host   # validate the built artifact with the host's own validators
 npm run dev           # esbuild --watch into dist/
+```
+
+`verify:host` runs the built `dist/manifest.js` through
+`pluginManifestV1Schema` — the same Zod schema the host runs at install steps
+3–4 — and every shipped example config through the host's Ajv config validator.
+Point it at a Paperclip checkout to validate against that exact build:
+
+```bash
+PAPERCLIP_SHARED=/app/packages/shared/dist/validators/plugin.js npm run verify:host
 ```
 
 `npm run verify` is what CI runs. See [`docs/PROCESS.md`](docs/PROCESS.md) for
