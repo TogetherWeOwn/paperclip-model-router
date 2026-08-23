@@ -32,6 +32,14 @@ configure, verify, roll back, and the blast-radius rules.
 1. **Every change lands through a pull request**, and CI must be green. CI runs
    `npm run verify` — typecheck, tests, build — plus a built-manifest load, a
    version/changelog sync check, and a secret scan.
+
+   **This rule is currently a convention, not a control.** `main` has no branch
+   protection, so nothing technically stops anyone merging their own PR past a
+   red build. The ruleset that would enforce it is decided and checked in —
+   [`docs/decisions/0007`](decisions/0007-ci-must-pass-is-a-rule-not-a-convention.md)
+   and [`docs/branch-ruleset.main.json`](branch-ruleset.main.json) — but it
+   cannot be applied while the org is on the GitHub `free` plan with private
+   repos. Until then, escalate merges rather than taking them.
 2. **Behaviour changes come with a test.** The tests are the specification of
    the routing rules; `tests/two-company.spec.ts` in particular is the
    acceptance criterion for this plugin and must keep passing.
