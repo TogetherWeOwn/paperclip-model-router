@@ -43,8 +43,12 @@ jobs:
       - name: Verify
         run: npm run verify
 
+      # --pack-destination does not create the directory.
       - name: Pack
-        run: npm pack --pack-destination ./artifacts
+        run: |
+          mkdir -p artifacts
+          npm pack --pack-destination ./artifacts
+          ls -l artifacts
 
       - name: Publish the release
         uses: softprops/action-gh-release@v2
