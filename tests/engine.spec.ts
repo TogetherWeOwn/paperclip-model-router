@@ -150,7 +150,10 @@ describe("the Claude block", () => {
     expect(decision.trace.join(" ")).toContain("pin refused");
   });
 
-  it("stops applying once the company enables Claude pay-as-you-go", () => {
+  it("stops applying once the OWNER enables Claude pay-as-you-go", () => {
+    // The unlock is the second half of the switch. `claudePaygEnabled` alone is
+    // a company's opinion; owner rule 1 keeps PAYG off until the owner enables
+    // it, and this plugin installs into companies the owner does not review.
     const config = resolveConfig({
       providers: { permitted: ["openrouter"], claudePaygEnabled: true },
       models: [
@@ -165,8 +168,34 @@ describe("the Claude block", () => {
           providers: ["openrouter"],
         },
       ],
-    });
+    }, { MODEL_ROUTER_CLAUDE_PAYG_UNLOCK: "1" });
+    expect(config.providers.claudePaygEnabled).toBe(true);
     expect(selectModel({ descriptor: {}, config }).modelId).toBe("claude-sonnet-5");
+  });
+
+  it("keeps applying when the company asked for PAYG but the instance did not unlock it", () => {
+    const raw = {
+      providers: { permitted: ["openrouter"], claudePaygEnabled: true },
+      models: [
+        {
+          id: "claude-sonnet-5",
+          family: "claude",
+          tier: "strong",
+          quality: 88,
+          costPerMTokIn: 3,
+          costPerMTokOut: 15,
+          contextWindow: 200000,
+          providers: ["openrouter"],
+        },
+      ],
+    };
+    const config = resolveConfig(raw, {});
+    expect(config.providers.claudePaygEnabled).toBe(false);
+    const decision = selectModel({ descriptor: {}, config });
+    expect(decision.modelId).toBeNull();
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ modelId: "claude-sonnet-5", stage: "claude-block" }),
+    );
   });
 });
 

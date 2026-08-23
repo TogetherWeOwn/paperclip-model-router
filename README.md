@@ -167,8 +167,8 @@ are deliberately the safe end of each switch.
 |---|---|---|---|
 | `permitted` | string[] | `[]` | Providers this company may be served by. **Fails closed**: an empty list rejects every model. |
 | `preferenceOrder` | string[] | `[]` | Tie-break order among permitted providers. Earlier is preferred. |
-| `claudePaygEnabled` | boolean | `false` | Claude pay-as-you-go. While `false`, Claude-family models may only use `claudeFamilyProvider`. |
-| `claudeFamilyProvider` | string | `"teamclaude"` | The single provider Claude may use while PAYG is off. |
+| `claudePaygEnabled` | boolean | `false` | Claude pay-as-you-go. While `false`, Claude-family models may only use `claudeFamilyProvider`. **Setting this `true` is not sufficient** — it takes effect only when the instance sets `MODEL_ROUTER_CLAUDE_PAYG_UNLOCK=1`. Without the unlock the config write is refused and the value is forced to `false`. |
+| `claudeFamilyProvider` | string | `"teamclaude"` | The single provider Claude may use while PAYG is off. Restricted by `enum` to the providers owner rule 1 allows: this field **narrows** that list, it cannot extend it. |
 | `claudeFamilies` | string[] | `["claude"]` | Which **additional** `models[].family` values the Claude block governs, case-insensitively. This list can only ever **widen** the block. A model whose `id` matches `/claude|anthropic/i` is governed whatever its family says, and no config can opt it out — see below. |
 
 > **The Claude block is not configurable off.** Membership is
@@ -179,6 +179,21 @@ are deliberately the safe end of each switch.
 > non-negotiable, so it no longer rests on the model table being labelled
 > correctly. A table that disagrees with itself is refused at write time and
 > reported in the trace, but it is not a bypass.
+>
+> **Nor is it configurable elsewhere.** v0.2.2 fixed *which models* the block
+> governs and left the two questions either side of it in the config row. Both
+> decided the same outcome: `claudeFamilyProvider: "openrouter"` did not turn
+> the block off, it **aimed** it, and `claudePaygEnabled: true` skipped it for
+> the cost of a warning. As of v0.2.3 the permitted providers are
+> `CLAUDE_PROVIDER_ALLOWLIST` in code — config narrows that list and cannot
+> extend it — and PAYG additionally requires the instance-level
+> `MODEL_ROUTER_CLAUDE_PAYG_UNLOCK=1`, because a company's config row is not the
+> owner. That distinction is the point of this plugin installing into other
+> companies at all: a rule the installee can edit is not a rule.
+>
+> Enabling Claude PAYG for real is an **edit to an OmniRoute combo** — adding a
+> second leg to the teamclaude combo — not a change here. The unlock moves the
+> flag out of company hands; it is not a Claude PAYG route.
 
 ### `models` — the model tier table
 

@@ -33,7 +33,11 @@
  */
 
 import type { RouterConfig } from "../config/types.js";
-import { idNamesClaude } from "../constants.js";
+import {
+  CLAUDE_PROVIDER_ALLOWLIST,
+  idNamesClaude,
+  isClaudeProviderAllowed,
+} from "../constants.js";
 import {
   MODEL_TIER_ORDER,
   type Candidate,
@@ -182,6 +186,11 @@ function mislabelledClaudeModels(config: RouterConfig): ModelEntry[] {
   );
 }
 
+/** Provider-name comparison for the Claude block: trimmed, case-insensitive. */
+function sameProvider(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
 /**
  * Providers a model may actually be served by in this company, after the
  * permitted list and the Claude block.
@@ -198,8 +207,15 @@ function permittedProvidersFor(
   const intersect = model.providers.filter((provider) => permitted.includes(provider));
 
   if (isClaudeFamily(model, config) && !config.providers.claudePaygEnabled) {
+    // The config NARROWS the code allowlist; it cannot widen it. `claudeFamilyProvider`
+    // picks one entry from `CLAUDE_PROVIDER_ALLOWLIST`, and a value outside that list
+    // intersects to nothing and blocks the model. Before this, the field WAS the rule:
+    // `claudeFamilyProvider: "openrouter"` aimed the block at PAYG and a Claude model
+    // teamclaude cannot serve came back `selected`. See TOG-237 and `CLAUDE_PROVIDER_ALLOWLIST`.
     const only = config.providers.claudeFamilyProvider;
-    const claudeOk = intersect.filter((provider) => provider === only);
+    const claudeOk = intersect.filter(
+      (provider) => isClaudeProviderAllowed(provider) && sameProvider(provider, only),
+    );
     if (claudeOk.length === 0) {
       return { providers: [], blockedBy: "claude-block" };
     }
@@ -406,7 +422,15 @@ export function selectModel(input: SelectInput): RoutingDecision {
         modelId: model.id,
         stage: "claude-block",
         reason:
-          `Claude-family model may only be served by ${config.providers.claudeFamilyProvider} while Claude PAYG is disabled` +
+          `Claude-family model may only be served by ${CLAUDE_PROVIDER_ALLOWLIST.join(" or ")} while Claude PAYG is disabled` +
+          // Name the config value only when it is the thing that refused the model,
+          // and say plainly that it was overruled. The old message interpolated
+          // `claudeFamilyProvider` unconditionally, so a config that had aimed the
+          // block at OpenRouter printed "may only be served by openrouter" — the
+          // trace stated the misconfiguration back as if it were owner rule 1.
+          (!isClaudeProviderAllowed(config.providers.claudeFamilyProvider)
+            ? ` (providers.claudeFamilyProvider is "${config.providers.claudeFamilyProvider}", which is not an allowed Claude provider; config may narrow this list, never widen it)`
+            : "") +
           (idNamesClaude(model.id) && !familyDeclaresClaude(model, config)
             ? ` (classified by id: the config declares family "${model.family}", which is not in providers.claudeFamilies)`
             : ""),

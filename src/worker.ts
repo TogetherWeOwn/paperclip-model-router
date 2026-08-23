@@ -14,9 +14,12 @@ import { validateSecretRefShape } from "./config/secret-ref.js";
 import type { RouterConfig } from "./config/types.js";
 import {
   ACTION_KEYS,
+  CLAUDE_PAYG_UNLOCK_ENV,
+  CLAUDE_PROVIDER_ALLOWLIST,
   DATA_KEYS,
   DECISION_LOG_LIMIT,
   idNamesClaude,
+  isClaudeProviderAllowed,
   PLUGIN_VERSION,
   ROUTE_KEYS,
   STATE_KEYS,
@@ -328,8 +331,30 @@ export function createPlugin() {
       if (resolved.routing.enabled && resolved.providers.permitted.length === 0) {
         warnings.push("no permitted providers — every model will be rejected as provider-not-permitted");
       }
+      // `resolveConfig` has already forced this to false unless the instance
+      // unlock is present, so read the RAW value to tell the two cases apart:
+      // an owner who unlocked PAYG deliberately gets the warning, and a company
+      // that set the flag on its own gets a refusal.
+      const rawPaygRequested =
+        (config.providers as Record<string, unknown> | undefined)?.claudePaygEnabled === true;
       if (resolved.providers.claudePaygEnabled) {
         warnings.push("Claude pay-as-you-go is ENABLED for this company — Claude may be served by providers other than teamclaude");
+      } else if (rawPaygRequested) {
+        errors.push(
+          `providers.claudePaygEnabled is true, but Claude PAYG is not unlocked on this instance. ` +
+            `Owner rule 1 keeps Claude PAYG disabled until the OWNER enables it, and a company config row is not the owner. ` +
+            `The flag is ignored by the engine regardless; set ${CLAUDE_PAYG_UNLOCK_ENV}=1 in the instance environment if the owner has authorised it.`,
+        );
+      }
+      // The Claude block's destination, which used to be a free-form string:
+      // `claudeFamilyProvider: "openrouter"` did not disable the block, it aimed
+      // it, and a Claude model teamclaude cannot serve came back `selected`.
+      if (!isClaudeProviderAllowed(resolved.providers.claudeFamilyProvider)) {
+        errors.push(
+          `providers.claudeFamilyProvider is "${resolved.providers.claudeFamilyProvider}", which is not a provider owner rule 1 allows for Claude ` +
+            `(allowed: ${CLAUDE_PROVIDER_ALLOWLIST.join(", ")}). This field may narrow that list, not extend it. ` +
+            `The engine blocks every Claude model while this is set, so routing is failing closed rather than leaking — but fix the config rather than leaving it.`,
+        );
       }
 
       const ids = new Set<string>();

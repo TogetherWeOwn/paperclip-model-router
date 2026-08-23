@@ -16,10 +16,14 @@ import { describe, expect, it } from "vitest";
 
 import { selectModel } from "../src/engine/select.js";
 import type { TaskDescriptor } from "../src/engine/types.js";
-import { fixtureConfig } from "./helpers.js";
+import { fixtureConfig, PAYG_UNLOCKED } from "./helpers.js";
 
 const A = fixtureConfig("company-a");
-const B = fixtureConfig("company-b");
+// B is the company that enabled Claude PAYG, which is now an owner-level
+// decision as well as a company one: the flag needs the instance unlock to take
+// effect. B therefore models a company on an instance where the owner granted
+// it. The case immediately below asserts what the same config does without it.
+const B = fixtureConfig("company-b", PAYG_UNLOCKED);
 
 /** One call site, two companies. There is no third argument for "which company". */
 function both(descriptor: TaskDescriptor, signals?: Parameters<typeof selectModel>[0]["signals"]) {
@@ -75,6 +79,23 @@ describe("permitted providers are configuration", () => {
 
 describe("the Claude PAYG toggle is configuration", () => {
   const claudeTask: TaskDescriptor = { taskClass: "architecture" };
+
+  it("B's identical config does NOT enable PAYG on an instance without the owner's unlock", () => {
+    // The same stored bytes, resolved on a locked instance. Owner rule 1 keeps
+    // Claude PAYG off until the OWNER enables it, and a company's config row is
+    // not the owner — which matters precisely because this plugin installs into
+    // other companies whose configuration the owner never reviews.
+    const lockedB = fixtureConfig("company-b");
+    expect(lockedB.providers.claudePaygEnabled).toBe(false);
+
+    // And the routing consequence, not just the flag: B lists claude-sonnet-5
+    // on openrouter only, so with the block back in force it is refused.
+    const decision = selectModel({ descriptor: claudeTask, config: lockedB });
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ modelId: "claude-sonnet-5", stage: "claude-block" }),
+    );
+    expect(decision.modelId).not.toBe("claude-sonnet-5");
+  });
 
   it("A keeps Claude on teamclaude; B, which enabled PAYG, may use openrouter", () => {
     const { a, b } = both(claudeTask);

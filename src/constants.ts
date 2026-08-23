@@ -10,7 +10,7 @@
 export const PLUGIN_ID = "togetherweown.paperclip-model-router";
 
 /** Kept in sync with package.json by `npm run verify` (see tests/manifest.spec.ts). */
-export const PLUGIN_VERSION = "0.2.2";
+export const PLUGIN_VERSION = "0.2.3";
 
 /** Host plugin API generation this manifest targets. */
 export const PLUGIN_API_VERSION = 1 as const;
@@ -107,4 +107,71 @@ export const CLAUDE_ID_PATTERN_SOURCE_ANY_CASE = CLAUDE_ID_PATTERN_SOURCE.replac
 /** True when a model id names Anthropic's family regardless of its declared `family`. */
 export function idNamesClaude(modelId: string): boolean {
   return CLAUDE_ID_PATTERN.test(modelId);
+}
+
+/**
+ * The providers permitted to serve a Claude-family model while Claude PAYG is off.
+ *
+ * TOG-237 moved the question "which models are Claude" out of configuration and
+ * into code. It left the two questions either side of it in configuration, and
+ * both of them decide the same outcome:
+ *
+ *   - WHERE the block points: `providers.claudeFamilyProvider`, a free-form
+ *     string. Setting it to `"openrouter"` did not disable the block — it aimed
+ *     it. A Claude model that teamclaude cannot serve was then `selected`, with
+ *     no rejection and no trace line, and the trace that did print read
+ *     "may only be served by openrouter" as though that were the rule.
+ *   - WHETHER it runs at all: `providers.claudePaygEnabled`, a per-company
+ *     boolean that skipped the branch outright and produced a warning, not an
+ *     error.
+ *
+ * Both reproduced on v0.2.2. Owner rule 1 says Claude runs on teamclaude only
+ * and that PAYG stays disabled until the OWNER enables it — so neither of those
+ * may be a company's decision to make. Phase 4 installs this plugin into other
+ * companies, whose config the owner does not review; a rule enforced by a field
+ * the installee sets is not enforced.
+ *
+ * Configuration may still NARROW this list — `claudeFamilyProvider` picks one
+ * entry from it — and can no longer widen it. A value outside this list
+ * intersects to the empty set and the model is blocked, so the failure
+ * direction is a refusal.
+ *
+ * This is the list to edit if the owner's answer to `rule1_scope` is the
+ * permissive reading (adding `"opencode"` for `oc/claude-*`). That is a
+ * one-line change here, deliberately: the enforcement architecture does not
+ * depend on which way that question is answered, only its contents do.
+ */
+export const CLAUDE_PROVIDER_ALLOWLIST: readonly string[] = ["teamclaude"];
+
+/**
+ * True when `provider` may serve Claude while PAYG is off.
+ *
+ * Compared case-insensitively. A case-sensitive Claude comparison is the exact
+ * defect TOG-228 closed one layer down, and `permitted` lists are typed by hand.
+ */
+export function isClaudeProviderAllowed(provider: string): boolean {
+  const needle = provider.trim().toLowerCase();
+  return CLAUDE_PROVIDER_ALLOWLIST.some((entry) => entry.toLowerCase() === needle);
+}
+
+/**
+ * Instance-level unlock for Claude PAYG.
+ *
+ * Read from the process environment, which a company's plugin config row cannot
+ * write. Without it, `providers.claudePaygEnabled: true` is refused at config
+ * write and ignored by the engine if it was persisted some other way.
+ *
+ * Note for whoever enables Claude PAYG later: per this epic's architecture that
+ * is an EDIT TO AN OMNIROUTE COMBO — adding a second leg to the teamclaude
+ * combo — not a plugin change, and the plugin should still be naming a model
+ * rather than choosing a provider. This unlock exists to make the flag
+ * owner-controlled rather than company-controlled; it is not an invitation to
+ * route Claude PAYG from here.
+ */
+export const CLAUDE_PAYG_UNLOCK_ENV = "MODEL_ROUTER_CLAUDE_PAYG_UNLOCK";
+
+/** True when the instance operator has unlocked Claude PAYG for this process. */
+export function claudePaygUnlocked(env: Record<string, string | undefined>): boolean {
+  const raw = env[CLAUDE_PAYG_UNLOCK_ENV];
+  return typeof raw === "string" && raw.trim() === "1";
 }

@@ -10,6 +10,50 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-23
+
+### Fixed
+
+- **The Claude block's destination is code, not configuration (TOG-237
+  follow-up).** v0.2.2 moved *which models are Claude* into code and left the
+  two questions either side of it in the company's config row, and both decide
+  the same outcome. `providers.claudeFamilyProvider` was a free-form string:
+  setting it to `"openrouter"` did not disable the Claude block, it **aimed**
+  it, and a Claude model that teamclaude cannot serve came back
+  `outcome: "selected"` with an empty `rejections` array and no trace line —
+  while the message that did print read *"may only be served by openrouter"*,
+  stating the misconfiguration back as though it were owner rule 1. Reproduced
+  on v0.2.2 before the fix. The permitted providers are now
+  `CLAUDE_PROVIDER_ALLOWLIST` in `src/constants.ts`; `claudeFamilyProvider`
+  selects from that list and a value outside it intersects to nothing, so the
+  model is blocked and the failure direction is a refusal.
+
+- **Claude PAYG is an owner switch, not a company one (same root cause).**
+  `providers.claudePaygEnabled: true` skipped the Claude block outright and
+  produced a *warning*. Owner rule 1 keeps Claude PAYG disabled until the
+  **owner** enables it, and a company config row is not the owner — which
+  matters precisely because this plugin is built to install into other
+  companies, whose configuration the owner never reviews. The flag now requires
+  the instance-level `MODEL_ROUTER_CLAUDE_PAYG_UNLOCK=1`: without it
+  `resolveConfig` forces the value to `false` (so a value that reached the row
+  by a direct write, a migration or an older schema is neutralised rather than
+  trusted) and `onValidateConfig` refuses the write instead of warning.
+
+### Compatibility
+
+- **A company that had set `claudePaygEnabled: true` loses it** unless the
+  instance sets `MODEL_ROUTER_CLAUDE_PAYG_UNLOCK=1`. Claude models served only
+  by non-teamclaude providers will be `claude-block` rejected. This is the
+  intended direction of owner rule 1 and it fails closed, but it is a behaviour
+  change on upgrade, not a silent no-op. The shipped `company-b` fixture is
+  exactly such a config; the acceptance rehearsal sets the unlock and asserts
+  the locked case separately.
+- **`claudeFamilyProvider` is now an `enum`, not a free string.** A stored value
+  other than `"teamclaude"` is refused by the host's own Ajv at config write.
+- Enabling Claude PAYG for real remains an **edit to an OmniRoute combo** —
+  adding a second leg — per this epic's architecture. The unlock exists to move
+  the flag out of company hands, not to add a Claude PAYG code path here.
+
 ## [0.2.2] - 2026-08-23
 
 ### Fixed

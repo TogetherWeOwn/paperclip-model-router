@@ -202,6 +202,27 @@ report(
   "the host validator accepts a real Paperclip secret reference",
 );
 
+// The Claude block's DESTINATION, through the host's own Ajv.
+//
+// TOG-237 moved "which models are Claude" into code; `claudeFamilyProvider` was
+// still a free-form string, so pointing it at OpenRouter aimed the block rather
+// than disabling it and a Claude model teamclaude cannot serve came back
+// `selected`. Unlike the model/family rule above — which is a documented subset
+// because draft-07 cannot express a cross-branch reference — this rule is a
+// fixed set of literals, so the schema expresses it exactly and the host can
+// refuse the write itself.
+for (const provider of ["openrouter", "opencode", "opencode-go", "OpenRouter", ""]) {
+  report(
+    validateConfig({ providers: { claudeFamilyProvider: provider } }) === false,
+    `the host validator rejects a Claude provider outside the allowlist: ${JSON.stringify(provider)}`,
+  );
+}
+
+report(
+  validateConfig({ providers: { claudeFamilyProvider: "teamclaude" } }) === true,
+  "the host validator accepts the allowed Claude provider",
+);
+
 // --- 3. the built worker actually loads -------------------------------------
 
 const worker = await import("../dist/worker.js");
