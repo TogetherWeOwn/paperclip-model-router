@@ -6,6 +6,7 @@
  * behaviour, and the defaults live in one place that the README documents.
  */
 
+import { claudePaygUnlocked } from "../constants.js";
 import type { ModelEntry } from "../engine/types.js";
 import type {
   BudgetConfig,
@@ -148,10 +149,20 @@ function resolveRule0(value: unknown): Rule0Config {
 
 /**
  * @param raw the company's stored `configJson`, or anything at all
+ * @param env process environment, for the instance-level Claude PAYG unlock
  * @returns a config with every field populated
  */
-export function resolveConfig(raw: unknown): RouterConfig {
+export function resolveConfig(
+  raw: unknown,
+  env: Record<string, string | undefined> = process.env,
+): RouterConfig {
   const source = isRecord(raw) ? raw : {};
+  // Owner rule 1 keeps Claude PAYG off until the OWNER enables it. A company's
+  // config row is not the owner, so a stored `true` only survives when the
+  // instance environment carries the unlock. This is the last line before the
+  // engine, so a value that reached the row by any route — a direct DB write, a
+  // migration, an older schema — is neutralised here rather than trusted.
+  const paygUnlocked = claudePaygUnlocked(env);
 
   const routingRaw = isRecord(source.routing) ? source.routing : {};
   const providersRaw = isRecord(source.providers) ? source.providers : {};
@@ -186,10 +197,9 @@ export function resolveConfig(raw: unknown): RouterConfig {
         providersRaw.preferenceOrder,
         DEFAULT_PROVIDERS.preferenceOrder,
       ),
-      claudePaygEnabled: pickBoolean(
-        providersRaw.claudePaygEnabled,
-        DEFAULT_PROVIDERS.claudePaygEnabled,
-      ),
+      claudePaygEnabled:
+        pickBoolean(providersRaw.claudePaygEnabled, DEFAULT_PROVIDERS.claudePaygEnabled) &&
+        paygUnlocked,
       claudeFamilyProvider: pickString(
         providersRaw.claudeFamilyProvider,
         DEFAULT_PROVIDERS.claudeFamilyProvider,

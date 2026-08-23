@@ -61,6 +61,20 @@ const COMPANY_B = process.env.COMPANY_B_ID ?? "22222222-2222-4222-8222-222222222
 const FIXTURE_A = process.env.FIXTURE_A ?? "tests/fixtures/company-a.json";
 const FIXTURE_B = process.env.FIXTURE_B ?? "tests/fixtures/company-b.json";
 
+// Company B's scenario is "a company that enabled Claude PAYG", which is now an
+// OWNER-level decision as well as a company one: `providers.claudePaygEnabled`
+// only takes effect alongside this instance unlock. The rehearsal therefore
+// models an instance where the owner granted it — otherwise B's config would be
+// refused and the two-company evidence would be measuring the refusal instead of
+// the per-company divergence it exists to show.
+//
+// Set BEFORE `dist/worker.js` is imported, and the locked case is asserted
+// explicitly as its own evidence item rather than left implicit.
+// The operator's LIVE run does NOT set this. If the live instance has not
+// unlocked PAYG, company B's config is refused at write time — expected, and
+// the runbook says so.
+process.env.MODEL_ROUTER_CLAUDE_PAYG_UNLOCK ??= "1";
+
 // --- reporting ---------------------------------------------------------------
 
 const results = [];
@@ -294,6 +308,27 @@ check(
   paygVerdict.warnings.some((w) => w.includes("pay-as-you-go is ENABLED")),
   paygVerdict.warnings.join("; "),
 );
+
+// ...and the other half of that switch: on an instance the owner has NOT
+// unlocked, the identical company config is refused rather than warned about.
+// `resolveConfig` reads the environment per call, so dropping the variable for
+// the length of this check is enough to model the locked instance.
+{
+  const unlock = process.env.MODEL_ROUTER_CLAUDE_PAYG_UNLOCK;
+  delete process.env.MODEL_ROUTER_CLAUDE_PAYG_UNLOCK;
+  let lockedVerdict;
+  try {
+    lockedVerdict = await definition.onValidateConfig(configs.get(COMPANY_B));
+  } finally {
+    process.env.MODEL_ROUTER_CLAUDE_PAYG_UNLOCK = unlock;
+  }
+  check(
+    "a company cannot enable Claude PAYG on its own — the instance must unlock it",
+    lockedVerdict.ok === false &&
+      lockedVerdict.errors.some((e) => e.includes("not unlocked on this instance")),
+    `ok=${lockedVerdict.ok} errors=${lockedVerdict.errors.join("; ")}`,
+  );
+}
 
 // --- Evidence 3: identical request, different correct decisions --------------
 

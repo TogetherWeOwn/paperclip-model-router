@@ -10,7 +10,7 @@
  * per company. See docs/OPERATIONS.md.
  */
 
-import { CLAUDE_ID_PATTERN_SOURCE_ANY_CASE } from "../constants.js";
+import { CLAUDE_ID_PATTERN_SOURCE_ANY_CASE, CLAUDE_PROVIDER_ALLOWLIST } from "../constants.js";
 import { MODEL_TIER_ORDER } from "../engine/types.js";
 
 const TIERS = [...MODEL_TIER_ORDER];
@@ -96,8 +96,14 @@ export const ROUTER_CONFIG_SCHEMA = {
           type: "string",
           title: "Claude provider",
           description:
-            "The single provider Claude-family models are permitted to use while PAYG is disabled.",
-          minLength: 1,
+            "The single provider Claude-family models are permitted to use while PAYG is disabled. Restricted to the providers owner rule 1 allows; this field narrows that list, it cannot extend it.",
+          // Unlike the TOG-237 model/family rule two branches down, this one is
+          // SELF-CONTAINED — a fixed set of literals, no cross-branch instance
+          // reference — so draft-07 expresses it exactly and this layer is a
+          // complete enforcement rather than a subset. The engine enforces it
+          // again anyway, because a host that never calls the schema must still
+          // fail closed.
+          enum: [...CLAUDE_PROVIDER_ALLOWLIST],
           default: "teamclaude",
         },
         claudeFamilies: {

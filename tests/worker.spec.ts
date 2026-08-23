@@ -8,7 +8,7 @@
  */
 
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import manifest from "../src/manifest.js";
 import { ACTION_KEYS, DATA_KEYS, STATE_KEYS, TOOL_NAMES } from "../src/constants.js";
@@ -132,11 +132,25 @@ describe("onValidateConfig", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("warns loudly when a company enables Claude pay-as-you-go", async () => {
+  it("warns loudly when the OWNER has enabled Claude pay-as-you-go", async () => {
+    const { plugin } = await harnessFor("company-b");
+    vi.stubEnv("MODEL_ROUTER_CLAUDE_PAYG_UNLOCK", "1");
+    try {
+      const result = await plugin.onValidateConfig!(readFixture("company-b"));
+      expect(result.ok).toBe(true);
+      expect(result.warnings?.join(" ")).toContain("pay-as-you-go is ENABLED");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("refuses the same config when the instance has not unlocked PAYG", async () => {
+    // company-b's stored bytes are unchanged; only the instance differs. A
+    // company config row cannot enable Claude PAYG on its own — owner rule 1.
     const { plugin } = await harnessFor("company-b");
     const result = await plugin.onValidateConfig!(readFixture("company-b"));
-    expect(result.ok).toBe(true);
-    expect(result.warnings?.join(" ")).toContain("pay-as-you-go is ENABLED");
+    expect(result.ok).toBe(false);
+    expect(result.errors?.join(" ")).toContain("not unlocked on this instance");
   });
 
   it("rejects a quota gate that is enabled with no status URL", async () => {

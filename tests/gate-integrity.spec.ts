@@ -12,7 +12,7 @@
  */
 
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { resolveConfig } from "../src/config/resolve.js";
 import { validateSecretRefShape } from "../src/config/secret-ref.js";
@@ -289,9 +289,25 @@ describe("the Claude block cannot be crossed by a mislabelled family", () => {
 
   it("onValidateConfig still accepts the shipped fixtures", async () => {
     const plugin = await validator();
-    for (const fixture of ["company-a", "company-b"]) {
-      const result = await plugin.onValidateConfig!(readFixture(fixture));
-      expect(result.ok, `${fixture}: ${result.errors?.join("; ")}`).toBe(true);
+
+    // company-a is accepted anywhere. company-b enables Claude PAYG, which is
+    // now an owner-level decision, so it is only a valid config on an instance
+    // where the owner unlocked it — the refusal below is the feature, not a
+    // regression in the fixture.
+    const a = await plugin.onValidateConfig!(readFixture("company-a"));
+    expect(a.ok, `company-a: ${a.errors?.join("; ")}`).toBe(true);
+
+    const bLocked = await plugin.onValidateConfig!(readFixture("company-b"));
+    expect(bLocked.ok).toBe(false);
+    expect(bLocked.errors?.join(" ")).toContain("not unlocked on this instance");
+
+    vi.stubEnv("MODEL_ROUTER_CLAUDE_PAYG_UNLOCK", "1");
+    try {
+      const bUnlocked = await plugin.onValidateConfig!(readFixture("company-b"));
+      expect(bUnlocked.ok, `company-b: ${bUnlocked.errors?.join("; ")}`).toBe(true);
+      expect(bUnlocked.warnings?.join(" ")).toContain("pay-as-you-go is ENABLED");
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 });
@@ -529,5 +545,171 @@ describe("the tier ceiling can never admit a model below the quality floor", () 
     // qwen3-coder is the only `small` row and is quality 45; the lift must not
     // have swept it in.
     expect(decision.candidates.map((candidate) => candidate.modelId)).not.toContain("qwen3-coder");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TOG-237 follow-up: the Claude block's DESTINATION and its ON-SWITCH were both
+// company configuration. TOG-237 moved "which models are Claude" into code and
+// left the two questions either side of it in the config row. Both reproduced
+// on v0.2.2 — `selected`, no rejection, no trace line.
+// ---------------------------------------------------------------------------
+
+describe("the Claude block's destination is code, not configuration", () => {
+  /** A Claude model teamclaude cannot serve. OpenRouter PAYG is its only route. */
+  const paygOnlyClaude = {
+    id: "claude-opus-5-payg",
+    family: "claude",
+    tier: "standard",
+    quality: 95,
+    // Priced below every other row so that if it is ever eligible, it wins:
+    // the assertion cannot pass by accident of the cost ordering.
+    costPerMTokIn: 0.001,
+    costPerMTokOut: 0.001,
+    contextWindow: 200000,
+    capabilities: ["tools", "structured-output"],
+    providers: ["openrouter"],
+    enabled: true,
+  };
+
+  function withPaygOnlyClaude(mutate: (raw: Record<string, any>) => void = () => {}) {
+    return companyA((raw) => {
+      raw.models.push({ ...paygOnlyClaude });
+      mutate(raw);
+    });
+  }
+
+  it("baseline: teamclaude cannot serve it, so it is blocked", () => {
+    const decision = selectModel({
+      descriptor: { taskClass: "implementation" },
+      config: withPaygOnlyClaude(),
+    });
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ modelId: "claude-opus-5-payg", stage: "claude-block" }),
+    );
+    expect(decision.modelId).not.toBe("claude-opus-5-payg");
+  });
+
+  it("pointing claudeFamilyProvider at openrouter does not aim the block — it fails closed", () => {
+    // The attack. On v0.2.2 this returned `selected: claude-opus-5-payg` with an
+    // empty rejection list: the config named the provider the block permitted,
+    // so redirecting the field redirected owner rule 1.
+    const decision = selectModel({
+      descriptor: { taskClass: "implementation" },
+      config: withPaygOnlyClaude((raw) => {
+        raw.providers.claudeFamilyProvider = "openrouter";
+        raw.providers.permitted = ["openrouter", "opencode-go", "teamclaude"];
+      }),
+    });
+
+    expect(decision.modelId).not.toBe("claude-opus-5-payg");
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ modelId: "claude-opus-5-payg", stage: "claude-block" }),
+    );
+    // Narrowing, not widening: the legitimately-teamclaude Claude rows are
+    // refused too, because the config no longer names an allowed provider.
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ modelId: "claude-sonnet-5", stage: "claude-block" }),
+    );
+  });
+
+  it("the rejection names the real rule, not the config value that was overruled", () => {
+    // v0.2.2 interpolated `claudeFamilyProvider` unconditionally, so a config
+    // that had aimed the block at OpenRouter printed "may only be served by
+    // openrouter" — the trace repeating the misconfiguration back as the rule.
+    const decision = selectModel({
+      descriptor: { taskClass: "implementation" },
+      config: withPaygOnlyClaude((raw) => {
+        raw.providers.claudeFamilyProvider = "openrouter";
+      }),
+    });
+    const reason = decision.rejections.find((r) => r.modelId === "claude-opus-5-payg")?.reason ?? "";
+
+    expect(reason).toContain("teamclaude");
+    expect(reason).toContain("not an allowed Claude provider");
+    expect(reason).not.toMatch(/may only be served by openrouter/);
+  });
+
+  it("a casing or whitespace variant of a disallowed provider does not slip through", () => {
+    for (const variant of ["OpenRouter", " openrouter ", "OPENROUTER"]) {
+      const decision = selectModel({
+        descriptor: { taskClass: "implementation" },
+        config: withPaygOnlyClaude((raw) => {
+          raw.providers.claudeFamilyProvider = variant;
+        }),
+      });
+      expect(decision.modelId, `variant ${JSON.stringify(variant)}`).not.toBe("claude-opus-5-payg");
+    }
+  });
+
+  it("a casing variant of an ALLOWED provider still works — this narrows, it does not break", () => {
+    const decision = selectModel({
+      descriptor: { taskClass: "architecture" },
+      config: companyA((raw) => {
+        raw.providers.claudeFamilyProvider = "TeamClaude";
+      }),
+    });
+    expect(decision.rejections).not.toContainEqual(
+      expect.objectContaining({ modelId: "claude-sonnet-5", stage: "claude-block" }),
+    );
+  });
+});
+
+describe("Claude PAYG is an owner switch, not a company one", () => {
+  it("a company config setting claudePaygEnabled true is ignored without the instance unlock", () => {
+    const raw = readFixture("company-a") as Record<string, any>;
+    raw.providers.claudePaygEnabled = true;
+
+    expect(resolveConfig(raw, {}).providers.claudePaygEnabled).toBe(false);
+    expect(
+      resolveConfig(raw, { MODEL_ROUTER_CLAUDE_PAYG_UNLOCK: "1" }).providers.claudePaygEnabled,
+    ).toBe(true);
+  });
+
+  it("only an exact '1' unlocks it", () => {
+    const raw = readFixture("company-a") as Record<string, any>;
+    raw.providers.claudePaygEnabled = true;
+    for (const value of ["0", "", "true", "yes", "2", undefined]) {
+      expect(
+        resolveConfig(raw, { MODEL_ROUTER_CLAUDE_PAYG_UNLOCK: value }).providers.claudePaygEnabled,
+        `unlock value ${JSON.stringify(value)}`,
+      ).toBe(false);
+    }
+  });
+
+  it("the block still runs when a locked company asked for PAYG", () => {
+    // The routing consequence of the flag being ignored, not just its value.
+    const raw = readFixture("company-a") as Record<string, any>;
+    raw.providers.claudePaygEnabled = true;
+    raw.models = raw.models.map((model: any) =>
+      model.family === "claude" ? { ...model, providers: ["openrouter"] } : model,
+    );
+    const decision = selectModel({
+      descriptor: { taskClass: "architecture" },
+      config: resolveConfig(raw, {}),
+    });
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ stage: "claude-block" }),
+    );
+  });
+
+  it("onValidateConfig REFUSES the write rather than warning about it", async () => {
+    const definition = await validator();
+    const raw = readFixture("company-a") as Record<string, any>;
+    raw.providers.claudePaygEnabled = true;
+
+    const verdict = await definition.onValidateConfig!(raw);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors?.join(" ")).toContain("not unlocked on this instance");
+  });
+
+  it("onValidateConfig refuses a claudeFamilyProvider outside the allowlist", async () => {
+    const definition = await validator();
+    const raw = readFixture("company-a") as Record<string, any>;
+    raw.providers.claudeFamilyProvider = "openrouter";
+
+    const verdict = await definition.onValidateConfig!(raw);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors?.join(" ")).toContain("not a provider owner rule 1 allows");
   });
 });
