@@ -31,6 +31,16 @@ version is not present here.
 - The rehearsal also checks mechanically what was previously only asserted in
   prose: the shipped bundle contains no company UUID and branches on no company
   id literal.
+- **Evidence 4 now exercises the hostile fallback.** The first version of the
+  check asserted that no Claude model is served once PAYG is off, and passed —
+  but only because company B's fallback is `gpt-4.1-mini`, so the fallback path
+  was never the thing under test. The case TOG-228 found live is a fallback that
+  *names* a Claude model: it is in the company's table, so config validation
+  accepts it, and before the fix it was returned without consulting the
+  `claude-block` rejection that had just eliminated it. Evidence 4 now points
+  B's `fallbackModelId` straight at the blocked `claude-sonnet-5` and asserts
+  the block outranks it — `no-eligible-model`, with the refusal named in the
+  trace. On `0.1.1` the same check serves `claude-opus-5` as `selected`.
 
 ### Fixed
 
@@ -51,8 +61,8 @@ version is not present here.
   `claudePaygEnabled: false` and every Claude model reachable only via
   `openrouter` — straight through owner rule 1. The pin and stickiness paths
   already judged their candidate against the hard gates; the fallback path was
-  the one that did not. Fixed under TOG-228, not here. Until it lands, evidence
-  item 4 of the TOG-156 acceptance is not sound.
+  the one that did not. Fixed under TOG-228, not here. The rehearsal has been
+  re-run against that fix and evidence item 4 is sound as of `0.2.0`.
 
 ## [0.2.0] - 2026-08-23
 
