@@ -73,11 +73,11 @@ deployable artifact is the **version-pinned tarball** attached to each GitHub
 release by `.github/workflows/release.yml`.
 
 ```bash
-# pinned to a known-good version, and rollable back to any earlier one
-gh release download v0.1.1 \
+# pinned to a known-good version, and rollable back — but not below v0.2.3.
+gh release download v0.2.3 \
   --repo TogetherWeOwn/paperclip-model-router --pattern '*.tgz' --dir /tmp
 mkdir -p /opt/paperclip-plugins/model-router
-tar -xzf /tmp/togetherweown-paperclip-model-router-0.1.1.tgz \
+tar -xzf /tmp/togetherweown-paperclip-model-router-0.2.3.tgz \
   -C /opt/paperclip-plugins/model-router --strip-components=1
 
 # The tarball ships dist/ but not node_modules, and the plugin SDK is
@@ -97,9 +97,19 @@ paperclipai plugin inspect togetherweown.paperclip-model-router
 ```
 
 If the instance gains a private npm registry, publish there and
-`paperclipai plugin install @togetherweown/paperclip-model-router --version 0.1.0`
+`paperclipai plugin install @togetherweown/paperclip-model-router --version 0.2.3`
 becomes the preferred form — the install record is then reproducible by any
 operator without a checkout.
+
+> **`v0.2.3` is a floor, not just the newest tag.** Every version below it ships
+> a routing rule the installee can edit out of the way. `v0.1.1` and earlier
+> allow the budget and quota gates to be bypassed (TOG-228); `v0.2.1` and earlier
+> serve a Claude model whose `family` the config mislabels (TOG-237); `v0.2.2`
+> still lets `providers.claudeFamilyProvider` and `providers.claudePaygEnabled`
+> aim or disable the Claude block from a company's own config row. Phase 4 exists
+> to install this into companies whose config the owner never reviews, so pin
+> forward, not back. The versions in these commands are checked against
+> `package.json` by [`tests/docs-install-version.spec.ts`](tests/docs-install-version.spec.ts).
 
 Confirm the target instance before installing — `paperclipai plugin target`
 prints the API base URL and server version it will act against.

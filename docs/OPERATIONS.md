@@ -27,10 +27,11 @@ paperclipai plugin target
 #    Read the API base URL and version. If it is not the instance you mean, stop.
 
 # 2. Install the version-pinned tarball from the GitHub release.
-gh release download v0.1.1 \
+#    v0.2.3 is the floor — see Rollback below before choosing anything older.
+gh release download v0.2.3 \
   --repo TogetherWeOwn/paperclip-model-router --pattern '*.tgz' --dir /tmp
 mkdir -p /opt/paperclip-plugins/model-router
-tar -xzf /tmp/togetherweown-paperclip-model-router-0.1.1.tgz \
+tar -xzf /tmp/togetherweown-paperclip-model-router-0.2.3.tgz \
   -C /opt/paperclip-plugins/model-router --strip-components=1
 
 #    The tarball ships dist/ but not node_modules. The plugin SDK is
@@ -128,10 +129,20 @@ Config and code roll back independently, which is the point of pinning.
 **Roll back the plugin** (affects every company):
 
 ```bash
-paperclipai plugin upgrade togetherweown.paperclip-model-router 0.1.0
+paperclipai plugin upgrade togetherweown.paperclip-model-router <version>
 # or reinstall the earlier tarball
 paperclipai plugin inspect togetherweown.paperclip-model-router
 ```
+
+> **Do not roll back below `v0.2.3`.** Rollback is a safety valve for a
+> regression, and below that floor it reintroduces one instead: the gate
+> bypasses closed in `v0.2.0` (TOG-228), the mislabelled-`family` route around
+> the Claude block closed in `v0.2.2` (TOG-237), and the `claudeFamilyProvider` /
+> `claudePaygEnabled` route around it closed in `v0.2.3`. Each of those is
+> reachable from a company's own config row, so the blast radius of rolling back
+> is every company on the instance, not just the one you were fixing. If a
+> regression forces you below the floor, disable the plugin rather than pin under
+> it, and say so on the issue.
 
 Company configs do not need to be rolled back with it. Unknown keys are rejected
 at write time, so a stored config never contains a key an older build cannot
