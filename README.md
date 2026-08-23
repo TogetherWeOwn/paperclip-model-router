@@ -135,6 +135,16 @@ Nothing about step 1 changes when you add a company. If something ever has to
 change in code to onboard a company, that thing is a bug in this plugin — it
 belongs in the config schema.
 
+Before onboarding a company, rehearse it offline against the built worker and
+the config you are about to POST — it takes a second and tells you what the live
+answers should be:
+
+```bash
+COMPANY_A_ID=<existing company> COMPANY_B_ID=<new company> \
+FIXTURE_A=<its config.json> FIXTURE_B=<the new config.json> \
+  npm run rehearse
+```
+
 ---
 
 ## Configuration reference
@@ -281,8 +291,9 @@ and resolved at runtime:
 
 ```bash
 npm ci
-npm run verify        # typecheck + tests + build + host-schema validation
+npm run verify        # typecheck + tests + build + host-schema validation + rehearsal
 npm run verify:host   # validate the built artifact with the host's own validators
+npm run rehearse      # two-company acceptance rehearsal against the BUILT worker
 npm run dev           # esbuild --watch into dist/
 ```
 
@@ -294,6 +305,24 @@ Point it at a Paperclip checkout to validate against that exact build:
 ```bash
 PAPERCLIP_SHARED=/app/packages/shared/dist/validators/plugin.js npm run verify:host
 ```
+
+`rehearse` is the offline half of the acceptance criterion: one install must
+serve a second company with no code edits. Unlike the tests, it loads
+`dist/worker.js` rather than `src/`, and it runs a *single* `createPlugin()` and
+a *single* `setup(ctx)` for both companies — the production topology, where one
+worker process keeps companies apart through `ctx.config.get(companyId)` alone.
+Point it at real companies and configs before an install:
+
+```bash
+COMPANY_A_ID=<uuid> COMPANY_B_ID=<uuid> \
+FIXTURE_A=./company-a.json FIXTURE_B=./company-b.json \
+  npm run rehearse -- --json /tmp/rehearsal.json
+```
+
+It cannot prove the live install, the live config POST, or route reachability —
+those need an operator and are in `docs/OPERATIONS.md`. It proves everything
+downstream of them, so the live run becomes a diff against a known-good
+transcript.
 
 `npm run verify` is what CI runs. See [`docs/PROCESS.md`](docs/PROCESS.md) for
 the repository conventions and [`docs/decisions/`](docs/decisions/) for the
@@ -309,7 +338,7 @@ plugin back does not require rolling every company's config back with it.
 
 ## Status
 
-`0.1.0` — the decision engine, the config contract, the quota reader, the agent
+`0.2.1` — the decision engine, the config contract, the quota reader, the agent
 tool and the scoped API routes are implemented and tested. Applying a decision
 to an issue's `assigneeAdapterOverrides` is **not** implemented: the plugin SDK
 exposes `assigneeAdapterOverrides` on issue *create* but not on issue *update*
