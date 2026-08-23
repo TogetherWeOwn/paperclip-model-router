@@ -1,0 +1,48 @@
+{
+  "name": "@togetherweown/paperclip-model-router",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Paperclip plugin: cost-efficient model routing. Picks the cheapest model that clears the quality floor; OmniRoute resolves the provider.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TogetherWeOwn/paperclip-model-router.git"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "dev": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "npm run typecheck && npm run test && npm run build && npm run verify:host",
+    "verify:host": "node scripts/verify-against-host.mjs"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "2026.817.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "allowScripts": {
+    "esbuild@0.24.2": true,
+    "esbuild@0.21.5": true
+  }
+}
