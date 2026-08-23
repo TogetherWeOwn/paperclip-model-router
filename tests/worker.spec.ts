@@ -208,6 +208,64 @@ describe("scoped API routes", () => {
     expect((response.body as { decision: { modelId: string } }).decision.modelId).toBe("minimax-m2.5");
   });
 
+  it("routes through the same path as every other surface", async () => {
+    // The HTTP route used to call `selectModel` directly. That gave it a second
+    // routing engine with no quota gate, no stickiness, no decision log and no
+    // metric — the one surface an operator is most likely to hit by hand was
+    // also the one nothing recorded. TOG-228.
+    const { harness, plugin } = await harnessFor("company-a");
+
+    const response = await plugin.onApiRequest!({
+      routeKey: "route-issue",
+      method: "POST",
+      path: "/issues/issue-7/route",
+      params: { issueId: "issue-7" },
+      query: {},
+      body: { taskClass: "implementation" },
+      actor: { actorType: "agent", actorId: "agent-1" },
+      companyId: COMPANY_A,
+      headers: {},
+    });
+    expect(response.status).toBe(200);
+
+    // Recorded, like every other surface.
+    const log = harness.getState({
+      scopeKind: "company",
+      scopeId: COMPANY_A,
+      stateKey: STATE_KEYS.decisionLog,
+    }) as Array<{ issueId: string; modelId: string }>;
+    expect(log).toHaveLength(1);
+    expect(log[0]).toMatchObject({ issueId: "issue-7", modelId: "minimax-m2.5" });
+
+    // ...and sticky, like every other surface.
+    const sticky = harness.getState({
+      scopeKind: "company",
+      scopeId: COMPANY_A,
+      stateKey: STATE_KEYS.issueStickiness,
+    }) as Record<string, string>;
+    expect(sticky["issue-7"]).toBe("minimax-m2.5");
+  });
+
+  it("applies the budget gate supplied in the request body", async () => {
+    const { plugin } = await harnessFor("company-a");
+    const response = await plugin.onApiRequest!({
+      routeKey: "route-issue",
+      method: "POST",
+      path: "/issues/issue-8/route",
+      params: { issueId: "issue-8" },
+      query: {},
+      body: { taskClass: "implementation", budgetSpentFraction: 0.99 },
+      actor: { actorType: "agent", actorId: "agent-1" },
+      companyId: COMPANY_A,
+      headers: {},
+    });
+    const { decision } = response.body as {
+      decision: { outcome: string; gates: { budget: string } };
+    };
+    expect(decision.gates.budget).toBe("halt");
+    expect(decision.outcome).toBe("no-eligible-model");
+  });
+
   it("404s an unknown route key", async () => {
     const { plugin } = await harnessFor("company-a");
     const response = await plugin.onApiRequest!({

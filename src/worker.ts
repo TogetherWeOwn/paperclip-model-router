@@ -10,6 +10,7 @@ import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 import { resolveConfig } from "./config/resolve.js";
+import { validateSecretRefShape } from "./config/secret-ref.js";
 import type { RouterConfig } from "./config/types.js";
 import {
   ACTION_KEYS,
@@ -88,11 +89,23 @@ function quotaHttp(ctx: PluginContext): QuotaHttpClient {
   };
 }
 
+/** Signature of the single routing entry point every surface calls. */
+type Decide = (
+  companyId: string,
+  descriptor: TaskDescriptor,
+  options?: { budgetSpentFraction?: number },
+) => Promise<{ decision: RoutingDecision; quota: QuotaSnapshot | null }>;
+
 export function createPlugin() {
   // `onApiRequest` is a top-level worker hook and receives no context, so setup
   // parks the context here for it. One worker process serves every company; the
   // context is company-agnostic and every read is explicitly company-scoped.
   let context: PluginContext | null = null;
+  // ...and parks `decide` here too. `onApiRequest` used to call `selectModel`
+  // directly, which quietly gave the HTTP route its own routing engine: no quota
+  // gate, no stickiness, and no entry in the decision log. Two surfaces, two
+  // answers, one of them unaudited. There is now exactly one path.
+  let decide: Decide | null = null;
 
   return definePlugin({
     async setup(ctx) {
@@ -190,7 +203,7 @@ export function createPlugin() {
       };
 
       /** The one path every surface goes through. */
-      const decide = async (
+      const decideFor: Decide = async (
         companyId: string,
         descriptor: TaskDescriptor,
         options?: { budgetSpentFraction?: number },
@@ -203,6 +216,9 @@ export function createPlugin() {
           signals: {
             budgetSpentFraction: options?.budgetSpentFraction,
             claudeQuotaUtilization: quota?.maxUtilization ?? undefined,
+            // An enabled gate that could not read its number must say so in the
+            // trace; an open gate is not the same fact as a healthy one.
+            claudeQuotaError: quota?.error ?? undefined,
             stickyModelId: config.routing.stickyModelWithinIssue
               ? await readStickyModel(companyId, descriptor.issueId)
               : undefined,
@@ -214,6 +230,7 @@ export function createPlugin() {
         }
         return { decision, quota };
       };
+      decide = decideFor;
 
       // ---- agent tool ------------------------------------------------------
       ctx.tools.register(
@@ -230,7 +247,7 @@ export function createPlugin() {
           if (!companyId) {
             return { ok: false, error: "companyId is required" } as never;
           }
-          const { decision } = await decide(companyId, descriptorFrom(input));
+          const { decision } = await decideFor(companyId, descriptorFrom(input));
           return { ok: true, data: decision } as never;
         },
       );
@@ -268,7 +285,7 @@ export function createPlugin() {
         if (!companyId) throw new Error("companyId is required");
         const budget =
           typeof input.budgetSpentFraction === "number" ? input.budgetSpentFraction : undefined;
-        const { decision } = await decide(companyId, descriptorFrom(input), {
+        const { decision } = await decideFor(companyId, descriptorFrom(input), {
           budgetSpentFraction: budget,
         });
         return decision as unknown as Record<string, unknown>;
@@ -290,8 +307,14 @@ export function createPlugin() {
     },
 
     /**
-     * Config is per company, so validation is too. This runs on every config
-     * write and is the earliest place a company's mistake can be caught.
+     * Config is per company, so validation is too.
+     *
+     * Note what this is NOT: the persisting write, `POST /plugins/:id/config`,
+     * validates against `instanceConfigSchema` with Ajv and never calls this
+     * hook. Only `POST /plugins/:id/config/test` — a dry run that stores
+     * nothing — reaches it. So this is an operator-facing check, not a gate:
+     * anything that must actually be refused at write time has to be expressible
+     * in `src/config/schema.ts`. The two overlap on purpose.
      */
     async onValidateConfig(config: Record<string, unknown>) {
       const resolved = resolveConfig(config);
@@ -321,9 +344,13 @@ export function createPlugin() {
           errors.push(`task class ${entry.key} pins ${entry.pinnedModelId}, which is not in the model table`);
         }
       }
+      // An error, not a warning. A fallback id that is not in the table has been
+      // seen by no gate at all — the Claude block included — so the engine
+      // refuses it at routing time. Refusing it at write time instead means the
+      // operator finds out now rather than during an incident.
       if (resolved.routing.fallbackModelId && !ids.has(resolved.routing.fallbackModelId)) {
-        warnings.push(
-          `routing.fallbackModelId ${resolved.routing.fallbackModelId} is not in the model table`,
+        errors.push(
+          `routing.fallbackModelId ${resolved.routing.fallbackModelId} is not in the model table, so no gate can vet it`,
         );
       }
       for (const entry of resolved.rule0.deterministicPatterns) {
@@ -342,6 +369,17 @@ export function createPlugin() {
       if (gate.enabled && !gate.apiKeySecretRef) {
         warnings.push("quota gate has no apiKeySecretRef — the status endpoint will likely answer 401");
       }
+      // The host cannot do this for us. `format: "secret-ref"` is registered
+      // host-side as `ajv.addFormat("secret-ref", { validate: () => true })` — a
+      // UI hint with no validation behind it — and the field is typed
+      // `["object","null"]`, so `{"apiKey":"sk-ant-..."}` is accepted verbatim
+      // and stored in the company's config row. The claim that a credential
+      // cannot be stored in a config is only true if this plugin makes it true.
+      const secretRefError = validateSecretRefShape(
+        asRecord(config.quotaGate)["apiKeySecretRef"],
+        "quotaGate.apiKeySecretRef",
+      );
+      if (secretRefError) errors.push(secretRefError);
       if (!(gate.warnUtilization <= gate.downshiftUtilization && gate.downshiftUtilization <= gate.pauseUtilization)) {
         errors.push("quotaGate thresholds must satisfy warn <= downshift <= pause");
       }
@@ -354,16 +392,19 @@ export function createPlugin() {
     },
 
     async onApiRequest(input) {
-      if (!context) return { status: 503, body: { error: "worker is not initialised" } };
-      const config = resolveConfig(await context.config.get(input.companyId));
+      if (!context || !decide) return { status: 503, body: { error: "worker is not initialised" } };
 
       if (input.routeKey === ROUTE_KEYS.companyConfig) {
+        const config = resolveConfig(await context.config.get(input.companyId));
         return { status: 200, body: { version: PLUGIN_VERSION, config } };
       }
       if (input.routeKey === ROUTE_KEYS.routeIssue) {
         const body = asRecord(input.body);
         const descriptor = descriptorFrom({ ...body, issueId: input.params.issueId });
-        const decision = selectModel({ descriptor, config });
+        const { decision } = await decide(input.companyId, descriptor, {
+          budgetSpentFraction:
+            typeof body.budgetSpentFraction === "number" ? body.budgetSpentFraction : undefined,
+        });
         return { status: 200, body: { decision } };
       }
       return { status: 404, body: { error: `unknown route ${input.routeKey}` } };

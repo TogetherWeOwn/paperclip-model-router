@@ -17,6 +17,16 @@
  *
  * Budget and quota pressure lower the tier *ceiling*; they never lower the
  * quality floor.
+ *
+ * Three routes return a model without being the cheapest survivor — a pin,
+ * stickiness, and the configured fallback — and the order they are evaluated in
+ * is load-bearing, because each one is a way of leaving this function:
+ *
+ *   pin  ->  budget halt  ->  stickiness  ->  fallback  ->  cheapest survivor
+ *
+ * The budget halt sits above stickiness and the fallback deliberately. It used
+ * to sit below both, which meant a halted company kept spending through either
+ * of them. Only a pin outranks it, and that is documented.
  */
 
 import type { RouterConfig } from "../config/types.js";
@@ -27,6 +37,7 @@ import {
   type ModelEntry,
   type ModelTier,
   type Rejection,
+  type RejectionStage,
   type RoutingDecision,
   type RuntimeSignals,
   type TaskDescriptor,
@@ -35,6 +46,27 @@ import {
 /** Default token estimate when the caller gives none. Only affects ranking. */
 const DEFAULT_INPUT_TOKENS = 8_000;
 const DEFAULT_OUTPUT_TOKENS = 2_000;
+
+/**
+ * Rejection stages the fallback model may NOT cross.
+ *
+ * `routing.fallbackModelId` exists so a company can choose a floor rather than
+ * a failure, and it is deliberately allowed past the *estimates*: the tier
+ * ceiling, the quality floor, a capability the caller only thinks it needs.
+ * Those are judgements about fit.
+ *
+ * These four are not judgements. They are statements that this company may not
+ * be served by this model at all — it is not in the table, it is Claude and
+ * Claude is confined to one provider, its provider is not approved, or the
+ * pooled quota is exhausted. A fallback that crossed them would be a hole
+ * straight through Rule 1, and was: see TOG-228.
+ */
+const NON_NEGOTIABLE_STAGES: readonly RejectionStage[] = [
+  "not-in-table",
+  "claude-block",
+  "provider-not-permitted",
+  "quota-gate",
+];
 
 function tierIndex(tier: ModelTier): number {
   const index = MODEL_TIER_ORDER.indexOf(tier);
@@ -190,8 +222,21 @@ export function selectModel(input: SelectInput): RoutingDecision {
     rejections,
     candidates: [],
     pin: null,
+    fallbackUsed: false,
     gates: { budget: budgetGate, claudeQuota: claudeQuotaGate },
   };
+
+  // A gate that cannot read its own input is not a gate. The quota reader fails
+  // soft on purpose — a teamclaude outage must not take routing down — but the
+  // resulting `ok` is "unknown", not "healthy", and the caller has to be able to
+  // tell those apart.
+  if (config.quotaGate.enabled && typeof runtime.claudeQuotaUtilization !== "number") {
+    trace.push(
+      `claude quota gate is enabled but utilization is unknown${
+        runtime.claudeQuotaError ? ` (${runtime.claudeQuotaError})` : ""
+      } — the gate is OPEN and Claude work is not being throttled`,
+    );
+  }
 
   if (!config.routing.enabled) {
     trace.push("routing.enabled is false — the caller keeps its own model");
@@ -213,9 +258,15 @@ export function selectModel(input: SelectInput): RoutingDecision {
     ? config.taskClasses.find((entry) => entry.key === descriptor.taskClass)
     : undefined;
   if (descriptor.taskClass && !taskClass) {
+    // Falling back to floor 0 here is the most expensive kind of bug: a typo in
+    // a class key silently deletes the quality floor, and the cheapest model in
+    // the table wins a decision that was supposed to demand the best one. That
+    // is cost beating quality, which this engine forbids. Refuse instead — the
+    // caller must escalate, not silently downgrade.
     trace.push(
-      `task class "${descriptor.taskClass}" is not configured — quality floor 0 applies, which is permissive; configure the class`,
+      `task class "${descriptor.taskClass}" is not configured for this company — refusing rather than routing with no quality floor; configure the class or send no taskClass`,
     );
+    return { ...base, outcome: "no-eligible-model" };
   }
   const qualityFloor = taskClass?.qualityFloor ?? 0;
   base.qualityFloor = qualityFloor;
@@ -426,6 +477,18 @@ export function selectModel(input: SelectInput): RoutingDecision {
     );
   }
 
+  // ---- budget halt ---------------------------------------------------------
+  // Checked here, immediately after the pin, because everything below this line
+  // is a way of returning a model: stickiness, and the fallback. Both used to
+  // sit in front of this check and both therefore ignored it — a halted company
+  // kept right on spending. A pin is the one documented exception.
+  if (budgetGate === "halt" && !pinnedId) {
+    trace.push(
+      `budget gate halt at ${((budgetFraction ?? 0) * 100).toFixed(0)}% of cap: refusing non-pinned model work`,
+    );
+    return { ...base, outcome: "no-eligible-model" };
+  }
+
   // ---- cache-preserving stickiness ----------------------------------------
   // Switching model mid-issue throws away the prompt cache, which can cost more
   // than the model difference saves. Keep the incumbent when it still survives.
@@ -460,17 +523,35 @@ export function selectModel(input: SelectInput): RoutingDecision {
     } else {
       trace.push(`no model survived the gates (${rejections.length} rejected)`);
     }
-    if (config.routing.fallbackModelId) {
-      trace.push(`fallback model configured: ${config.routing.fallbackModelId}`);
-      return { ...base, outcome: "selected", modelId: config.routing.fallbackModelId };
+    const fallbackId = config.routing.fallbackModelId;
+    if (fallbackId) {
+      // The fallback is an escape hatch from the estimates, not from the rules.
+      const blocker = rejections.find(
+        (entry) =>
+          entry.modelId === fallbackId &&
+          NON_NEGOTIABLE_STAGES.includes(entry.stage),
+      );
+      const inTable = config.models.some((model) => model.id === fallbackId);
+      if (blocker) {
+        trace.push(
+          `fallback ${fallbackId} refused — ${blocker.stage}: ${blocker.reason}. A fallback may cross a capability or quality estimate; it may not cross a hard constraint.`,
+        );
+        return { ...base, outcome: "no-eligible-model" };
+      }
+      if (!inTable) {
+        // Unknown to this company's table means unknown to every gate, so the
+        // Claude block never got a chance to look at it. Refuse: an id nobody
+        // has vetted is exactly how a Claude model reaches a PAYG provider.
+        trace.push(
+          `fallback ${fallbackId} refused — it is not in this company's model table, so no gate has vetted it`,
+        );
+        return { ...base, outcome: "no-eligible-model" };
+      }
+      trace.push(
+        `fallback model configured: ${fallbackId} — it clears every hard constraint and is used despite the gates above`,
+      );
+      return { ...base, outcome: "selected", modelId: fallbackId, fallbackUsed: true };
     }
-    return { ...base, outcome: "no-eligible-model" };
-  }
-
-  if (budgetGate === "halt" && !pinnedId) {
-    trace.push(
-      `budget gate halt at ${((budgetFraction ?? 0) * 100).toFixed(0)}% of cap: refusing non-pinned model work`,
-    );
     return { ...base, outcome: "no-eligible-model" };
   }
 

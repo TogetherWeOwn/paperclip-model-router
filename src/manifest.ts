@@ -27,14 +27,20 @@ const manifest: PaperclipPluginManifestV1 = {
     "Chooses the cheapest model that clears a hard quality floor and every capability, provider and quota constraint. Paperclip names a model; OmniRoute resolves the provider.",
   author: "TogetherWeOwn",
   categories: ["automation"],
+  // Exactly the host operations this worker performs, and nothing else.
+  //
+  // `companies.read`, `issues.read` and `activity.log.write` were declared and
+  // never used: the worker touches `ctx.config`, `ctx.state`, `ctx.secrets`,
+  // `ctx.http`, `ctx.metrics`, `ctx.tools`, `ctx.data`, `ctx.actions` and
+  // `ctx.logger`, and no other surface. The `:issueId` in the route below is
+  // resolved to a company by the HOST, before the worker is called, so it costs
+  // this plugin no `issues.read` either. Removed in TOG-228 — least privilege
+  // means the declared set has to be checked against the code, not just pinned.
   capabilities: [
-    "companies.read",
-    "issues.read",
     "plugin.state.read",
     "plugin.state.write",
     "http.outbound",
     "secrets.read-ref",
-    "activity.log.write",
     "metrics.write",
     "agent.tools.register",
     "api.routes.register",

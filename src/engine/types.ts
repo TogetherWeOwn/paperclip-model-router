@@ -76,6 +76,12 @@ export interface RuntimeSignals {
   claudeQuotaUtilization?: number;
   /** Model already used on this issue, if any. Enables cache-preserving stickiness. */
   stickyModelId?: string;
+  /**
+   * Why `claudeQuotaUtilization` is absent, when the gate is enabled and the
+   * reader could not produce a number. Recorded in the trace so an open gate is
+   * never mistaken for a healthy one.
+   */
+  claudeQuotaError?: string;
 }
 
 export type DecisionOutcome =
@@ -132,6 +138,13 @@ export interface RoutingDecision {
   candidates: Candidate[];
   /** Set when a pin was applied, with the reason it was applied. */
   pin: { modelId: string; reason: string; honored: boolean } | null;
+  /**
+   * True when `modelId` is `routing.fallbackModelId` rather than a gate
+   * survivor. The model still cleared every hard constraint, but it did NOT
+   * clear the capability, context or quality checks — a caller that treats
+   * `outcome: "selected"` as "this model can do the job" must read this too.
+   */
+  fallbackUsed: boolean;
   /** Gate levels in force at decision time. */
   gates: {
     budget: GateLevel;

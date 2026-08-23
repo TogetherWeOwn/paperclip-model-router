@@ -449,25 +449,74 @@ describe("the master switch", () => {
 });
 
 describe("fallback", () => {
-  it("uses the configured fallback when nothing survives", () => {
+  /** Two models on one permitted provider; the cheap one is the fallback. */
+  const table = [
+    {
+      id: "gpt-4.1-mini",
+      family: "gpt",
+      tier: "small",
+      quality: 52,
+      costPerMTokIn: 0.4,
+      costPerMTokOut: 1.6,
+      contextWindow: 128000,
+      capabilities: ["tools"],
+      providers: ["openrouter"],
+    },
+    {
+      id: "gpt-4.1",
+      family: "gpt",
+      tier: "strong",
+      quality: 82,
+      costPerMTokIn: 2,
+      costPerMTokOut: 8,
+      contextWindow: 128000,
+      capabilities: ["tools"],
+      providers: ["openrouter"],
+    },
+  ];
+
+  it("uses the configured fallback when nothing survives the negotiable gates", () => {
     const config = resolveConfig({
       routing: { enabled: true, fallbackModelId: "gpt-4.1-mini" },
-      providers: { permitted: [] },
-      models: [
-        {
-          id: "gpt-4.1",
-          family: "gpt",
-          tier: "strong",
-          quality: 82,
-          costPerMTokIn: 2,
-          costPerMTokOut: 8,
-          contextWindow: 128000,
-          providers: ["openrouter"],
-        },
-      ],
+      providers: { permitted: ["openrouter"] },
+      models: table,
+      taskClasses: [{ key: "impossible", qualityFloor: 99 }],
     });
-    const decision = selectModel({ descriptor: {}, config });
+    // Nothing clears a floor of 99, and the fallback does not either — but the
+    // floor is an estimate of fit, which is exactly what the fallback exists to
+    // override. It is still served by a permitted provider.
+    const decision = selectModel({ descriptor: { taskClass: "impossible" }, config });
     expect(decision.outcome).toBe("selected");
     expect(decision.modelId).toBe("gpt-4.1-mini");
+    expect(decision.fallbackUsed).toBe(true);
+  });
+
+  it("flags the fallback so `selected` is not mistaken for `this model can do the job`", () => {
+    const config = resolveConfig({
+      routing: { enabled: true, fallbackModelId: "gpt-4.1-mini" },
+      providers: { permitted: ["openrouter"] },
+      models: table,
+    });
+    // No model holds ten million tokens. The fallback does not either.
+    const decision = selectModel({ descriptor: { requiredContextTokens: 10_000_000 }, config });
+    expect(decision.modelId).toBe("gpt-4.1-mini");
+    expect(decision.fallbackUsed).toBe(true);
+
+    // ...whereas an ordinary win is not flagged.
+    const ordinary = selectModel({ descriptor: {}, config });
+    expect(ordinary.modelId).toBe("gpt-4.1-mini");
+    expect(ordinary.fallbackUsed).toBe(false);
+  });
+
+  it("refuses a fallback that is not in the company's model table", () => {
+    const config = resolveConfig({
+      routing: { enabled: true, fallbackModelId: "some-model-nobody-vetted" },
+      providers: { permitted: [] },
+      models: table,
+    });
+    const decision = selectModel({ descriptor: {}, config });
+    expect(decision.outcome).toBe("no-eligible-model");
+    expect(decision.modelId).toBeNull();
+    expect(decision.trace.join("\n")).toContain("not in this company's model table");
   });
 });
