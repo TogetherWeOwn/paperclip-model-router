@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+      # The host loads exactly these two files. A build that does not produce
+      # them installs and then fails at worker start, which is a much worse
+      # place to find out.
+      - name: Assert the runtime entrypoints exist
+        run: test -f dist/manifest.js && test -f dist/worker.js
+
+      # The manifest is what the host validates at install time. Loading the
+      # built artifact here catches a manifest that only compiles in source form.
+      - name: Load the built manifest
+        run: |
+          node --input-type=module -e "
+            const m = (await import('./dist/manifest.js')).default;
+            if (m.apiVersion !== 1) throw new Error('unexpected apiVersion ' + m.apiVersion);
+            if (!m.instanceConfigSchema) throw new Error('manifest has no instanceConfigSchema');
+            console.log('manifest ok:', m.id, m.version);
+          "
+
+  version-sync:
+    name: version and changelog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # A release is pinned by version, so package.json, the manifest constant
+      # and the changelog must agree before anything is tagged.
+      - name: package.json version is in the changelog
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          grep -q "## \[$version\]" CHANGELOG.md \
+            || { echo "CHANGELOG.md has no entry for $version"; exit 1; }
+          grep -q "PLUGIN_VERSION = \"$version\"" src/constants.ts \
+            || { echo "src/constants.ts PLUGIN_VERSION is not $version"; exit 1; }
+
+  secret-scan:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"

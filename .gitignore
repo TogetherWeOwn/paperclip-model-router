@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Never commit anything that could hold a credential.
+.env
+.env.*
+*.pem
+*.key
+secure-drop/
+
+# Local agent-harness scratch. Paperclip is the tracker; see docs/PROCESS.md.
+.claude/

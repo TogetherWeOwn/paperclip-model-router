@@ -1,0 +1,36 @@
+# gitleaks configuration.
+#
+# The rule for this repository is absolute: no credential is ever committed. The
+# teamclaude key and the OmniRoute credentials are referenced by name and read
+# from the environment or from a Paperclip secret at runtime.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "teamclaude-proxy-key"
+description = "teamclaude / Anthropic proxy key"
+regex = '''(?i)(anthropic|teamclaude)[_-]?api[_-]?key["'\s:=]+[A-Za-z0-9_\-]{20,}'''
+tags = ["key", "anthropic"]
+
+[[rules]]
+id = "omniroute-credential"
+description = "OmniRoute API key or management password"
+regex = '''(?i)omniroute[_-]?(api[_-]?key|password|token)["'\s:=]+\S{12,}'''
+tags = ["key", "omniroute"]
+
+[allowlist]
+description = "Config keys and documentation that name a credential without containing one"
+paths = [
+  '''README\.md''',
+  '''docs/.*\.md''',
+  '''CHANGELOG\.md''',
+]
+regexes = [
+  # The config field holds a Paperclip secret *reference*, never a value.
+  '''apiKeySecretRef''',
+  '''OMNIROUTE_API_KEY''',
+  '''ANTHROPIC_API_KEY''',
+  # Test fixtures deliberately assert that credential-shaped strings are rejected.
+  '''sk-live-not-a-reference''',
+]

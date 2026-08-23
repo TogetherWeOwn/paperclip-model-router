@@ -1,0 +1,239 @@
+/**
+ * Turns whatever a company stored into a fully-populated `RouterConfig`.
+ *
+ * The host validates shape; this fills defaults. The two jobs are separate on
+ * purpose: a company may store a partial config and still get deterministic
+ * behaviour, and the defaults live in one place that the README documents.
+ */
+
+import type { ModelEntry } from "../engine/types.js";
+import type {
+  BudgetConfig,
+  ProvidersConfig,
+  QuotaGateConfig,
+  RouterConfig,
+  RoutingConfig,
+  Rule0Config,
+  TaskClassConfig,
+  TieringConfig,
+} from "./types.js";
+
+export const DEFAULT_ROUTING: RoutingConfig = {
+  enabled: true,
+  mode: "advise",
+  fallbackModelId: null,
+  stickyModelWithinIssue: true,
+};
+
+export const DEFAULT_PROVIDERS: ProvidersConfig = {
+  permitted: [],
+  preferenceOrder: [],
+  // Defaults are the safe end of every switch. A company that wants Claude PAYG
+  // has to say so; nothing turns it on implicitly.
+  claudePaygEnabled: false,
+  claudeFamilyProvider: "teamclaude",
+  claudeFamilies: ["claude"],
+};
+
+export const DEFAULT_TIERING: TieringConfig = {
+  signalWeights: {},
+  thresholds: { small: 0, standard: 30, strong: 60, frontier: 85 },
+  defaultTier: "standard",
+};
+
+export const DEFAULT_BUDGET: BudgetConfig = {
+  monthlyCapUsd: 0,
+  warnFraction: 0.6,
+  downshiftFraction: 0.8,
+  haltFraction: 0.95,
+};
+
+export const DEFAULT_QUOTA_GATE: QuotaGateConfig = {
+  enabled: false,
+  statusUrl: "",
+  apiKeySecretRef: null,
+  windows: ["unified5h", "unified7d"],
+  warnUtilization: 0.7,
+  downshiftUtilization: 0.85,
+  pauseUtilization: 0.95,
+};
+
+export const DEFAULT_RULE0: Rule0Config = {
+  enabled: true,
+  deterministicPatterns: [],
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function pickNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function pickBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function pickString(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function pickStringArray(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+}
+
+function resolveModels(value: unknown): ModelEntry[] {
+  if (!Array.isArray(value)) return [];
+  const models: ModelEntry[] = [];
+  for (const raw of value) {
+    if (!isRecord(raw)) continue;
+    const id = pickString(raw.id, "");
+    if (!id) continue;
+    models.push({
+      id,
+      family: pickString(raw.family, "unknown"),
+      tier: (pickString(raw.tier, "standard") as ModelEntry["tier"]),
+      quality: pickNumber(raw.quality, 0),
+      costPerMTokIn: pickNumber(raw.costPerMTokIn, 0),
+      costPerMTokOut: pickNumber(raw.costPerMTokOut, 0),
+      contextWindow: pickNumber(raw.contextWindow, 0),
+      capabilities: pickStringArray(raw.capabilities, []) as ModelEntry["capabilities"],
+      providers: pickStringArray(raw.providers, []),
+      enabled: pickBoolean(raw.enabled, true),
+    });
+  }
+  return models;
+}
+
+function resolveTaskClasses(value: unknown): TaskClassConfig[] {
+  if (!Array.isArray(value)) return [];
+  const classes: TaskClassConfig[] = [];
+  for (const raw of value) {
+    if (!isRecord(raw)) continue;
+    const key = pickString(raw.key, "");
+    if (!key) continue;
+    const entry: TaskClassConfig = {
+      key,
+      qualityFloor: pickNumber(raw.qualityFloor, 0),
+    };
+    if (typeof raw.maxTier === "string") entry.maxTier = raw.maxTier as TaskClassConfig["maxTier"];
+    const required = pickStringArray(raw.requiredCapabilities, []);
+    if (required.length > 0) entry.requiredCapabilities = required;
+    if (typeof raw.pinnedModelId === "string" && raw.pinnedModelId.length > 0) {
+      entry.pinnedModelId = raw.pinnedModelId;
+    }
+    classes.push(entry);
+  }
+  return classes;
+}
+
+function resolveRule0(value: unknown): Rule0Config {
+  if (!isRecord(value)) return { ...DEFAULT_RULE0, deterministicPatterns: [] };
+  const patterns: Rule0Config["deterministicPatterns"] = [];
+  if (Array.isArray(value.deterministicPatterns)) {
+    for (const raw of value.deterministicPatterns) {
+      if (!isRecord(raw)) continue;
+      const pattern = pickString(raw.pattern, "");
+      const tool = pickString(raw.tool, "");
+      if (pattern && tool) patterns.push({ pattern, tool });
+    }
+  }
+  return {
+    enabled: pickBoolean(value.enabled, DEFAULT_RULE0.enabled),
+    deterministicPatterns: patterns,
+  };
+}
+
+/**
+ * @param raw the company's stored `configJson`, or anything at all
+ * @returns a config with every field populated
+ */
+export function resolveConfig(raw: unknown): RouterConfig {
+  const source = isRecord(raw) ? raw : {};
+
+  const routingRaw = isRecord(source.routing) ? source.routing : {};
+  const providersRaw = isRecord(source.providers) ? source.providers : {};
+  const tieringRaw = isRecord(source.tiering) ? source.tiering : {};
+  const thresholdsRaw = isRecord(tieringRaw.thresholds) ? tieringRaw.thresholds : {};
+  const budgetRaw = isRecord(source.budget) ? source.budget : {};
+  const quotaRaw = isRecord(source.quotaGate) ? source.quotaGate : {};
+
+  const signalWeights: Record<string, number> = {};
+  if (isRecord(tieringRaw.signalWeights)) {
+    for (const [key, weight] of Object.entries(tieringRaw.signalWeights)) {
+      if (typeof weight === "number" && Number.isFinite(weight)) signalWeights[key] = weight;
+    }
+  }
+
+  return {
+    routing: {
+      enabled: pickBoolean(routingRaw.enabled, DEFAULT_ROUTING.enabled),
+      mode: routingRaw.mode === "enforce" ? "enforce" : "advise",
+      fallbackModelId:
+        typeof routingRaw.fallbackModelId === "string" && routingRaw.fallbackModelId.length > 0
+          ? routingRaw.fallbackModelId
+          : null,
+      stickyModelWithinIssue: pickBoolean(
+        routingRaw.stickyModelWithinIssue,
+        DEFAULT_ROUTING.stickyModelWithinIssue,
+      ),
+    },
+    providers: {
+      permitted: pickStringArray(providersRaw.permitted, DEFAULT_PROVIDERS.permitted),
+      preferenceOrder: pickStringArray(
+        providersRaw.preferenceOrder,
+        DEFAULT_PROVIDERS.preferenceOrder,
+      ),
+      claudePaygEnabled: pickBoolean(
+        providersRaw.claudePaygEnabled,
+        DEFAULT_PROVIDERS.claudePaygEnabled,
+      ),
+      claudeFamilyProvider: pickString(
+        providersRaw.claudeFamilyProvider,
+        DEFAULT_PROVIDERS.claudeFamilyProvider,
+      ),
+      claudeFamilies: pickStringArray(
+        providersRaw.claudeFamilies,
+        DEFAULT_PROVIDERS.claudeFamilies,
+      ),
+    },
+    models: resolveModels(source.models),
+    taskClasses: resolveTaskClasses(source.taskClasses),
+    tiering: {
+      signalWeights,
+      thresholds: {
+        small: pickNumber(thresholdsRaw.small, DEFAULT_TIERING.thresholds.small),
+        standard: pickNumber(thresholdsRaw.standard, DEFAULT_TIERING.thresholds.standard),
+        strong: pickNumber(thresholdsRaw.strong, DEFAULT_TIERING.thresholds.strong),
+        frontier: pickNumber(thresholdsRaw.frontier, DEFAULT_TIERING.thresholds.frontier),
+      },
+      defaultTier: (pickString(
+        tieringRaw.defaultTier,
+        DEFAULT_TIERING.defaultTier,
+      ) as TieringConfig["defaultTier"]),
+    },
+    budget: {
+      monthlyCapUsd: pickNumber(budgetRaw.monthlyCapUsd, DEFAULT_BUDGET.monthlyCapUsd),
+      warnFraction: pickNumber(budgetRaw.warnFraction, DEFAULT_BUDGET.warnFraction),
+      downshiftFraction: pickNumber(budgetRaw.downshiftFraction, DEFAULT_BUDGET.downshiftFraction),
+      haltFraction: pickNumber(budgetRaw.haltFraction, DEFAULT_BUDGET.haltFraction),
+    },
+    quotaGate: {
+      enabled: pickBoolean(quotaRaw.enabled, DEFAULT_QUOTA_GATE.enabled),
+      statusUrl: pickString(quotaRaw.statusUrl, DEFAULT_QUOTA_GATE.statusUrl),
+      apiKeySecretRef: isRecord(quotaRaw.apiKeySecretRef)
+        ? (quotaRaw.apiKeySecretRef as unknown as QuotaGateConfig["apiKeySecretRef"])
+        : null,
+      windows: pickStringArray(quotaRaw.windows, DEFAULT_QUOTA_GATE.windows),
+      warnUtilization: pickNumber(quotaRaw.warnUtilization, DEFAULT_QUOTA_GATE.warnUtilization),
+      downshiftUtilization: pickNumber(
+        quotaRaw.downshiftUtilization,
+        DEFAULT_QUOTA_GATE.downshiftUtilization,
+      ),
+      pauseUtilization: pickNumber(quotaRaw.pauseUtilization, DEFAULT_QUOTA_GATE.pauseUtilization),
+    },
+    rule0: resolveRule0(source.rule0),
+  };
+}

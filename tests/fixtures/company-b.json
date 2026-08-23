@@ -1,0 +1,102 @@
+{
+  "routing": {
+    "enabled": true,
+    "mode": "advise",
+    "fallbackModelId": "gpt-4.1-mini",
+    "stickyModelWithinIssue": false
+  },
+  "providers": {
+    "permitted": ["openrouter"],
+    "preferenceOrder": ["openrouter"],
+    "claudePaygEnabled": true,
+    "claudeFamilyProvider": "teamclaude",
+    "claudeFamilies": ["claude"]
+  },
+  "models": [
+    {
+      "id": "gpt-4.1-mini",
+      "family": "gpt",
+      "tier": "small",
+      "quality": 52,
+      "costPerMTokIn": 0.4,
+      "costPerMTokOut": 1.6,
+      "contextWindow": 128000,
+      "capabilities": ["tools", "structured-output"],
+      "providers": ["openrouter"],
+      "enabled": true
+    },
+    {
+      "id": "gpt-4.1",
+      "family": "gpt",
+      "tier": "strong",
+      "quality": 82,
+      "costPerMTokIn": 2.0,
+      "costPerMTokOut": 8.0,
+      "contextWindow": 128000,
+      "capabilities": ["tools", "structured-output", "vision"],
+      "providers": ["openrouter"],
+      "enabled": true
+    },
+    {
+      "id": "claude-sonnet-5",
+      "family": "claude",
+      "tier": "strong",
+      "quality": 88,
+      "costPerMTokIn": 3.0,
+      "costPerMTokOut": 15.0,
+      "contextWindow": 200000,
+      "capabilities": ["tools", "structured-output", "vision", "long-context"],
+      "providers": ["openrouter"],
+      "enabled": true
+    },
+    {
+      "id": "glm-4.6",
+      "family": "glm",
+      "tier": "strong",
+      "quality": 74,
+      "costPerMTokIn": 0.5,
+      "costPerMTokOut": 2.0,
+      "contextWindow": 200000,
+      "capabilities": ["tools", "structured-output", "long-context"],
+      "providers": ["opencode-go"],
+      "enabled": true
+    }
+  ],
+  "taskClasses": [
+    { "key": "mechanical", "qualityFloor": 50, "maxTier": "small" },
+    { "key": "implementation", "qualityFloor": 80 },
+    { "key": "review", "qualityFloor": 80, "requiredCapabilities": ["structured-output"] },
+    { "key": "architecture", "qualityFloor": 85 }
+  ],
+  "tiering": {
+    "signalWeights": {
+      "filesTouched": 2,
+      "ambiguity": 30,
+      "blastRadius": 5,
+      "novelty": 5
+    },
+    "thresholds": { "small": 0, "standard": 20, "strong": 40, "frontier": 90 },
+    "defaultTier": "small"
+  },
+  "budget": {
+    "monthlyCapUsd": 60,
+    "warnFraction": 0.5,
+    "downshiftFraction": 0.7,
+    "haltFraction": 0.9
+  },
+  "quotaGate": {
+    "enabled": false,
+    "statusUrl": "",
+    "apiKeySecretRef": null,
+    "windows": ["unified5h", "unified7d"],
+    "warnUtilization": 0.7,
+    "downshiftUtilization": 0.85,
+    "pauseUtilization": 0.95
+  },
+  "rule0": {
+    "enabled": true,
+    "deterministicPatterns": [
+      { "pattern": "\\bbump the version\\b", "tool": "the release script" }
+    ]
+  }
+}
