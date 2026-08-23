@@ -10,6 +10,50 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-23
+
+### Added
+
+- **`npm run rehearse` — the two-company acceptance rehearsal**
+  (`scripts/acceptance-rehearsal.mjs`). The acceptance criterion is that ONE
+  install serves a SECOND company with no code edits, and proving it live needs
+  instance authority this plugin does not have. This proves every part of it
+  that does not: it loads the **built** `dist/worker.js` (the tests load
+  `src/`), runs a **single** `createPlugin()` and a **single** `setup(ctx)` for
+  both companies — the production topology, where one worker process keeps
+  companies apart through `ctx.config.get(companyId)` alone — and emits the five
+  numbered evidence items the operator captures live, so the live run is a diff
+  against a known-good transcript rather than an open question. Takes real
+  company ids and config paths via env; `--json` writes a machine-readable
+  transcript. `tests/rehearsal.spec.ts` runs it as part of `npm test`, so the
+  acceptance criterion cannot be broken without a red build and there is no
+  separate CI wiring to keep in sync.
+- The rehearsal also checks mechanically what was previously only asserted in
+  prose: the shipped bundle contains no company UUID and branches on no company
+  id literal.
+
+### Fixed
+
+- The README's Status section still said `0.1.0` after the `0.1.1` release.
+
+### Notes
+
+- No behaviour change here; the engine is untouched by this entry.
+- Building the rehearsal corrected the operator runbook, which said a refused
+  Claude route yields `no-eligible-model`. In a company that configures
+  `routing.fallbackModelId` the outcome is `selected` on the fallback, so the
+  evidence to check is "a `claude-block` rejection is present and no Claude
+  model was served", not the outcome value.
+- Pulling that thread surfaced a real hole, tracked separately in **TOG-228** and
+  **fixed in `0.2.0` below**, which this entry now sits on top of:
+  `routing.fallbackModelId` was returned without consulting the rejection that
+  eliminated it, so a fallback naming a Claude model was served even with
+  `claudePaygEnabled: false` and every Claude model reachable only via
+  `openrouter` — straight through owner rule 1. The pin and stickiness paths
+  already judged their candidate against the hard gates; the fallback path was
+  the one that did not. Fixed under TOG-228, not here. Until it lands, evidence
+  item 4 of the TOG-156 acceptance is not sound.
+
 ## [0.2.0] - 2026-08-23
 
 Findings from the independent QA review in TOG-228. Every item below was

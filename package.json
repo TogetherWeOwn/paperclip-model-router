@@ -1,6 +1,6 @@
 {
   "name": "@togetherweown/paperclip-model-router",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Paperclip plugin: cost-efficient model routing. Picks the cheapest model that clears the quality floor; OmniRoute resolves the provider.",
   "license": "UNLICENSED",
@@ -27,8 +27,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify": "npm run typecheck && npm run test && npm run build && npm run verify:host",
-    "verify:host": "node scripts/verify-against-host.mjs"
+    "verify": "npm run typecheck && npm run test && npm run build && npm run verify:host && npm run rehearse",
+    "verify:host": "node scripts/verify-against-host.mjs",
+    "rehearse": "node scripts/acceptance-rehearsal.mjs"
   },
   "dependencies": {
     "@paperclipai/plugin-sdk": "2026.817.0"
