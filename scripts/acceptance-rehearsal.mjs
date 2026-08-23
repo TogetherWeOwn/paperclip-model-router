@@ -375,6 +375,26 @@ check(
   `outcome=${archBlocked.outcome} model=${archBlocked.modelId} (B's fallback is ${B.routing.fallbackModelId})`,
 );
 
+// The check above holds only because B's fallback happens to be a non-Claude
+// model. The hostile case — the one TOG-228 found live — is a fallback that
+// NAMES a Claude model: it is in B's table so config validation accepts it, and
+// before the fix it was returned without ever consulting the `claude-block`
+// rejection that had just eliminated it. Point the fallback straight at the
+// blocked model and confirm the block outranks it.
+configs.set(COMPANY_B, {
+  ...storedB,
+  providers: { ...storedB.providers, claudePaygEnabled: false },
+  routing: { ...storedB.routing, fallbackModelId: "claude-sonnet-5" },
+});
+const archHostile = (await route(COMPANY_B, { taskClass: "architecture" })).body.decision;
+console.log(`  company B, PAYG off and fallback pointed AT claude-sonnet-5: ${archHostile.outcome} -> ${archHostile.modelId}`);
+for (const line of archHostile.trace) console.log(`      ${line}`);
+check(
+  "a fallback naming a Claude model does not cross the Claude block (TOG-228 defect 1)",
+  archHostile.modelId === null || !claudeIds.has(archHostile.modelId),
+  `outcome=${archHostile.outcome} model=${archHostile.modelId} fallback=claude-sonnet-5`,
+);
+
 configs.set(COMPANY_B, storedB);
 const archRestored = (await route(COMPANY_B, { taskClass: "architecture" })).body.decision;
 check(
