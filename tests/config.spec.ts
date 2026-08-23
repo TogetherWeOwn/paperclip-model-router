@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import { resolveConfig } from "../src/config/resolve.js";
 import { ROUTER_CONFIG_SCHEMA } from "../src/config/schema.js";
+import { CLAUDE_ID_PATTERN_SOURCE_ANY_CASE, idNamesClaude } from "../src/constants.js";
 import { readFixture } from "./helpers.js";
 
 type ValidateFn = ((data: unknown) => boolean) & { errors?: unknown[] | null };
@@ -131,6 +132,100 @@ describe("instanceConfigSchema", () => {
     const property = (ROUTER_CONFIG_SCHEMA.properties.quotaGate.properties as Record<string, { format?: string }>)
       .apiKeySecretRef;
     expect(property?.format).toBe("secret-ref");
+  });
+
+  // --- TOG-237 -------------------------------------------------------------
+
+  function modelRow(id: string, family: string) {
+    return {
+      models: [
+        {
+          id,
+          family,
+          tier: "frontier",
+          quality: 95,
+          costPerMTokIn: 15,
+          costPerMTokOut: 75,
+          contextWindow: 200_000,
+          providers: ["openrouter"],
+        },
+      ],
+    };
+  }
+
+  it("refuses a Claude id filed under a non-Claude family at the persisting write", () => {
+    // `POST /plugins/:id/config` validates here and never calls
+    // `onValidateConfig`, so this is the only layer that can refuse the write
+    // itself. The reported attack config, rejected.
+    expect(hostValidator()(modelRow("claude-opus-5", "gpt"))).toBe(false);
+  });
+
+  it("refuses it whatever the casing, because `pattern` has no /i flag", () => {
+    const validate = hostValidator();
+    // The bare source `claude|anthropic` would have matched the first of these
+    // and missed the rest. Case-sensitivity in a Claude check is the TOG-228
+    // defect one layer down; it must not reappear here.
+    for (const id of ["claude-opus-5", "CLAUDE_4_5_HAIKU", "Claude-Sonnet-5", "AnThRoPiC/claude-3"]) {
+      expect(validate(modelRow(id, "gpt")), `${id} was accepted`).toBe(false);
+    }
+  });
+
+  it("accepts the labels that are actually correct", () => {
+    const validate = hostValidator();
+    for (const [id, family] of [
+      ["claude-opus-5", "claude"],
+      ["CLAUDE_4_5_HAIKU", "Claude"],
+      ["anthropic/claude-opus-5", "anthropic"],
+      ["qwen3-coder", "qwen"], // no Claude id, no constraint
+      ["gpt-5", "gpt"],
+    ]) {
+      expect(validate(modelRow(id!, family!)), `${id}/${family} was rejected`).toBe(true);
+    }
+  });
+
+  it("is honest about being a SUBSET of the validator's rule", () => {
+    // The rule the validator enforces reads `providers.claudeFamilies` from
+    // another branch of the same document. Draft-07 cannot do that, so this
+    // config passes the schema and is still refused by `onValidateConfig`
+    // (tests/gate-integrity.spec.ts) and still confined by the engine.
+    expect(
+      hostValidator()({
+        providers: { claudeFamilies: ["claude"] },
+        ...modelRow("claude-opus-5", "anthropic"),
+      }),
+    ).toBe(true);
+  });
+
+  it("Ajv's `$data` is not an option, which is why the above is a subset", () => {
+    // Proof rather than assertion, since the whole justification rests on it.
+    // This is the host's exact construction; a `$data` reference is a
+    // schema-COMPILE error under it, not a weaker check.
+    const ajv = new Ajv({ allErrors: true, logger: false });
+    expect(() =>
+      ajv.compile({
+        type: "object",
+        properties: { family: { type: "string" }, families: { type: "array" } },
+        allOf: [{ then: { properties: { family: { enum: { $data: "2/families" } } } }, if: {} }],
+      } as unknown as object),
+    ).toThrow(/must be array/);
+  });
+
+  it("the case-folded pattern agrees with the RegExp the engine uses", () => {
+    const folded = new RegExp(CLAUDE_ID_PATTERN_SOURCE_ANY_CASE);
+    for (const id of [
+      "claude-opus-5",
+      "CLAUDE_4_5_HAIKU",
+      "Claude-Sonnet-5",
+      "anthropic/claude-3",
+      "AnThRoPiC",
+      "qwen3-coder",
+      "gpt-5",
+      "glm-4.6",
+      "minimax-m2.5",
+      "clau-de", // near miss, must not match either
+    ]) {
+      expect(folded.test(id), `disagreement on ${id}`).toBe(idNamesClaude(id));
+    }
   });
 });
 

@@ -10,6 +10,78 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-23
+
+### Fixed
+
+- **The Claude block no longer trusts a config-supplied `family` field
+  (TOG-237).** `isClaudeFamily` decided membership entirely from
+  `models[].family`, which the company supplies. A plain mislabel —
+  `{ "id": "claude-opus-5", "family": "gpt", "providers": ["openrouter"] }` —
+  made the function return false, so `permittedProvidersFor` never reached the
+  claude-block branch and OpenRouter served the model with
+  `outcome: "selected"`, an empty `rejections` array and not one trace line.
+  The gate did not fail; it was never asked. Reproduced on v0.2.1 before the
+  fix. This was the last route by which a Claude model could reach a
+  non-teamclaude provider through the plugin, and the providers it would have
+  reached are real: the OmniRoute catalogue read on 2026-08-22 carries 337 ids
+  matching `/claude|anthropic/i` across `openrouter`, `opencode`, `theoldllm`,
+  `combo` and `duckduckgo-web`.
+
+  Closed in three layers, because only the first of them is the gate:
+
+  1. **The engine** (`src/engine/select.ts`) now classifies a model as Claude if
+     EITHER its id matches `/claude|anthropic/i` OR its declared family is in
+     `providers.claudeFamilies`. The union is deliberate: configuration can
+     still WIDEN the Claude block over a model whose id does not say "claude",
+     but it can no longer narrow it off one that does. Owner rule 1 no longer
+     depends on configuration being correct. This governs the block, the pooled
+     quota gate, and therefore the fallback, the pin and stickiness, all of
+     which are judged against the same `claude-block` rejection.
+  2. **`onValidateConfig`** now returns `ok: false` for a model whose id names
+     Claude but whose family is not in `providers.claudeFamilies` — it reported
+     `ok: true` on exactly this config before. The inverse (a non-Claude id
+     filed under a Claude family) is a warning, not an error: it only ever
+     widens the block, so it cannot leak, but it silently confines a
+     non-Anthropic model and reads as an outage.
+  3. **`instanceConfigSchema`** refuses a Claude/Anthropic id whose `family`
+     does not also name Claude or Anthropic. `POST /plugins/:id/config` validates
+     here and never calls `onValidateConfig`, so this is the only layer that can
+     refuse the *write*.
+
+- A config that mislabels a model now says so **in the trace on every decision**,
+  and the `claude-block` rejection reason names the mislabel, so the original
+  complaint — that this failed silently — does not survive in a weaker form.
+
+### Notes for operators
+
+- **This schema rule is a strict SUBSET of the validator rule, on purpose, and
+  the difference is documented rather than papered over.** The validator's rule
+  reads `providers.claudeFamilies` from another branch of the same document.
+  JSON Schema draft-07 cannot express a cross-branch instance reference; Ajv's
+  `$data` extension can, but the host builds its validator as
+  `new Ajv({ allErrors: true })` with `$data` off, where a `$data` reference is
+  a schema-COMPILE error that would fail the install rather than a weaker check.
+  Verified, not assumed — `tests/config.spec.ts` asserts the throw. So
+  `{ "id": "claude-opus-5", "family": "anthropic" }` with
+  `claudeFamilies: ["claude"]` passes the schema, is refused by
+  `onValidateConfig`, and is confined by the engine regardless. The enforcement
+  point is the engine.
+- **Keying the block on the model id can in principle confine a non-Anthropic
+  model that borrows the name.** Checked rather than assumed: of the 1,422 ids
+  in the OmniRoute catalogue on 2026-08-22, 337 match the pattern and all 153
+  distinct model names among them are Anthropic Claude models. There is no false
+  positive to confine today. If the catalogue ever gains a third-party model with
+  "claude" or "anthropic" in its name, it will be wrongly confined to
+  `claudeFamilyProvider` — a refusal, which is the safe direction, and visible in
+  the trace.
+- **Existing configs may now be refused at write time.** A company whose model
+  table files a Claude id under a non-Claude family was already misconfigured and
+  was silently bypassing the Claude block; it must fix the `family` value or add
+  that family to `providers.claudeFamilies` before its next config write. Both
+  shipped fixtures are unaffected, and routing behaviour for a correctly labelled
+  table is byte-for-byte unchanged.
+
 ## [0.2.1] - 2026-08-23
 
 ### Added

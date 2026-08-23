@@ -10,6 +10,7 @@
  * per company. See docs/OPERATIONS.md.
  */
 
+import { CLAUDE_ID_PATTERN_SOURCE_ANY_CASE } from "../constants.js";
 import { MODEL_TIER_ORDER } from "../engine/types.js";
 
 const TIERS = [...MODEL_TIER_ORDER];
@@ -120,6 +121,42 @@ export const ROUTER_CONFIG_SCHEMA = {
         type: "object",
         additionalProperties: false,
         required: ["id", "family", "tier", "quality", "costPerMTokIn", "costPerMTokOut", "contextWindow"],
+        // TOG-237, and read the limitation before trusting this.
+        //
+        // The rule the validator enforces is "a model whose id names Claude must
+        // declare a family that is in `providers.claudeFamilies`". That rule is
+        // NOT expressible here. It reads a value from a different branch of the
+        // same document, and draft-07 has no mechanism for that. Ajv's `$data`
+        // extension does, but the host builds its validator as
+        // `new Ajv({ allErrors: true })` with `$data` off, so a `$data`
+        // reference is not a weaker check — it is a schema-compile error that
+        // would fail the install. Verified, not assumed.
+        //
+        // What IS expressible is the self-contained half: a model whose id names
+        // Claude must not declare a family that does not. That refuses the
+        // reported attack (`{"id":"claude-opus-5","family":"gpt"}`) at the
+        // persisting write, on hosts where `onValidateConfig` is never called.
+        //
+        // It is deliberately a SUBSET and must not be read as the enforcement of
+        // owner rule 1. `{"id":"claude-opus-5","family":"anthropic"}` with
+        // `claudeFamilies: ["claude"]` still satisfies this schema and still
+        // fails the validator's rule. The enforcement point is the ENGINE, which
+        // classifies on the id and cannot be reconfigured out of it — see
+        // `idNamesClaude` in src/constants.ts.
+        if: {
+          required: ["id"],
+          properties: { id: { type: "string", pattern: CLAUDE_ID_PATTERN_SOURCE_ANY_CASE } },
+        },
+        then: {
+          properties: {
+            family: {
+              type: "string",
+              pattern: CLAUDE_ID_PATTERN_SOURCE_ANY_CASE,
+              description:
+                "This model's id names Claude or Anthropic, so its family must too. A Claude model filed under a non-Claude family used to bypass the Claude block entirely (TOG-237).",
+            },
+          },
+        },
         properties: {
           id: { type: "string", minLength: 1, title: "Model id" },
           family: { type: "string", minLength: 1, title: "Family" },

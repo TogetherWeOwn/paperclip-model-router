@@ -12,6 +12,9 @@
  *   1. Rule 0        — does this need a model at all?
  *   2. Capability    — context window, tools, structured output, modality.
  *   3. Claude block  — a Claude-family model resolves to one provider, or not at all.
+ *                      Membership is decided by the model id first and the
+ *                      declared `family` second, so no config can opt a model
+ *                      out of it. See TOG-237 and `idNamesClaude`.
  *   4. Quality floor — reject anything below the floor for this task class.
  *   5. Cheapest survivor wins.
  *
@@ -30,6 +33,7 @@
  */
 
 import type { RouterConfig } from "../config/types.js";
+import { idNamesClaude } from "../constants.js";
 import {
   MODEL_TIER_ORDER,
   type Candidate,
@@ -142,9 +146,40 @@ function expectedCostUsd(model: ModelEntry, descriptor: TaskDescriptor): number 
   );
 }
 
-function isClaudeFamily(model: ModelEntry, config: RouterConfig): boolean {
+/** True when the company's config declares this model's family to be Claude. */
+function familyDeclaresClaude(model: ModelEntry, config: RouterConfig): boolean {
   const family = model.family.toLowerCase();
   return config.providers.claudeFamilies.some((entry) => entry.toLowerCase() === family);
+}
+
+/**
+ * Is this model governed by the Claude block?
+ *
+ * The id is checked FIRST and independently of configuration. This used to read
+ * the declared `family` and nothing else, which made owner rule 1 a promise the
+ * config could quietly withdraw: `{ "id": "claude-opus-5", "family": "gpt" }`
+ * returned false here, `permittedProvidersFor` never reached the claude-block
+ * branch, and OpenRouter served it. TOG-237.
+ *
+ * Union, not replacement. `claudeFamilies` still widens the block over models
+ * whose ids do not say "claude"; it can no longer narrow it off ones that do.
+ */
+function isClaudeFamily(model: ModelEntry, config: RouterConfig): boolean {
+  return idNamesClaude(model.id) || familyDeclaresClaude(model, config);
+}
+
+/**
+ * Models the config mislabels: the id names Claude, the declared family does not.
+ *
+ * These now route correctly — the id check above sees them — but a config that
+ * disagrees with itself about which models are Claude is a defect the operator
+ * has to be told about, and the original report's complaint was precisely that
+ * this happened with "no error, no warning, no trace line".
+ */
+function mislabelledClaudeModels(config: RouterConfig): ModelEntry[] {
+  return config.models.filter(
+    (model) => idNamesClaude(model.id) && !familyDeclaresClaude(model, config),
+  );
 }
 
 /**
@@ -235,6 +270,19 @@ export function selectModel(input: SelectInput): RoutingDecision {
       `claude quota gate is enabled but utilization is unknown${
         runtime.claudeQuotaError ? ` (${runtime.claudeQuotaError})` : ""
       } — the gate is OPEN and Claude work is not being throttled`,
+    );
+  }
+
+  // A config that disagrees with itself about which models are Claude is safe
+  // now — the id check governs regardless — but it is still a defect, and the
+  // whole complaint in TOG-237 was that it happened silently. Say it once, up
+  // front, on every decision until the operator fixes the table.
+  const mislabelled = mislabelledClaudeModels(config);
+  if (mislabelled.length > 0) {
+    trace.push(
+      `config mislabels ${mislabelled.length} model(s) as non-Claude: ${mislabelled
+        .map((model) => `${model.id} declares family "${model.family}"`)
+        .join(", ")} — the id names Claude, so the Claude block governs them anyway; fix providers.claudeFamilies or the family field`,
     );
   }
 
@@ -357,7 +405,11 @@ export function selectModel(input: SelectInput): RoutingDecision {
       rejections.push({
         modelId: model.id,
         stage: "claude-block",
-        reason: `Claude-family model may only be served by ${config.providers.claudeFamilyProvider} while Claude PAYG is disabled`,
+        reason:
+          `Claude-family model may only be served by ${config.providers.claudeFamilyProvider} while Claude PAYG is disabled` +
+          (idNamesClaude(model.id) && !familyDeclaresClaude(model, config)
+            ? ` (classified by id: the config declares family "${model.family}", which is not in providers.claudeFamilies)`
+            : ""),
       });
       continue;
     }

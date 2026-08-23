@@ -135,6 +135,62 @@ for (const [label, config] of credentialAttempts) {
   );
 }
 
+// A Claude model filed under a non-Claude family must be refused at write time.
+//
+// TOG-237. The engine is the gate — it classifies on the model id and cannot be
+// reconfigured out of the Claude block — but the same argument as above applies
+// to the write itself: `POST /plugins/:id/config` validates here and never calls
+// `onValidateConfig`, so if this schema accepts the row, the row is persisted and
+// the operator is told nothing. Run against the host's own Ajv rather than ours,
+// because "our unit test says the schema rejects it" is a claim about our Ajv.
+const mislabelAttempts = [
+  ["lower case", "claude-opus-5"],
+  ["upper case", "CLAUDE_4_5_HAIKU"],
+  ["mixed case", "Claude-Sonnet-5"],
+  ["vendor prefix", "AnThRoPiC/claude-3"],
+];
+
+for (const [label, id] of mislabelAttempts) {
+  const config = {
+    models: [
+      {
+        id,
+        family: "gpt",
+        tier: "frontier",
+        quality: 95,
+        costPerMTokIn: 15,
+        costPerMTokOut: 75,
+        contextWindow: 200000,
+        providers: ["openrouter"],
+      },
+    ],
+  };
+  report(
+    validateConfig(config) === false,
+    `the host validator rejects a Claude id filed under a non-Claude family: ${label} (${id})`,
+  );
+}
+
+// ...and a correctly labelled Claude row must still be accepted, or no company
+// could configure Claude at all.
+report(
+  validateConfig({
+    models: [
+      {
+        id: "claude-opus-5",
+        family: "claude",
+        tier: "frontier",
+        quality: 95,
+        costPerMTokIn: 15,
+        costPerMTokOut: 75,
+        contextWindow: 200000,
+        providers: ["teamclaude"],
+      },
+    ],
+  }) === true,
+  "the host validator accepts a correctly labelled Claude row",
+);
+
 // ...and the shape the secret picker actually submits must still be accepted,
 // or the quota gate could never be configured at all.
 report(
