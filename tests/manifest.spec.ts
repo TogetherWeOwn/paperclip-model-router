@@ -39,16 +39,13 @@ describe("manifest", () => {
   });
 
   it("requests only capabilities it uses", () => {
-    // Least privilege: this plugin reads config and issues, writes its own
-    // state, calls one HTTP endpoint, resolves one secret ref, and registers a
-    // tool and two routes. It asks for no issue-write or agent-control power.
+    // Least privilege: this plugin writes its own state, calls one HTTP
+    // endpoint, resolves one secret ref, and registers a tool and two routes.
+    // It asks for no issue-write or agent-control power.
     expect([...manifest.capabilities].sort()).toEqual([
-      "activity.log.write",
       "agent.tools.register",
       "api.routes.register",
-      "companies.read",
       "http.outbound",
-      "issues.read",
       "metrics.write",
       "plugin.state.read",
       "plugin.state.write",
@@ -56,6 +53,37 @@ describe("manifest", () => {
     ]);
     for (const forbidden of ["issues.update", "issues.create", "agents.invoke", "agents.pause"]) {
       expect(manifest.capabilities).not.toContain(forbidden);
+    }
+  });
+
+  it("declares no capability the worker never exercises", () => {
+    // The list above is a pin, and a pin only records the last decision — it
+    // cannot notice that a capability stopped being used, which is how
+    // `companies.read`, `issues.read` and `activity.log.write` survived in the
+    // manifest without a single call site (TOG-228). This one reads the source.
+    //
+    // `ctx.config` and `ctx.logger` require no capability host-side, and the
+    // `:issueId` in the route below is resolved to a company by the HOST before
+    // the worker is invoked, so it costs this plugin no `issues.read`.
+    const worker = readFileSync(join(root, "src", "worker.ts"), "utf8");
+    const usedBy: Record<string, RegExp> = {
+      "plugin.state.read": /ctx\.state\.get\(/,
+      "plugin.state.write": /ctx\.state\.set\(/,
+      "http.outbound": /ctx\.http\.fetch\(/,
+      "secrets.read-ref": /ctx\.secrets\.resolve\(/,
+      "metrics.write": /ctx\.metrics\.write\(/,
+      "agent.tools.register": /ctx\.tools\.register\(/,
+    };
+    for (const capability of manifest.capabilities) {
+      // `api.routes.register` is evidenced by the manifest's own apiRoutes
+      // block rather than by a worker call site.
+      if (capability === "api.routes.register") {
+        expect(manifest.apiRoutes?.length ?? 0).toBeGreaterThan(0);
+        continue;
+      }
+      const probe = usedBy[capability];
+      expect(probe, `${capability} is declared but this test knows no call site for it`).toBeDefined();
+      expect(probe!.test(worker), `${capability} is declared but never exercised`).toBe(true);
     }
   });
 

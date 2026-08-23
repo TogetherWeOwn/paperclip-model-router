@@ -148,7 +148,7 @@ are deliberately the safe end of each switch.
 |---|---|---|---|
 | `enabled` | boolean | `true` | Master switch. `false` returns `disabled` for every decision and the caller keeps its own model. |
 | `mode` | `"advise"` \| `"enforce"` | `"advise"` | `advise` records and returns a decision. `enforce` additionally applies it where the host permits. |
-| `fallbackModelId` | string \| null | `null` | Model used when nothing survives the gates. `null` means refuse rather than silently downgrade. |
+| `fallbackModelId` | string \| null | `null` | Model used when nothing survives the gates. `null` means refuse rather than silently downgrade. Must be in this company's model table — an id no gate has vetted is a config error. It may cross the tier ceiling, the quality floor and the capability checks; it may **not** cross the Claude block, the permitted-provider list or the quota pause ([ADR 0006](docs/decisions/0006-the-fallback-crosses-estimates-not-constraints.md)). When it is used, the decision carries `fallbackUsed: true`. |
 | `stickyModelWithinIssue` | boolean | `true` | Keep the model already used on an issue while it still clears the hard gates, to preserve the prompt cache. |
 
 ### `providers`
@@ -189,8 +189,12 @@ company** actually pays.
 | `requiredCapabilities` | string[] | no | Added to whatever the caller requires. |
 | `pinnedModelId` | string | no | Class-level pin. Must exist in `models`. |
 
-An unconfigured task class routes with a floor of `0` — permissive — and the
-trace says so. Configure your classes.
+Naming a task class this company has not configured is **refused**
+(`no-eligible-model`), not routed with a floor of `0`. Through `v0.1.1` it was
+permissive, which meant a one-character typo in a class key silently deleted the
+quality floor and handed the decision to the cheapest row in the table — cost
+beating quality, which this engine forbids. Sending no `taskClass` at all is
+unaffected: a caller that names no class is making no claim about quality.
 
 ### `tiering`
 

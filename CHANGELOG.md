@@ -10,6 +10,88 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-23
+
+Findings from the independent QA review in TOG-228. Every item below was
+reproduced against `v0.1.1` before it was fixed, and each has a regression test
+in `tests/gate-integrity.spec.ts` written as the attack that worked.
+
+### Security
+
+- **`routing.fallbackModelId` crossed the Claude block.** Rule 1 says a
+  Claude-family model resolves to `teamclaude` or not at all while PAYG is off.
+  The fallback was applied without consulting a single rejection, so a company
+  whose Claude models were all `claude-block`-rejected still received
+  `claude-opus-5` with `outcome: "selected"`. The same path bypassed the Claude
+  **quota pause**: `gates.claudeQuota: "halt"` and a Claude model selected
+  anyway. The fallback may now cross the *estimates* — tier ceiling, quality
+  floor, capability, context window — and may not cross a hard constraint:
+  `not-in-table`, `claude-block`, `provider-not-permitted` or `quota-gate`. See
+  ADR 0006.
+- **A credential could be stored in a company's config.** `format: "secret-ref"`
+  is registered host-side as
+  `ajv.addFormat("secret-ref", { validate: () => true })` — a picker hint with
+  no validation behind it — and `format` is a string-only keyword regardless, so
+  it was inert on this object-typed field. The host's secret-ref extractor
+  ignores any value that is not literally `{ type: "secret_ref" }`, so
+  `{"apiKey": "sk-ant-..."}` validated, was not recognised as a binding, and was
+  persisted verbatim. `quotaGate.apiKeySecretRef` now pins the exact shape in
+  `instanceConfigSchema` with `additionalProperties: false` — which is what the
+  persisting write actually enforces — and `onValidateConfig` repeats the check.
+- **The gitleaks path allowlist was too broad.** `README.md`, `docs/*.md` and
+  `CHANGELOG.md` were allowlisted by path, which disables *every* rule for those
+  files: the two custom rules and the whole gitleaks default ruleset with them.
+  Those are exactly the files a credential gets pasted into by accident. The
+  path allowlist is gone; the narrower regex allowlist still covers the strings
+  the docs legitimately contain.
+
+### Fixed
+
+- **The budget halt did not halt.** Both the stickiness branch and the fallback
+  branch returned a model before the halt check was reached, so a company at 99%
+  of its cap kept spending and the trace did not even mention the refusal. The
+  halt now sits directly below the pin, above every other route out of the
+  engine. A pin remains the one documented exception.
+- **A mistyped `taskClass` silently deleted the quality floor.** An unconfigured
+  class key fell through to floor `0`, so `architecture` selected
+  `claude-sonnet-5` at floor 85 while `architecure` selected `qwen3-coder` at
+  quality 45 — cost beating the quality floor, reached by a typo. Naming a class
+  this company has not configured is now refused. Sending no `taskClass` at all
+  is unchanged.
+- **The scoped HTTP route had its own routing engine.** `POST /issues/:id/route`
+  called `selectModel` directly rather than the shared decision path, so it
+  applied no quota gate, no stickiness, wrote no decision-log entry and emitted
+  no metric — the surface most likely to be hit by hand was the one nothing
+  recorded. All four surfaces now go through one function.
+- **An unreadable quota gate looked like a healthy one.** The reader fails soft
+  on purpose, but the resulting `gates.claudeQuota: "ok"` means *unknown*, not
+  *healthy*. When the gate is enabled and utilization could not be read, the
+  trace now says so and carries the reason.
+
+### Changed
+
+- `RoutingDecision` gains `fallbackUsed: boolean`. A fallback clears every hard
+  constraint but has *not* cleared the capability, context or quality checks, so
+  a caller treating `outcome: "selected"` as "this model can do the job" needs
+  to read this too.
+- `routing.fallbackModelId` naming a model outside the company's table is now an
+  `onValidateConfig` **error** rather than a warning. An id no gate has seen is
+  exactly how a Claude model reaches a PAYG provider.
+- Dropped three capabilities the worker never exercised: `companies.read`,
+  `issues.read` and `activity.log.write`. `tests/manifest.spec.ts` no longer
+  only pins the list — it checks each declared capability against a call site in
+  `src/worker.ts`, because a pin records the last decision and cannot notice a
+  capability that stopped being used.
+
+### Compatibility
+
+Config written for `0.1.x` continues to validate, with two deliberate
+exceptions: a `quotaGate.apiKeySecretRef` that was not a real secret reference
+is now rejected at write time, and a `routing.fallbackModelId` outside the model
+table is now an error. Callers that pass a `taskClass` absent from the company's
+`taskClasses` will start receiving `no-eligible-model` where they previously
+received the cheapest model in the table.
+
 ## [0.1.1] - 2026-08-23
 
 ### Fixed

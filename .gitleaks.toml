@@ -21,11 +21,17 @@ tags = ["key", "omniroute"]
 
 [allowlist]
 description = "Config keys and documentation that name a credential without containing one"
-paths = [
-  '''README\.md''',
-  '''docs/.*\.md''',
-  '''CHANGELOG\.md''',
-]
+# No `paths` entry, deliberately.
+#
+# This used to allowlist README.md, docs/*.md and CHANGELOG.md by path. A path
+# allowlist disables EVERY rule for those files — the two rules above and the
+# whole gitleaks default ruleset with them — so a real AWS key, GitHub token or
+# private key pasted into the README would have been committed silently. Those
+# are exactly the files a credential gets pasted into by accident.
+#
+# The regex allowlist below is enough on its own: it exempts the specific
+# credential-shaped strings the docs legitimately contain, everywhere, and
+# leaves every other rule live in every file. TOG-228.
 regexes = [
   # The config field holds a Paperclip secret *reference*, never a value.
   '''apiKeySecretRef''',
@@ -33,4 +39,11 @@ regexes = [
   '''ANTHROPIC_API_KEY''',
   # Test fixtures deliberately assert that credential-shaped strings are rejected.
   '''sk-live-not-a-reference''',
+  # A Paperclip secret ID is a UUID pointer, not a value — that is the whole
+  # point of `format: "secret-ref"`. The tests and the host-validation script
+  # need one well-formed id to assert that the accepted shape is still accepted,
+  # and the generic-api-key rule cannot tell a UUID from a token. Exempted by
+  # exact value, so any OTHER UUID-shaped string next to a secret-ish key still
+  # trips the rule.
+  '''3f2504e0-4f89-41d3-9a0c-0305e82c3301''',
 ]

@@ -91,9 +91,59 @@ for (const file of readdirSync(FIXTURES).filter((name) => name.endsWith(".json")
 }
 
 // A pasted credential must be refused at write time, not merely discouraged.
+//
+// Only the string case was checked here originally, and the string case was
+// never the risk: `type: ["object","null"]` already refused it. The risk was an
+// OBJECT holding a value. `format: "secret-ref"` does not catch that — the host
+// registers it as `ajv.addFormat("secret-ref", { validate: () => true })`, and
+// `format` is a string-only keyword in any case — and the host's secret-ref
+// extractor ignores any value that is not literally `{ type: "secret_ref" }`,
+// so such an object was stored verbatim in the company's config row. TOG-228.
+//
+// `POST /plugins/:id/config` validates with Ajv and never calls the worker's
+// `onValidateConfig` — only the non-persisting `/config/test` does — so this
+// schema is the only thing standing between a pasted key and the database.
+// Hence these run against the host's own Ajv construction, not only in units.
+const credentialAttempts = [
+  ["a pasted string", { quotaGate: { apiKeySecretRef: "sk-live-not-a-reference" } }],
+  [
+    "an object holding a value",
+    { quotaGate: { apiKeySecretRef: { apiKey: "sk-live-not-a-reference" } } },
+  ],
+  [
+    "a value smuggled alongside a valid reference",
+    {
+      quotaGate: {
+        apiKeySecretRef: {
+          type: "secret_ref",
+          secretId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+          value: "sk-live-not-a-reference",
+        },
+      },
+    },
+  ],
+  [
+    "a secret id that is not a Paperclip secret",
+    { quotaGate: { apiKeySecretRef: { type: "secret_ref", secretId: "teamclaude" } } },
+  ],
+];
+
+for (const [label, config] of credentialAttempts) {
+  report(
+    validateConfig(config) === false,
+    `the host validator rejects a credential at the secret-ref field: ${label}`,
+  );
+}
+
+// ...and the shape the secret picker actually submits must still be accepted,
+// or the quota gate could never be configured at all.
 report(
-  validateConfig({ quotaGate: { apiKeySecretRef: "sk-live-pasted-key" } }) === false,
-  "a raw credential at the secret-ref field is rejected by the host validator",
+  validateConfig({
+    quotaGate: {
+      apiKeySecretRef: { type: "secret_ref", secretId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301" },
+    },
+  }) === true,
+  "the host validator accepts a real Paperclip secret reference",
 );
 
 // --- 3. the built worker actually loads -------------------------------------

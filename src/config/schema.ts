@@ -244,12 +244,30 @@ export const ROUTER_CONFIG_SCHEMA = {
             "Full URL of the teamclaude status endpoint as reachable from the host. Do not assume loopback.",
           default: "",
         },
+        // The shape is pinned here, not left to `format`, because `format` does
+        // not validate anything. The host registers it as
+        // `ajv.addFormat("secret-ref", { validate: () => true })` — a hint that
+        // tells the UI to show a secret picker and tells the host's extractor
+        // where to look — and JSON Schema `format` applies to strings in any
+        // case. Left open, `{"apiKey": "sk-ant-..."}` validated, was not
+        // recognised as a binding by the host's extractor, and was persisted
+        // verbatim into the company's config row. `additionalProperties: false`
+        // plus the `const` is what actually keeps a credential out. TOG-228.
         apiKeySecretRef: {
           type: ["object", "null"],
           title: "teamclaude API key",
           description:
             "Paperclip secret holding the teamclaude key. A reference, never a value — no credential is ever stored in this repo or in this config.",
           format: "secret-ref",
+          additionalProperties: false,
+          required: ["type", "secretId"],
+          properties: {
+            type: { const: "secret_ref" },
+            secretId: { type: "string", format: "uuid" },
+            version: { oneOf: [{ const: "latest" }, { type: "integer", minimum: 1 }] },
+            projectionClass: { type: "string", minLength: 1 },
+            projectionAllowlistKey: { type: ["string", "null"] },
+          },
           default: null,
         },
         windows: {
