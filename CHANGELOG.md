@@ -10,6 +10,22 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-23
+
+### Fixed
+
+- **The published tarball was not installable as documented.** `dist/` ships
+  without `node_modules`, and the plugin SDK is deliberately external to the
+  bundle, so loading `dist/worker.js` from an unpacked release failed with
+  `ERR_MODULE_NOT_FOUND: @paperclipai/plugin-sdk` — at worker start, not at
+  install. Found by downloading the real `v0.1.0` release and loading it.
+  Install instructions in the README, `docs/OPERATIONS.md` and the operator
+  runbook now include the required `npm install --omit=dev --ignore-scripts`
+  step, and CI packs, unpacks, installs runtime dependencies and loads both
+  entrypoints on every push so it cannot regress.
+- `npm pack --pack-destination` does not create its target directory, so the
+  `v0.1.0` release build failed at ENOENT after a green verify.
+
 ## [0.1.0] - 2026-08-23
 
 First release. Installs globally, configures per company.
@@ -53,5 +69,6 @@ First release. Installs globally, configures per company.
 - Budget pressure is supplied by the caller as `budgetSpentFraction`. The plugin
   does not read company spend itself; it holds no `costs.read` capability.
 
-[Unreleased]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/TogetherWeOwn/paperclip-model-router/releases/tag/v0.1.1
 [0.1.0]: https://github.com/TogetherWeOwn/paperclip-model-router/releases/tag/v0.1.0

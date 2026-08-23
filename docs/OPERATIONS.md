@@ -27,10 +27,20 @@ paperclipai plugin target
 #    Read the API base URL and version. If it is not the instance you mean, stop.
 
 # 2. Install the version-pinned tarball from the GitHub release.
-gh release download v0.1.0 \
+gh release download v0.1.1 \
   --repo TogetherWeOwn/paperclip-model-router --pattern '*.tgz' --dir /tmp
-tar -xzf /tmp/togetherweown-paperclip-model-router-0.1.0.tgz -C /opt/paperclip-plugins
-paperclipai plugin install /opt/paperclip-plugins/package
+mkdir -p /opt/paperclip-plugins/model-router
+tar -xzf /tmp/togetherweown-paperclip-model-router-0.1.1.tgz \
+  -C /opt/paperclip-plugins/model-router --strip-components=1
+
+#    The tarball ships dist/ but not node_modules. The plugin SDK is
+#    deliberately external to the bundle — bundling it would pin a private copy
+#    of the host/worker protocol — so resolve it before installing. Skipping
+#    this is ERR_MODULE_NOT_FOUND at worker start, not a clean install failure.
+cd /opt/paperclip-plugins/model-router
+npm install --omit=dev --ignore-scripts
+
+paperclipai plugin install /opt/paperclip-plugins/model-router
 
 # 3. Confirm it loaded.
 paperclipai plugin inspect togetherweown.paperclip-model-router
@@ -139,6 +149,7 @@ used. This is the safe panic switch and it affects exactly one company.
 
 | Symptom | Likely cause |
 |---|---|
+| Worker fails at start with `ERR_MODULE_NOT_FOUND: @paperclipai/plugin-sdk` | The `npm install --omit=dev` step was skipped after unpacking the tarball. The SDK is external to the bundle on purpose. |
 | Every decision is `no-eligible-model` with `provider-not-permitted` | `providers.permitted` is empty or does not intersect the model rows' `providers`. It fails closed by design. |
 | A Claude model is never selected | The Claude block: the row's providers do not include `claudeFamilyProvider` while PAYG is off. Working as intended. |
 | Claude models suddenly rejected with `quota-gate` | Pooled quota crossed `pauseUtilization`. Check the `quota` data key; utilization is a fraction, `1.0` is exhausted. |
