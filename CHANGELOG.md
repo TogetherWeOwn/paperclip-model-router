@@ -10,10 +10,50 @@ version is not present here.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.5] - 2026-08-24
+
+### Fixed
+
+- **A bare Claude id is no longer trusted to mean "teamclaude" (TOG-294, owner
+  rule 1).** v0.2.4 refused a Claude id carrying a non-teamclaude routing prefix
+  (`oc/claude-opus-5`) and permitted a **bare** one (`claude-sonnet-5`)
+  unconditionally, on the stated ground that a bare id "is resolved by a combo".
+  That ground was never checked. Measured against the live router:
+
+  - `GET /api/v1/models` returns **1,438** ids, of which **zero** are bare, and
+    **`teamclaude/*` is empty** — there is no teamclaude combo, because TOG-153
+    is not deployed.
+  - `POST /v1/messages` with `{"model": "claude-sonnet-5"}` nonetheless returned
+    **200**, echoing `"model": "anthropic/claude-sonnet-5"` — an id that is
+    *also* absent from the catalogue. Same for `claude-opus-5` and
+    `claude-fable-5`. `claude-haiku-4-5-20251001` returned 400. Whether an
+    alias table or a passthrough onto the live `anthropic` provider rewrote
+    the id is still open — it needs a management-token read of the alias map
+    — and the plugin's behaviour does not depend on the answer, because it
+    refuses the bare id either way.
+
+  An unlisted bare Claude id therefore does not fail closed at the router; it is
+  silently rewritten onto a non-teamclaude Anthropic route and served. That is
+  owner rule 1 broken by **the exact id form owner rule 3 mandates**, which is
+  why it cannot be fixed by banning bare ids.
+
+  The plugin cannot fix the router, so it refuses to walk into it. A bare Claude
+  id is now permitted only when `MODEL_ROUTER_CLAUDE_COMBO_ARMED=1` declares the
+  teamclaude combos deployed. Default off, and off blocks the model at
+  `claude-block` rather than routing it somewhere unverified.
+
+  The prior `claude-block` trace made this worse: it advised *"name the bare
+  model id and let an OmniRoute combo resolve it"*, which moved an operator off
+  a **blocked** leak and onto a **silent** one. That advice is now conditional on
+  the lane being armed, and the unarmed trace names the env var and the deploy
+  step instead.
+
 ### Changed
 
-- **`claude-lane-preflight.sh` now leads with a provider probe, not the
-  catalogue (TOG-294).** The 0.2.5 script inferred "teamclaude is not a
+- **`claude-lane-preflight.sh` leads with a provider probe, not the
+  catalogue (TOG-294).** An earlier cut of this script inferred "teamclaude is not a
   registered provider" from "`teamclaude/*` is absent from the catalogue". A
   read-only check on the routing scope — `GET /api/v1/providers/{provider}/
   models`, which answers 200 for a known provider and 400 for an unknown one —
@@ -46,56 +86,12 @@ version is not present here.
   Live result is unchanged — `teamclaude` probes **400**, so `NOT ARMED`, exit 1.
   That claim is now measured rather than inferred.
 
-### Corrected
-
-- The 0.2.5 entry below concluded from the 400 on `claude-haiku-4-5-20251001`
-  that the rewrite "is an alias table rather than a blanket passthrough". The
-  provider probe shows the destination is a **registered provider with an empty
-  model list**, so passthrough onto a live `anthropic` provider is not excluded.
-  Which of the two rewrote the id is still an open question that needs a
-  management-token read of the alias map; the plugin's behaviour does not depend
-  on the answer, because it refuses the bare id either way.
-
-## [0.2.5] - 2026-08-24
-
-### Fixed
-
-- **A bare Claude id is no longer trusted to mean "teamclaude" (TOG-294, owner
-  rule 1).** v0.2.4 refused a Claude id carrying a non-teamclaude routing prefix
-  (`oc/claude-opus-5`) and permitted a **bare** one (`claude-sonnet-5`)
-  unconditionally, on the stated ground that a bare id "is resolved by a combo".
-  That ground was never checked. Measured against the live router:
-
-  - `GET /api/v1/models` returns **1,438** ids, of which **zero** are bare, and
-    **`teamclaude/*` is empty** — there is no teamclaude combo, because TOG-153
-    is not deployed.
-  - `POST /v1/messages` with `{"model": "claude-sonnet-5"}` nonetheless returned
-    **200**, echoing `"model": "anthropic/claude-sonnet-5"` — an id that is
-    *also* absent from the catalogue. Same for `claude-opus-5` and
-    `claude-fable-5`. `claude-haiku-4-5-20251001` returned 400, so this is an
-    alias table rather than a blanket passthrough.
-
-  An unlisted bare Claude id therefore does not fail closed at the router; it is
-  silently rewritten onto a non-teamclaude Anthropic route and served. That is
-  owner rule 1 broken by **the exact id form owner rule 3 mandates**, which is
-  why it cannot be fixed by banning bare ids.
-
-  The plugin cannot fix the router, so it refuses to walk into it. A bare Claude
-  id is now permitted only when `MODEL_ROUTER_CLAUDE_COMBO_ARMED=1` declares the
-  teamclaude combos deployed. Default off, and off blocks the model at
-  `claude-block` rather than routing it somewhere unverified.
-
-  The prior `claude-block` trace made this worse: it advised *"name the bare
-  model id and let an OmniRoute combo resolve it"*, which moved an operator off
-  a **blocked** leak and onto a **silent** one. That advice is now conditional on
-  the lane being armed, and the unarmed trace names the env var and the deploy
-  step instead.
-
 ### Added
 
 - **`scripts/claude-lane-preflight.sh`** — answers "is it honest to arm this?"
-  with one **read-only** `GET /api/v1/models`; exits non-zero while
-  `teamclaude/*` is empty. It deliberately sends **no completion**: TOG-294 was
+  with two **read-only** GETs — a provider probe and `GET /api/v1/models`;
+  exits non-zero while the teamclaude lane is unproven (see **Changed**
+  above for the three-state result). It deliberately sends **no completion**: TOG-294 was
   found because a verify script sent three live Claude completions off-teamclaude
   while the owner has that lane disabled, and a preflight whose job is to check
   that a lane is safe must not use the lane to find out. Needs only a
