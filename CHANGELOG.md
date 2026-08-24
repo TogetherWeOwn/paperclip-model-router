@@ -10,6 +10,52 @@ version is not present here.
 
 ## [Unreleased]
 
+### Changed
+
+- **`claude-lane-preflight.sh` now leads with a provider probe, not the
+  catalogue (TOG-294).** The 0.2.5 script inferred "teamclaude is not a
+  registered provider" from "`teamclaude/*` is absent from the catalogue". A
+  read-only check on the routing scope — `GET /api/v1/providers/{provider}/
+  models`, which answers 200 for a known provider and 400 for an unknown one —
+  shows that inference does not hold:
+
+  | provider | probe | models in catalogue |
+  |---|---|---|
+  | `anthropic` | 200 | 0 |
+  | `claude` | 200 | 0 |
+  | `cc` | 200 | 0 |
+  | `oc` | 200 | 166 |
+  | `openrouter` | 200 | 1012 |
+  | `teamclaude` | **400** | 0 |
+
+  `anthropic` is a **registered provider contributing zero ids to the
+  catalogue**. So catalogue absence never meant "not routable", it meant "no
+  synced model list" — which is why an unlisted `anthropic/claude-sonnet-5` was
+  served. **Catalogue membership is not a containment boundary and the plugin no
+  longer treats it as one.**
+
+  For teamclaude the old check would eventually have produced a **false
+  negative**: once the provider is registered the lane can be live while its
+  catalogue is still empty, and a catalogue-only check would report `NOT ARMED`
+  forever, blocking a lane that had been deployed correctly. The result is now
+  three-state — provider unknown (`NOT ARMED`, TOG-153 outstanding), provider
+  registered but catalogue empty (`NOT ARMED`, insufficient evidence, distinct
+  next step), both signals present (`ARMED IS SUPPORTED`). Still read-only, still
+  no completion; it is two GETs instead of one.
+
+  Live result is unchanged — `teamclaude` probes **400**, so `NOT ARMED`, exit 1.
+  That claim is now measured rather than inferred.
+
+### Corrected
+
+- The 0.2.5 entry below concluded from the 400 on `claude-haiku-4-5-20251001`
+  that the rewrite "is an alias table rather than a blanket passthrough". The
+  provider probe shows the destination is a **registered provider with an empty
+  model list**, so passthrough onto a live `anthropic` provider is not excluded.
+  Which of the two rewrote the id is still an open question that needs a
+  management-token read of the alias map; the plugin's behaviour does not depend
+  on the answer, because it refuses the bare id either way.
+
 ## [0.2.5] - 2026-08-24
 
 ### Fixed
