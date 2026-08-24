@@ -232,6 +232,25 @@ export function routingPrefixOf(modelId: string): string | null {
  *     `claude-fable-5`. So an unlisted bare Claude id does not fail; it is
  *     silently rewritten onto a non-teamclaude Anthropic route and served.
  *
+ * A later read explained HOW, without sending another completion. The routing
+ * scope exposes `GET /api/v1/providers/{provider}/models`, which answers 200
+ * for a provider the router knows and 400 for one it does not:
+ *
+ *     anthropic -> 200, 0 models        oc         -> 200, 166 models
+ *     claude    -> 200, 0 models        openrouter -> 200, 1012 models
+ *     cc        -> 200, 0 models        teamclaude -> 400  (unknown provider)
+ *
+ * `anthropic` is a REGISTERED provider that contributes zero ids to the
+ * aggregate catalogue. So "absent from `/api/v1/models`" never meant "not
+ * routable" — it meant "no synced model list", and the destination the bare id
+ * was rewritten onto was a live provider all along. Catalogue membership is
+ * therefore not a containment boundary and must not be used as one.
+ *
+ * The corollary matters more than the finding: `teamclaude` answering 400 is
+ * the one hard piece of evidence that the sanctioned lane does not yet exist.
+ * That is a provider-registry fact, checked directly, not inferred from an
+ * empty catalogue slice.
+ *
  * That is owner rule 1 broken by the exact id form owner rule 3 mandates, which
  * is why it cannot be fixed by banning bare ids. It is fixed by refusing to
  * emit one until the combo that gives it its rule-1 meaning exists.
