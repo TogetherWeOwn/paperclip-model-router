@@ -713,3 +713,142 @@ describe("Claude PAYG is an owner switch, not a company one", () => {
     expect(verdict.errors?.join(" ")).toContain("not a provider owner rule 1 allows");
   });
 });
+
+// ---------------------------------------------------------------------------
+// TOG-149: the routing prefix in a model id outranks the `providers` array.
+//
+// TOG-237 moved "which models are Claude" out of config and into code. It left
+// the question one layer up — WHO SERVES a Claude model — resting on
+// `models[].providers`, which is the same kind of company-supplied claim. These
+// are the shortest configs that made the router hand a Claude model to a
+// non-teamclaude provider on v0.2.3, both reproduced before the fix.
+//
+// Owner decision on `rule1_scope` (2026-08-24): teamclaude_only. `oc/claude-*`
+// is excluded too, because Claude served anywhere else does not consume the
+// pooled teamclaude quota the owner is trying to fill, and blinds the usage
+// gate that assumes it sees all Claude spend.
+// ---------------------------------------------------------------------------
+
+describe("rule 1: the model id's routing prefix is the destination, not `providers`", () => {
+  /** company-a with claude-opus-5 renamed to a prefixed id but still labelled teamclaude. */
+  function prefixedOpus(): RouterConfig {
+    return companyA((raw) => {
+      raw.models = raw.models.map((model: any) =>
+        model.id === "claude-opus-5"
+          ? { ...model, id: "oc/claude-opus-5", providers: ["teamclaude"] }
+          : model,
+      );
+    });
+  }
+
+  const frontier = {
+    taskClass: "architecture",
+    signals: { complexity: 10, risk: 10, blastRadius: 10, ambiguity: 10 },
+  };
+
+  it("blocks a prefixed Claude id even when `providers` claims teamclaude", () => {
+    const decision = selectModel({ descriptor: frontier, config: prefixedOpus() });
+
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ modelId: "oc/claude-opus-5", stage: "claude-block" }),
+    );
+    expect(decision.candidates.map((candidate) => candidate.modelId)).not.toContain(
+      "oc/claude-opus-5",
+    );
+  });
+
+  it("says the PREFIX refused it, so the operator does not go and edit `providers`", () => {
+    const decision = selectModel({ descriptor: frontier, config: prefixedOpus() });
+    const rejection = decision.rejections.find((entry) => entry.modelId === "oc/claude-opus-5");
+
+    expect(rejection?.reason).toContain('routing prefix "oc/"');
+  });
+
+  // The sharp edge: owner rule 4 says a pin is always respected, so a pin is the
+  // one path that skips the cheapest-survivor ranking. On v0.2.3 this returned
+  // outcome "selected" with honored: true.
+  it("REFUSES a pin on a prefixed Claude id — rule 4 never outranks rule 1", () => {
+    const decision = selectModel({
+      descriptor: { ...frontier, pinnedModelId: "oc/claude-opus-5", pinReason: "attack" },
+      config: prefixedOpus(),
+    });
+
+    expect(decision.pin).toMatchObject({ modelId: "oc/claude-opus-5", honored: false });
+    expect(decision.modelId).not.toBe("oc/claude-opus-5");
+  });
+
+  it("still permits a BARE Claude id — that is the rule 3 form a combo resolves", () => {
+    const decision = selectModel({ descriptor: frontier, config: A });
+
+    expect(decision.outcome).toBe("selected");
+    expect(decision.modelId).toBe("claude-sonnet-5");
+  });
+
+  it("does not let `claudePaygEnabled` unlock provider-naming", () => {
+    const config = companyA((raw) => {
+      raw.providers.claudePaygEnabled = true;
+      raw.models = raw.models.map((model: any) =>
+        model.id === "claude-opus-5"
+          ? { ...model, id: "oc/claude-opus-5", providers: ["teamclaude", "opencode"] }
+          : model,
+      );
+    });
+
+    const decision = selectModel({ descriptor: frontier, config });
+    expect(decision.candidates.map((candidate) => candidate.modelId)).not.toContain(
+      "oc/claude-opus-5",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TOG-149: Claude ids that name the model by FAMILY only.
+//
+// `claude|anthropic` missed 15 live catalogue ids (2026-08-24, 1,438 ids): the
+// `aug/*` routes name Claude by family — opus, sonnet, haiku, fable — and carry
+// neither "claude" nor "anthropic". The combo CLI has refused these since
+// TOG-151; the policy layer was selecting them. The layers disagreeing was the
+// defect.
+// ---------------------------------------------------------------------------
+
+describe("rule 1: Claude models named by family only", () => {
+  const familyNamed = [
+    "aug/opus4.7",
+    "aug/sonnet5-high",
+    "aug/haiku4.5",
+    "aug/fable-5",
+    "aug/prism-a",
+  ];
+
+  it.each(familyNamed)("blocks %s even when the config declares family 'gpt'", (id) => {
+    const config = companyA((raw) => {
+      raw.models.push({
+        id,
+        family: "gpt",
+        tier: "frontier",
+        quality: 95,
+        costPerMTokIn: 0.5,
+        costPerMTokOut: 2,
+        contextWindow: 400_000,
+        capabilities: ["tools", "structured-output"],
+        providers: ["openrouter"],
+        enabled: true,
+      });
+    });
+
+    const decision = selectModel({
+      descriptor: {
+        taskClass: "architecture",
+        signals: { complexity: 10, risk: 10, blastRadius: 10, ambiguity: 10 },
+        pinnedModelId: id,
+        pinReason: "attack",
+      },
+      config,
+    });
+
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ modelId: id, stage: "claude-block" }),
+    );
+    expect(decision.modelId).not.toBe(id);
+  });
+});
