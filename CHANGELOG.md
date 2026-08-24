@@ -10,7 +10,53 @@ version is not present here.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **`verify:host` stopped claiming an install it had only half-checked
+  (TOG-232).** Raised by the TOG-228 QA review, question 6. The script really
+  did run the host's own validators for install steps 3–4, and that was the
+  whole of its coverage — `plugin-loader.ts` runs three further gates before it
+  writes a plugin row, so a manifest could pass `npm run verify:host` and still
+  be rejected by a real install. All three now run:
+
+  - **step 5**, `capabilityValidator.validateManifestCapabilities` — declared
+    features must be covered by declared capabilities. This is the gate that
+    decides whether TOG-228's least-privilege trim went one capability too far.
+    It is *not* redundant with the schema check above it: the Zod schema carries
+    the same rule for top-level feature blocks like `tools`, but has none for
+    `ui.slots` or `launchers`, so a `dashboardWidget` slot missing
+    `ui.dashboardWidget.register` parses clean and is caught only here.
+  - **step 5b**, page-route path collision. This plugin declares no page routes,
+    so the half that can be checked offline — duplicates within one manifest —
+    has nothing to reject today. A synthetic probe keeps the detector proven
+    live rather than merely present. The other half compares against
+    `registry.listInstalled()` and needs a running instance; it prints `SKIP`.
+  - **step 6**, `getMinimumHostVersion` vs the running server. Also a no-op for
+    this manifest today, and it says so instead of passing silently.
+
+  With `PAPERCLIP_HOST` pointed at a checkout root (auto-detected at `/app`),
+  step 5 runs the host's compiled `plugin-capability-validator.js` — the real
+  `FEATURE_CAPABILITIES` table. Without one, mirrored implementations run and
+  label every line `[MIRROR]`; when a host *is* reachable the mirror is
+  re-derived against it entry by entry and any disagreement fails the run, so
+  the copy cannot rot through a release unnoticed.
+
+- **The apiVersion check no longer disappears when you aim the script more
+  precisely (TOG-232).** It read `PLUGIN_API_VERSION` off whatever
+  `PAPERCLIP_SHARED` named and did nothing at all — no PASS, no FAIL, no line —
+  when the export was absent. The pointer the README documents,
+  `packages/shared/dist/validators/plugin.js`, is exactly such a module: it
+  carries the schema, while the constant lives in `dist/constants.js` beside it.
+  So the closer you aimed at a real host, the more of the check switched itself
+  off. The constant is now resolved through the entry, its siblings, the host
+  checkout and the SDK in turn; a genuine miss prints `SKIP`. Where
+  `PAPERCLIP_HOST` is set, the host's `getSupportedVersions()` — the gate
+  install step 4 actually applies, and a set rather than a single constant —
+  runs as well.
+
+- **Skipped checks are part of the verdict.** The summary line now reports them
+  next to the failure count, because "all host-side checks passed" while three
+  of them never ran is the sentence this script exists to make unwritable.
 
 ## [0.2.5] - 2026-08-24
 
