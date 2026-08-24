@@ -372,14 +372,35 @@ npm run rehearse      # two-company acceptance rehearsal against the BUILT worke
 npm run dev           # esbuild --watch into dist/
 ```
 
-`verify:host` runs the built `dist/manifest.js` through
-`pluginManifestV1Schema` — the same Zod schema the host runs at install steps
-3–4 — and every shipped example config through the host's Ajv config validator.
-Point it at a Paperclip checkout to validate against that exact build:
+`verify:host` walks the gates `plugin-loader.ts` applies before a plugin row is
+written, in order: `pluginManifestV1Schema` and the apiVersion gate (steps 3–4),
+`validateManifestCapabilities` (step 5), page-route collision (step 5b) and the
+minimum-host-version comparison (step 6). It also puts every shipped example
+config through the host's Ajv config validator, which is what
+`POST /api/plugins/:pluginId/config` runs.
+
+Two independent pointers into a Paperclip checkout, both optional:
 
 ```bash
-PAPERCLIP_SHARED=/app/packages/shared/dist/validators/plugin.js npm run verify:host
+PAPERCLIP_HOST=/app \
+PAPERCLIP_SHARED=/app/packages/shared/dist/validators/plugin.js \
+  npm run verify:host
 ```
+
+`PAPERCLIP_SHARED` is a built module exporting the manifest schema.
+`PAPERCLIP_HOST` is the checkout **root**, and is what unlocks steps 5, 5b and 6
+against the host's compiled `server/dist` — the only way to run the real
+`FEATURE_CAPABILITIES` table rather than a copy of it. It is auto-detected at
+`/app`.
+
+Without a checkout — CI — those three steps run mirrored implementations and
+label every line `[MIRROR]`. Mirrors drift, so when a host *is* reachable the
+mirror is re-derived against it, entry by entry, and disagreement fails the run.
+A check that cannot run at all prints `SKIP` and is counted in the summary
+alongside the failures: this script's own history includes an apiVersion check
+that silently evaporated whenever `PAPERCLIP_SHARED` was aimed at a module
+carrying the schema but not the constant, so "no output" is never read as "fine"
+here (TOG-232).
 
 `rehearse` is the offline half of the acceptance criterion: one install must
 serve a second company with no code edits. Unlike the tests, it loads

@@ -64,3 +64,19 @@ The tag triggers `.github/workflows/release.yml`, which re-verifies, refuses to
 proceed if the tag does not match `package.json`, and attaches the packed tarball
 to the GitHub release. That tarball is what an operator installs and what a
 company is pinned to.
+
+One step CI cannot do for you, so do it before tagging — from a machine with a
+Paperclip checkout:
+
+```bash
+PAPERCLIP_HOST=/app npm run verify:host
+```
+
+Install steps 5, 5b and 6 (capabilities-vs-features, page-route collision,
+minimum host version) run mirrored copies of the host's tables when no checkout
+is reachable, which is every CI runner. This run replaces those with the host's
+compiled `server/dist` and re-derives each mirrored entry against the real one,
+failing on any disagreement. Skipping it does not make a release unsafe; it
+makes the `[MIRROR]` lines in CI unverified for as long as you skip it, which is
+how a copied table quietly stops describing the host it was copied from
+(TOG-232).
