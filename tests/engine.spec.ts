@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { resolveConfig } from "../src/config/resolve.js";
 import { gateLevelFor, matchRule0, scoreTier, selectModel } from "../src/engine/select.js";
-import { fixtureConfig } from "./helpers.js";
+import { CLAUDE_COMBO_DEPLOYED, fixtureConfig } from "./helpers.js";
 
-const A = fixtureConfig("company-a");
+const A = fixtureConfig("company-a", CLAUDE_COMBO_DEPLOYED);
 
 describe("rule 0 — the cheapest call is the one never made", () => {
   it("answers no-model-needed and names the tool when a deterministic pattern matches", () => {
@@ -168,7 +168,7 @@ describe("the Claude block", () => {
           providers: ["openrouter"],
         },
       ],
-    }, { MODEL_ROUTER_CLAUDE_PAYG_UNLOCK: "1" });
+    }, { MODEL_ROUTER_CLAUDE_PAYG_UNLOCK: "1", ...CLAUDE_COMBO_DEPLOYED });
     expect(config.providers.claudePaygEnabled).toBe(true);
     expect(selectModel({ descriptor: {}, config }).modelId).toBe("claude-sonnet-5");
   });
@@ -383,7 +383,7 @@ describe("budget and quota pressure lower the ceiling, never the floor", () => {
   });
 
   it("leaves the quota gate off when the company has not configured it", () => {
-    const B = fixtureConfig("company-b");
+    const B = fixtureConfig("company-b", CLAUDE_COMBO_DEPLOYED);
     const decision = selectModel({
       descriptor: {},
       config: B,
@@ -463,7 +463,7 @@ describe("cache-preserving stickiness", () => {
   });
 
   it("does not apply when the company turns stickiness off", () => {
-    const B = fixtureConfig("company-b");
+    const B = fixtureConfig("company-b", CLAUDE_COMBO_DEPLOYED);
     expect(B.routing.stickyModelWithinIssue).toBe(false);
   });
 });

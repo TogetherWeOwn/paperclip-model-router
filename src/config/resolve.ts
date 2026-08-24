@@ -6,7 +6,7 @@
  * behaviour, and the defaults live in one place that the README documents.
  */
 
-import { claudePaygUnlocked } from "../constants.js";
+import { claudeComboArmed, claudePaygUnlocked } from "../constants.js";
 import type { ModelEntry } from "../engine/types.js";
 import type {
   BudgetConfig,
@@ -34,6 +34,9 @@ export const DEFAULT_PROVIDERS: ProvidersConfig = {
   claudePaygEnabled: false,
   claudeFamilyProvider: "teamclaude",
   claudeFamilies: ["claude"],
+  // Fail closed: an instance that has said nothing about its OmniRoute combos
+  // has not deployed them. TOG-294.
+  claudeComboArmed: false,
 };
 
 export const DEFAULT_TIERING: TieringConfig = {
@@ -163,6 +166,11 @@ export function resolveConfig(
   // engine, so a value that reached the row by any route — a direct DB write, a
   // migration, an older schema — is neutralised here rather than trusted.
   const paygUnlocked = claudePaygUnlocked(env);
+  // Whether an OmniRoute combo resolves a bare Claude id to teamclaude is a fact
+  // about the owner's router, so it is read from the instance environment and is
+  // deliberately absent from the config schema — there is no `providers.*` field
+  // a company can set to claim it. TOG-294.
+  const comboArmed = claudeComboArmed(env);
 
   const routingRaw = isRecord(source.routing) ? source.routing : {};
   const providersRaw = isRecord(source.providers) ? source.providers : {};
@@ -208,6 +216,7 @@ export function resolveConfig(
         providersRaw.claudeFamilies,
         DEFAULT_PROVIDERS.claudeFamilies,
       ),
+      claudeComboArmed: comboArmed,
     },
     models: resolveModels(source.models),
     taskClasses: resolveTaskClasses(source.taskClasses),

@@ -75,6 +75,19 @@ const FIXTURE_B = process.env.FIXTURE_B ?? "tests/fixtures/company-b.json";
 // the runbook says so.
 process.env.MODEL_ROUTER_CLAUDE_PAYG_UNLOCK ??= "1";
 
+// Likewise, every Claude evidence item below asserts what a WORKING Claude lane
+// does, and a bare Claude id only means "teamclaude" once an OmniRoute combo
+// says so. TOG-294 measured the alternative on the live router: no teamclaude
+// combo exists, and a bare `claude-sonnet-5` was silently resolved to
+// `anthropic/claude-sonnet-5` and served. So the rehearsal models a deployed
+// instance, and says so in its transcript rather than leaving it implicit.
+//
+// The operator's LIVE run must NOT set this by hand. If the live instance has
+// not deployed the teamclaude combos, the Claude evidence items are SUPPOSED to
+// fail — that failure is the rehearsal correctly reporting that the lane is not
+// there yet. Confirm with `scripts/claude-lane-preflight.sh` first.
+process.env.MODEL_ROUTER_CLAUDE_COMBO_ARMED ??= "1";
+
 // --- reporting ---------------------------------------------------------------
 
 const results = [];

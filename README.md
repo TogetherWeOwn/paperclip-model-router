@@ -195,6 +195,57 @@ are deliberately the safe end of each switch.
 > second leg to the teamclaude combo — not a change here. The unlock moves the
 > flag out of company hands; it is not a Claude PAYG route.
 
+#### Arming the Claude lane — `MODEL_ROUTER_CLAUDE_COMBO_ARMED`
+
+Everything above governs which *provider name* may serve Claude. It says nothing
+about what OmniRoute does with an id that names **no** provider — and a bare
+`claude-sonnet-5` is exactly the provider-agnostic form owner rule 3 asks
+Paperclip to emit.
+
+Through v0.2.4 the plugin permitted a bare Claude id unconditionally, on the
+stated ground that a bare id "is resolved by a combo". TOG-294 checked that
+ground against the live router and it did not hold:
+
+- `GET /api/v1/models` returns **1,438** ids, **zero** of them bare, and
+  **`teamclaude/*` is empty** — there is no teamclaude combo.
+- `POST /v1/messages` with `{"model": "claude-sonnet-5"}` still returned **200**,
+  echoing `"model": "anthropic/claude-sonnet-5"`, an id that is *also* not in the
+  catalogue. `claude-haiku-4-5-20251001` returned 400, so this is an alias table,
+  not a blanket passthrough.
+
+An unlisted bare Claude id does not fail closed at the router. It is silently
+rewritten onto a **non-teamclaude Anthropic route** and served — owner rule 1
+broken by the id form owner rule 3 mandates. Banning bare ids is therefore not
+the fix; the fix is refusing to emit one until the combo that gives it its
+rule-1 meaning exists.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `MODEL_ROUTER_CLAUDE_COMBO_ARMED` | unset (**off**) | Declares that OmniRoute has teamclaude Claude combos. While off, a **bare** Claude id is refused at `claude-block` instead of being routed somewhere unverified. |
+
+Env-derived only. There is deliberately **no** `providers.*` field for it, and
+`additionalProperties: false` makes an attempt to add one a write-time error —
+the claim is about the *owner's* router, and Phase 4 installs this plugin into
+companies whose config the owner does not review.
+
+Before arming, run:
+
+```bash
+OMNIROUTE_API_KEY=... scripts/claude-lane-preflight.sh
+```
+
+One **read-only** `GET /api/v1/models`; exits non-zero while `teamclaude/*` is
+empty. It sends **no completion** — TOG-294 was found because a verify script
+sent three live Claude completions off-teamclaude while the owner had that lane
+disabled, and a preflight that checks whether a lane is safe must not use the
+lane to find out. A routing-scope key is enough, so the arming claim is
+auditable by anyone, not just whoever holds the management token.
+
+Preflight green confirms the **provider** is registered. It does not by itself
+prove a combo **mapping** sends bare `claude-*` to it — that lives behind the
+management token, so confirm it with the combo CLI before relying on it for
+rule 1.
+
 ### `models` — the model tier table
 
 An array. Each row is one model this company may use, priced at what **this
