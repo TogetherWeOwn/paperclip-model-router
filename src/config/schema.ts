@@ -10,7 +10,11 @@
  * per company. See docs/OPERATIONS.md.
  */
 
-import { CLAUDE_ID_PATTERN_SOURCE_ANY_CASE, CLAUDE_PROVIDER_ALLOWLIST } from "../constants.js";
+import {
+  CLAUDE_ID_PATTERN_SOURCE,
+  CLAUDE_ID_PATTERN_SOURCE_ANY_CASE,
+  CLAUDE_PROVIDER_ALLOWLIST,
+} from "../constants.js";
 import { MODEL_TIER_ORDER } from "../engine/types.js";
 
 const TIERS = [...MODEL_TIER_ORDER];
@@ -159,7 +163,7 @@ export const ROUTER_CONFIG_SCHEMA = {
               type: "string",
               pattern: CLAUDE_ID_PATTERN_SOURCE_ANY_CASE,
               description:
-                "This model's id names Claude or Anthropic, so its family must too. A Claude model filed under a non-Claude family used to bypass the Claude block entirely (TOG-237).",
+                `This model's id is classified as Claude by the Claude block (it matches /${CLAUDE_ID_PATTERN_SOURCE}/i — the family names are in there because ids like "aug/opus4.7" are real Claude routes, TOG-149), so its family must match too. A Claude model filed under a non-Claude family used to bypass the Claude block entirely (TOG-237).`,
             },
           },
         },

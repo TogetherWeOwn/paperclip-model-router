@@ -99,6 +99,209 @@ describe("the Claude block cannot be crossed by the fallback", () => {
 });
 
 // ---------------------------------------------------------------------------
+// TOG-248: a gate that never ran left no rejection, and the fallback read the
+// missing rejection as clearance.
+//
+// The block above proves the fallback cannot cross a `claude-block` REJECTION.
+// That was the wrong invariant to test, because it tests the record rather than
+// the rule. The candidate loop rejects on capability and context window BEFORE
+// it reaches the Claude block and `continue`s, so a caller who makes the
+// fallback fail one of those deletes the evidence and the fallback sails.
+//
+// Every attack here is one descriptor field. None of them touches the config's
+// Claude settings at all.
+// ---------------------------------------------------------------------------
+
+describe("the fallback is judged by the gates, not by their footprints", () => {
+  /** company-a with a Claude fallback and teamclaude NOT permitted. */
+  const claudeFallbackConfig = () =>
+    companyA((raw) => {
+      raw.routing.fallbackModelId = "claude-opus-5";
+      raw.providers.permitted = ["opencode-go", "openrouter"];
+    });
+
+  it("a context window nothing can satisfy does not hand the fallback a Claude model", () => {
+    const config = claudeFallbackConfig();
+    // Every model in the table fails this, claude-opus-5 first — at
+    // `context-window`, which is upstream of the Claude block. On v0.2.5 this
+    // returned `selected claude-opus-5`, `fallbackUsed: true`, on a company
+    // where teamclaude was not even a permitted provider.
+    const decision = selectModel({
+      descriptor: { summary: "read the whole monorepo", requiredContextTokens: 10_000_000 },
+      config,
+    });
+
+    expect(decision.outcome).toBe("no-eligible-model");
+    expect(decision.modelId).toBeNull();
+    expect(decision.fallbackUsed).toBe(false);
+    expect(decision.trace.join("\n")).toContain("may not cross a hard constraint");
+    // The refusal has to survive in the decision log, not just the trace.
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ modelId: "claude-opus-5", stage: "claude-block" }),
+    );
+  });
+
+  it("a capability the fallback lacks does not either", () => {
+    // The capability gate is upstream of the Claude block in exactly the same
+    // way, and it does not need an impossible number to trigger — only a
+    // fallback that is missing one of the requested capabilities.
+    // `claude-haiku-4-5` has neither `computer-use` nor `long-context`, so it is
+    // rejected at `capability` and the Claude block never sees it.
+    const config = companyA((raw) => {
+      raw.routing.fallbackModelId = "claude-haiku-4-5";
+      raw.providers.permitted = ["opencode-go", "openrouter"];
+    });
+
+    const decision = selectModel({
+      descriptor: {
+        summary: "drive the browser over a large repo",
+        requiredCapabilities: ["computer-use", "long-context"],
+      },
+      config,
+    });
+
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ modelId: "claude-haiku-4-5", stage: "capability" }),
+    );
+    expect(decision.outcome).toBe("no-eligible-model");
+    expect(decision.fallbackUsed).toBe(false);
+  });
+
+  it("the same descriptor does not carry a prefixed Claude id past the routing-prefix rule", () => {
+    // TOG-149's defence is inside the Claude block, so skipping the block skips
+    // it too: `oc/claude-opus-5` is opencode serving Claude.
+    const config = companyA((raw) => {
+      raw.routing.fallbackModelId = "oc/claude-opus-5";
+      raw.models.push({
+        id: "oc/claude-opus-5",
+        family: "claude",
+        tier: "frontier",
+        quality: 95,
+        costPerMTokIn: 15,
+        costPerMTokOut: 75,
+        contextWindow: 200000,
+        capabilities: ["tools", "structured-output"],
+        providers: ["opencode-go"],
+        enabled: true,
+      });
+    });
+
+    const decision = selectModel({
+      descriptor: { requiredContextTokens: 10_000_000 },
+      config,
+    });
+    expect(decision.outcome).toBe("no-eligible-model");
+    expect(decision.modelId).toBeNull();
+  });
+
+  it("nor past an instance that has not armed the teamclaude combos", () => {
+    // The undeployed case, which is the real state of the instance: no env.
+    const config = companyA((raw) => {
+      raw.routing.fallbackModelId = "claude-opus-5";
+    }, {});
+
+    const decision = selectModel({
+      descriptor: { requiredContextTokens: 10_000_000 },
+      config,
+    });
+    expect(decision.outcome).toBe("no-eligible-model");
+    expect(decision.modelId).toBeNull();
+  });
+
+  it("nor through a PAUSED pooled quota", () => {
+    // TOG-228's quota property, reached the same way: the pause lives below the
+    // context-window gate, so the fallback never met it.
+    const config = companyA((raw) => {
+      raw.routing.fallbackModelId = "claude-opus-5";
+    });
+
+    const decision = selectModel({
+      descriptor: { requiredContextTokens: 10_000_000 },
+      config,
+      signals: { claudeQuotaUtilization: 0.99 },
+    });
+    expect(decision.gates.claudeQuota).toBe("halt");
+    expect(decision.outcome).toBe("no-eligible-model");
+    expect(decision.modelId).toBeNull();
+  });
+
+  it("nor past the permitted-provider list, for any family", () => {
+    // Not a Claude finding — the same hole crossed `provider-not-permitted`,
+    // which is rule 1's companion constraint and equally non-negotiable.
+    const config = companyA((raw) => {
+      raw.routing.fallbackModelId = "glm-4.6"; // served only by opencode-go
+      raw.providers.permitted = ["openrouter"];
+    });
+
+    const decision = selectModel({
+      descriptor: { requiredContextTokens: 10_000_000 },
+      config,
+    });
+    expect(decision.outcome).toBe("no-eligible-model");
+    expect(decision.modelId).toBeNull();
+  });
+
+  it("a disabled fallback stays disabled even when no gate got to say so", () => {
+    const config = companyA((raw) => {
+      raw.routing.fallbackModelId = "qwen3-coder";
+      raw.models.find((model: any) => model.id === "qwen3-coder").enabled = false;
+    });
+
+    const decision = selectModel({
+      descriptor: { requiredContextTokens: 10_000_000 },
+      config,
+    });
+    expect(decision.outcome).toBe("no-eligible-model");
+  });
+
+  it("and the estimates a fallback IS meant to cross still let it through", () => {
+    // The other direction, which is the whole reason the fallback exists: a
+    // capability the caller only thinks it needs is a judgement, not a rule.
+    const config = companyA((raw) => {
+      raw.routing.fallbackModelId = "qwen3-coder";
+      raw.providers.permitted = ["opencode-go", "openrouter"];
+    });
+
+    // qwen3-coder has no `computer-use`, so it is rejected at `capability` —
+    // the very stage this fix stops treating as clearance. It is still served,
+    // because a capability estimate is a judgement about fit and every HARD
+    // gate says yes: it is in the table, enabled, not Claude, and openrouter is
+    // permitted. Closing the hole must not close the door.
+    const decision = selectModel({
+      descriptor: { requiredCapabilities: ["computer-use"] },
+      config,
+    });
+    expect(decision.outcome).toBe("selected");
+    expect(decision.modelId).toBe("qwen3-coder");
+    expect(decision.fallbackUsed).toBe(true);
+  });
+
+  it("the pin and stickiness were never exposed to this — proof, not assumption", () => {
+    // Both are judged against `qualified`, which a model rejected upstream never
+    // enters. Written down because "we checked and it held" is the only useful
+    // form of that claim, and because it is what makes this a fallback-only fix.
+    const config = companyA((raw) => {
+      raw.providers.permitted = ["opencode-go", "openrouter"];
+    });
+
+    const pinned = selectModel({
+      descriptor: { requiredContextTokens: 10_000_000, pinnedModelId: "claude-opus-5" },
+      config,
+    });
+    expect(pinned.outcome).toBe("no-eligible-model");
+    expect(pinned.pin).toEqual(expect.objectContaining({ honored: false }));
+
+    const sticky = selectModel({
+      descriptor: { requiredContextTokens: 10_000_000 },
+      config,
+      signals: { stickyModelId: "claude-opus-5" },
+    });
+    expect(sticky.outcome).toBe("no-eligible-model");
+    expect(sticky.modelId).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TOG-237: the Claude block cannot be switched off by mislabelling the family.
 //
 // Everything above this block attacks the ENGINE. This one attacks the CONFIG,
