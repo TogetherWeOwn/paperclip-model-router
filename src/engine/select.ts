@@ -35,6 +35,7 @@
 import type { RouterConfig } from "../config/types.js";
 import {
   CLAUDE_PROVIDER_ALLOWLIST,
+  claudeDestinationPermitted,
   idNamesClaude,
   isClaudeProviderAllowed,
 } from "../constants.js";
@@ -205,6 +206,19 @@ function permittedProvidersFor(
   // An empty permitted list means "no provider is approved yet", not "all are".
   // Failing closed is the only safe reading for a company that has not configured this.
   const intersect = model.providers.filter((provider) => permitted.includes(provider));
+
+  // The id's routing prefix outranks the `providers` array, for the same reason
+  // the id outranks `family`: one is what OmniRoute acts on, the other is what
+  // the config claims. `oc/claude-opus-5` labelled `providers: ["teamclaude"]`
+  // used to clear this function outright. Checked before the PAYG branch so a
+  // company cannot unlock provider-naming by flipping its own flag. See
+  // `claudeDestinationPermitted` and TOG-237.
+  if (isClaudeFamily(model, config)) {
+    const destination = claudeDestinationPermitted(model.id);
+    if (!destination.ok) {
+      return { providers: [], blockedBy: "claude-block" };
+    }
+  }
 
   if (isClaudeFamily(model, config) && !config.providers.claudePaygEnabled) {
     // The config NARROWS the code allowlist; it cannot widen it. `claudeFamilyProvider`
@@ -423,6 +437,15 @@ export function selectModel(input: SelectInput): RoutingDecision {
         stage: "claude-block",
         reason:
           `Claude-family model may only be served by ${CLAUDE_PROVIDER_ALLOWLIST.join(" or ")} while Claude PAYG is disabled` +
+          // Say plainly when it was the ID that refused the model rather than
+          // the config, otherwise the trace blames `providers` for a decision
+          // the routing prefix made and the operator edits the wrong field.
+          (() => {
+            const destination = claudeDestinationPermitted(model.id);
+            return destination.ok
+              ? ""
+              : ` (routing prefix "${destination.prefix}/" in the model id names a provider that is not an allowed Claude destination — this outranks providers: [${model.providers.join(", ")}], which is a claim about the destination rather than the destination itself; name the bare model id and let an OmniRoute combo resolve it)`;
+          })() +
           // Name the config value only when it is the thing that refused the model,
           // and say plainly that it was overruled. The old message interpolated
           // `claudeFamilyProvider` unconditionally, so a config that had aimed the

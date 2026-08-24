@@ -10,6 +10,54 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-08-24
+
+### Fixed
+
+- **The model id's routing prefix outranks `models[].providers` (TOG-149,
+  owner decision `rule1_scope: teamclaude_only`).** v0.2.3 moved *which models
+  are Claude* into code but left *who serves a Claude model* resting on
+  `models[].providers` — the same kind of company-supplied claim TOG-237 had
+  just removed one layer down. The shortest reproduction on v0.2.3:
+
+  ```json
+  { "id": "oc/claude-opus-5", "family": "claude", "providers": ["teamclaude"] }
+  ```
+
+  cleared every gate with an **empty** `claude-block` rejection list, and when
+  pinned returned `outcome: "selected"` with `honored: true`. Paperclip would
+  then name `oc/claude-opus-5` to OmniRoute, which routes on the `oc/` prefix —
+  so opencode serves Claude. The `providers` array is a claim *about* the
+  destination; the prefix *is* the destination, and the gate read the claim
+  while ignoring the instruction. A Claude id may now carry no prefix (the
+  rule-3 form an OmniRoute combo resolves) or a prefix that is itself a
+  sanctioned Claude destination; anything else is refused, and the rejection
+  names the prefix so an operator does not go and edit the wrong field.
+
+  Deliberately not conditioned on `claudePaygEnabled`: enabling PAYG is the
+  owner adding a second leg to a **combo**, and never makes it correct for
+  Paperclip to hardcode a provider into a model id.
+
+- **Claude models named by family only are now recognised (TOG-149).** The
+  Claude id pattern was `claude|anthropic`. Measured against the live OmniRoute
+  catalogue on 2026-08-24 (1,438 ids), that **missed 15 real Claude routes** —
+  `aug/opus4.7`, `aug/sonnet5-high`, `aug/haiku4.5`, `aug/fable-5` and siblings
+  name the model by family and contain neither substring, so `idNamesClaude`
+  returned false, the Claude block was never entered, and auggie served Claude.
+  The operator-run combo CLI has refused these since TOG-151; the policy layer
+  was selecting them. **The two layers disagreeing was itself the defect.** The
+  pattern is now the CLI's suspicion list,
+  `claude|anthropic|opus|sonnet|haiku|fable|prism`, measured before widening:
+  across all 1,438 live ids it introduces zero matches that are not Claude or
+  Claude-blended.
+
+### Compatibility
+
+No config migration. Both changes only ever **refuse** a route that previously
+resolved, so a company whose model table names bare ids (every shipped fixture)
+is unaffected. A company that had named a prefixed Claude id was relying on the
+defect and must switch to the bare id.
+
 ## [0.2.3] - 2026-08-23
 
 ### Fixed

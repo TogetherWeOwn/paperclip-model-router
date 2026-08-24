@@ -10,7 +10,7 @@
 export const PLUGIN_ID = "togetherweown.paperclip-model-router";
 
 /** Kept in sync with package.json by `npm run verify` (see tests/manifest.spec.ts). */
-export const PLUGIN_VERSION = "0.2.3";
+export const PLUGIN_VERSION = "0.2.4";
 
 /** Host plugin API generation this manifest targets. */
 export const PLUGIN_API_VERSION = 1 as const;
@@ -80,11 +80,32 @@ export const DECISION_LOG_LIMIT = 200;
  * confine. Re-check this if the catalogue gains a third-party model that borrows
  * the name — the failure mode is a refusal, which is the safe direction.
  *
+ * TOG-149: the family names were added after `claude|anthropic` alone was
+ * measured against the live catalogue (1,438 ids on 2026-08-24) and found to
+ * MISS 15 real Claude routes that name the model by family only — `aug/opus4.7`,
+ * `aug/sonnet5-high`, `aug/fable-5`, `aug/haiku4.5` and siblings. Those ids
+ * contain neither "claude" nor "anthropic", so `idNamesClaude` returned false,
+ * the Claude block was never entered, and auggie served Claude. That is owner
+ * rule 1 broken by an id the pattern simply did not recognise.
+ *
+ * The operator-run combo CLI has refused these since TOG-151 — its suspicion
+ * list is `claude|anthropic|opus|sonnet|haiku|fable|prism` plus `aug/*`. The two
+ * layers disagreeing is itself the defect: the combo layer refused what the
+ * policy layer was willing to select. This pattern is now the CLI's list.
+ *
+ * `prism` is a blended auggie route (prism-a carries Claude, prism-b does not).
+ * Matching prism-b is a deliberate false positive: a blended route cannot be
+ * shown to keep Claude out, the CLI refuses blended routes outright, and the
+ * failure direction here is a refusal.
+ *
+ * Measured before widening, not after: across all 1,438 live ids the added
+ * alternatives introduce ZERO matches that are not Claude or Claude-blended.
+ *
  * Kept as a source string as well as a RegExp because `src/config/schema.ts`
  * needs it as a JSON Schema `pattern`, and two copies of a security predicate is
  * one copy too many.
  */
-export const CLAUDE_ID_PATTERN_SOURCE = "claude|anthropic";
+export const CLAUDE_ID_PATTERN_SOURCE = "claude|anthropic|opus|sonnet|haiku|fable|prism";
 
 /** `CLAUDE_ID_PATTERN_SOURCE` as a case-insensitive matcher. */
 export const CLAUDE_ID_PATTERN = new RegExp(CLAUDE_ID_PATTERN_SOURCE, "i");
@@ -152,6 +173,61 @@ export const CLAUDE_PROVIDER_ALLOWLIST: readonly string[] = ["teamclaude"];
 export function isClaudeProviderAllowed(provider: string): boolean {
   const needle = provider.trim().toLowerCase();
   return CLAUDE_PROVIDER_ALLOWLIST.some((entry) => entry.toLowerCase() === needle);
+}
+
+/**
+ * The provider-routing prefix carried by a model id, or null if it carries none.
+ *
+ * OmniRoute ids are `<<provider>>/<<model>>` — `oc/claude-opus-5`,
+ * `openrouter/anthropic/claude-opus-5`, `aug/opus4.7`. The prefix is not
+ * decoration: it is what OmniRoute routes on. A bare id like `claude-opus-5`
+ * carries no prefix and is resolved by a combo, which is the form owner rule 3
+ * requires — Paperclip names a MODEL and never picks a provider.
+ */
+export function routingPrefixOf(modelId: string): string | null {
+  const trimmed = modelId.trim();
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0) return null;
+  return trimmed.slice(0, slash);
+}
+
+/**
+ * May a Claude-family model with this id be routed at all?
+ *
+ * This closes the bypass that `CLAUDE_PROVIDER_ALLOWLIST` alone did not.
+ * TOG-237 established that a company's config may not be trusted to say WHICH
+ * models are Claude, and moved that question into `idNamesClaude`. It left the
+ * question one layer up — WHO SERVES a Claude model — resting on `models[].providers`,
+ * which is the same kind of company-supplied claim.
+ *
+ * Reproduced on v0.2.3 before this existed:
+ *
+ *   { "id": "oc/claude-opus-5", "family": "claude", "providers": ["teamclaude"] }
+ *
+ * cleared every gate with ZERO claude-block rejections, and when pinned it came
+ * back `outcome: "selected"`, `honored: true`. Paperclip would then hand
+ * `oc/claude-opus-5` to OmniRoute, which routes on the `oc/` prefix — so
+ * opencode serves Claude. The `providers` array is a claim ABOUT the
+ * destination; the prefix IS the destination. The gate read the claim and
+ * ignored the instruction.
+ *
+ * So the prefix is checked against the same code allowlist, and deny-by-default:
+ * a Claude id may carry no prefix (combo-resolved, the rule-3 form) or a prefix
+ * that is itself a sanctioned Claude destination. Anything else is refused.
+ *
+ * Deliberately NOT conditioned on `claudePaygEnabled`. Enabling PAYG is the
+ * owner adding a second leg to a COMBO, per this epic's architecture; it never
+ * makes it correct for Paperclip to hardcode a provider into a model id. A
+ * company that flips the PAYG flag must not thereby acquire the ability to name
+ * `oc/claude-opus-5`.
+ */
+export function claudeDestinationPermitted(modelId: string): {
+  ok: boolean;
+  prefix: string | null;
+} {
+  const prefix = routingPrefixOf(modelId);
+  if (prefix === null) return { ok: true, prefix: null };
+  return { ok: isClaudeProviderAllowed(prefix), prefix };
 }
 
 /**
