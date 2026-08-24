@@ -16,14 +16,14 @@ import { describe, expect, it } from "vitest";
 
 import { selectModel } from "../src/engine/select.js";
 import type { TaskDescriptor } from "../src/engine/types.js";
-import { fixtureConfig, PAYG_UNLOCKED } from "./helpers.js";
+import { CLAUDE_COMBO_DEPLOYED, fixtureConfig, PAYG_UNLOCKED_AND_DEPLOYED } from "./helpers.js";
 
-const A = fixtureConfig("company-a");
+const A = fixtureConfig("company-a", CLAUDE_COMBO_DEPLOYED);
 // B is the company that enabled Claude PAYG, which is now an owner-level
 // decision as well as a company one: the flag needs the instance unlock to take
 // effect. B therefore models a company on an instance where the owner granted
 // it. The case immediately below asserts what the same config does without it.
-const B = fixtureConfig("company-b", PAYG_UNLOCKED);
+const B = fixtureConfig("company-b", PAYG_UNLOCKED_AND_DEPLOYED);
 
 /** One call site, two companies. There is no third argument for "which company". */
 function both(descriptor: TaskDescriptor, signals?: Parameters<typeof selectModel>[0]["signals"]) {
@@ -85,7 +85,7 @@ describe("the Claude PAYG toggle is configuration", () => {
     // Claude PAYG off until the OWNER enables it, and a company's config row is
     // not the owner — which matters precisely because this plugin installs into
     // other companies whose configuration the owner never reviews.
-    const lockedB = fixtureConfig("company-b");
+    const lockedB = fixtureConfig("company-b", CLAUDE_COMBO_DEPLOYED);
     expect(lockedB.providers.claudePaygEnabled).toBe(false);
 
     // And the routing consequence, not just the flag: B lists claude-sonnet-5

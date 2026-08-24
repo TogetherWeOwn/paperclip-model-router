@@ -34,6 +34,7 @@
 
 import type { RouterConfig } from "../config/types.js";
 import {
+  CLAUDE_COMBO_ARMED_ENV,
   CLAUDE_PROVIDER_ALLOWLIST,
   claudeDestinationPermitted,
   idNamesClaude,
@@ -214,7 +215,7 @@ function permittedProvidersFor(
   // company cannot unlock provider-naming by flipping its own flag. See
   // `claudeDestinationPermitted` and TOG-237.
   if (isClaudeFamily(model, config)) {
-    const destination = claudeDestinationPermitted(model.id);
+    const destination = claudeDestinationPermitted(model.id, config.providers.claudeComboArmed);
     if (!destination.ok) {
       return { providers: [], blockedBy: "claude-block" };
     }
@@ -441,10 +442,26 @@ export function selectModel(input: SelectInput): RoutingDecision {
           // the config, otherwise the trace blames `providers` for a decision
           // the routing prefix made and the operator edits the wrong field.
           (() => {
-            const destination = claudeDestinationPermitted(model.id);
-            return destination.ok
-              ? ""
-              : ` (routing prefix "${destination.prefix}/" in the model id names a provider that is not an allowed Claude destination — this outranks providers: [${model.providers.join(", ")}], which is a claim about the destination rather than the destination itself; name the bare model id and let an OmniRoute combo resolve it)`;
+            const destination = claudeDestinationPermitted(
+              model.id,
+              config.providers.claudeComboArmed,
+            );
+            if (destination.reason === "prefix-not-allowed") {
+              // Only advise the bare-id form when a combo is actually armed to
+              // resolve it. Unarmed, that advice moved the operator from a
+              // blocked leak (`oc/claude-*`) onto a silent one — TOG-294 measured
+              // a bare id being rewritten to `anthropic/*` and served.
+              return (
+                ` (routing prefix "${destination.prefix}/" in the model id names a provider that is not an allowed Claude destination — this outranks providers: [${model.providers.join(", ")}], which is a claim about the destination rather than the destination itself; ` +
+                (config.providers.claudeComboArmed
+                  ? "name the bare model id and let an OmniRoute combo resolve it)"
+                  : `and the bare model id is NOT a fix while ${CLAUDE_COMBO_ARMED_ENV} is unset — an unlisted bare Claude id is silently resolved to a non-teamclaude Anthropic route. Deploy the teamclaude combos first)`)
+              );
+            }
+            if (destination.reason === "combo-not-armed") {
+              return ` (the model id carries no routing prefix, which is the correct rule-3 form, but ${CLAUDE_COMBO_ARMED_ENV} is unset — this instance has not declared that OmniRoute has teamclaude Claude combos, so a bare Claude id would be resolved by the router's alias table to a non-teamclaude Anthropic route and served without error. Refusing rather than routing it somewhere unverified. Deploy TOG-153, confirm "teamclaude/*" is non-empty in GET /api/v1/models, then set ${CLAUDE_COMBO_ARMED_ENV}=1)`;
+            }
+            return "";
           })() +
           // Name the config value only when it is the thing that refused the model,
           // and say plainly that it was overruled. The old message interpolated

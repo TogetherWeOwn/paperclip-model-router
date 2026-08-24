@@ -20,9 +20,10 @@ import { selectModel } from "../src/engine/select.js";
 import type { RouterConfig } from "../src/config/types.js";
 import manifest from "../src/manifest.js";
 import { createPlugin } from "../src/worker.js";
-import { fixtureConfig, readFixture } from "./helpers.js";
+import { CLAUDE_COMBO_ARMED_ENV } from "../src/constants.js";
+import { CLAUDE_COMBO_DEPLOYED, fixtureConfig, readFixture } from "./helpers.js";
 
-const A = fixtureConfig("company-a");
+const A = fixtureConfig("company-a", CLAUDE_COMBO_DEPLOYED);
 
 /** The plugin definition, for the validator half of these attacks. */
 async function validator() {
@@ -33,10 +34,13 @@ async function validator() {
 }
 
 /** company-a, with a surgical change. Everything here is config, never code. */
-function companyA(mutate: (raw: Record<string, any>) => void): RouterConfig {
+function companyA(
+  mutate: (raw: Record<string, any>) => void,
+  env: Record<string, string | undefined> = CLAUDE_COMBO_DEPLOYED,
+): RouterConfig {
   const raw = readFixture("company-a") as Record<string, any>;
   mutate(raw);
-  return resolveConfig(raw);
+  return resolveConfig(raw, env);
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +137,10 @@ describe("the Claude block cannot be crossed by a mislabelled family", () => {
 
   it("a Claude model filed under family `gpt` is not served by OpenRouter", () => {
     const raw = mislabelled("gpt");
-    const config = resolveConfig(raw);
+    // Armed, so the ONLY thing that can block this row is the id-classification
+    // fix TOG-237 landed. Unarmed it would block for the TOG-294 reason too, and
+    // this regression test would pass even if TOG-237 came loose.
+    const config = resolveConfig(raw, CLAUDE_COMBO_DEPLOYED);
 
     // The config really does exempt it: `gpt` is not in `claudeFamilies`, and
     // the model's only provider is not `claudeFamilyProvider`.
@@ -155,7 +162,10 @@ describe("the Claude block cannot be crossed by a mislabelled family", () => {
   });
 
   it("says so in the trace instead of failing silently", () => {
-    const decision = selectModel({ descriptor: {}, config: resolveConfig(mislabelled("gpt")) });
+    const decision = selectModel({
+      descriptor: {},
+      config: resolveConfig(mislabelled("gpt"), CLAUDE_COMBO_DEPLOYED),
+    });
     const trace = decision.trace.join("\n");
     expect(trace).toContain("config mislabels 1 model(s) as non-Claude");
     expect(trace).toContain('claude-opus-5 declares family "gpt"');
@@ -171,7 +181,7 @@ describe("the Claude block cannot be crossed by a mislabelled family", () => {
     for (const family of ["gpt", "GPT", "unknown", "", "qwen", "anthropic", "Claude-3", "claude "]) {
       const raw = mislabelled(family);
       if (family === "") delete raw.models[0].family;
-      const config = resolveConfig(raw);
+      const config = resolveConfig(raw, CLAUDE_COMBO_DEPLOYED);
       const decision = selectModel({ descriptor: {}, config });
       expect(decision.outcome, `family=${JSON.stringify(family)} was served`).toBe(
         "no-eligible-model",
@@ -183,13 +193,16 @@ describe("the Claude block cannot be crossed by a mislabelled family", () => {
     // The three routes TOG-228 closed for a correctly-labelled Claude model.
     // They stay closed for a mislabelled one, because all three are judged
     // against the same `claude-block` rejection.
-    const withFallback = resolveConfig({
-      ...mislabelled("gpt"),
-      routing: { enabled: true, fallbackModelId: "claude-opus-5", stickyModelWithinIssue: true },
-    });
+    const withFallback = resolveConfig(
+      {
+        ...mislabelled("gpt"),
+        routing: { enabled: true, fallbackModelId: "claude-opus-5", stickyModelWithinIssue: true },
+      },
+      CLAUDE_COMBO_DEPLOYED,
+    );
     expect(selectModel({ descriptor: {}, config: withFallback }).outcome).toBe("no-eligible-model");
 
-    const config = resolveConfig(mislabelled("gpt"));
+    const config = resolveConfig(mislabelled("gpt"), CLAUDE_COMBO_DEPLOYED);
     const pinned = selectModel({
       descriptor: { pinnedModelId: "claude-opus-5", pinReason: "operator override" },
       config,
@@ -211,7 +224,10 @@ describe("the Claude block cannot be crossed by a mislabelled family", () => {
     const raw = mislabelled("gpt");
     raw.providers.permitted = ["openrouter", "teamclaude"];
     raw.models[0].providers = ["teamclaude", "openrouter"];
-    const decision = selectModel({ descriptor: {}, config: resolveConfig(raw) });
+    const decision = selectModel({
+      descriptor: {},
+      config: resolveConfig(raw, CLAUDE_COMBO_DEPLOYED),
+    });
     expect(decision.outcome).toBe("selected");
     expect(decision.modelId).toBe("claude-opus-5");
     // ...and the operator is still told the table contradicts itself.
@@ -226,7 +242,7 @@ describe("the Claude block cannot be crossed by a mislabelled family", () => {
     raw.models[0].providers = ["teamclaude"];
     const decision = selectModel({
       descriptor: {},
-      config: resolveConfig(raw),
+      config: resolveConfig(raw, CLAUDE_COMBO_DEPLOYED),
       signals: { claudeQuotaUtilization: 0.99 },
     });
     expect(decision.gates.claudeQuota).toBe("halt");
@@ -257,7 +273,10 @@ describe("the Claude block cannot be crossed by a mislabelled family", () => {
       },
     ];
     raw.taskClasses = [];
-    const decision = selectModel({ descriptor: {}, config: resolveConfig(raw) });
+    const decision = selectModel({
+      descriptor: {},
+      config: resolveConfig(raw, CLAUDE_COMBO_DEPLOYED),
+    });
     expect(decision.rejections).toContainEqual(
       expect.objectContaining({ modelId: "qwen3-coder", stage: "claude-block" }),
     );
@@ -686,7 +705,9 @@ describe("Claude PAYG is an owner switch, not a company one", () => {
     );
     const decision = selectModel({
       descriptor: { taskClass: "architecture" },
-      config: resolveConfig(raw, {}),
+      // Combos armed but PAYG still locked: the block must run because the
+      // OWNER has not unlocked PAYG, not because the lane is undeployed.
+      config: resolveConfig(raw, CLAUDE_COMBO_DEPLOYED),
     });
     expect(decision.rejections).toContainEqual(
       expect.objectContaining({ stage: "claude-block" }),
@@ -777,11 +798,63 @@ describe("rule 1: the model id's routing prefix is the destination, not `provide
     expect(decision.modelId).not.toBe("oc/claude-opus-5");
   });
 
-  it("still permits a BARE Claude id — that is the rule 3 form a combo resolves", () => {
+  it("permits a BARE Claude id when a combo is armed to resolve it", () => {
     const decision = selectModel({ descriptor: frontier, config: A });
 
     expect(decision.outcome).toBe("selected");
     expect(decision.modelId).toBe("claude-sonnet-5");
+  });
+
+  // This test used to assert the opposite, under the name "still permits a BARE
+  // Claude id — that is the rule 3 form a combo resolves". The premise was that
+  // a bare id is safe BECAUSE a combo resolves it. TOG-294 measured the live
+  // router and found no combo to do the resolving — `teamclaude/*` is empty in
+  // GET /api/v1/models — and found the bare id served anyway, rewritten to
+  // `anthropic/claude-sonnet-5`. The id form was right and the assumption
+  // underneath it was untrue, so the assertion was too.
+  it("refuses a BARE Claude id when no combo is armed, rather than routing it blind", () => {
+    const undeployed = companyA(() => {}, {});
+
+    expect(undeployed.providers.claudeComboArmed).toBe(false);
+
+    const decision = selectModel({ descriptor: frontier, config: undeployed });
+
+    expect(decision.candidates.map((candidate) => candidate.modelId)).not.toContain(
+      "claude-sonnet-5",
+    );
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({ modelId: "claude-sonnet-5", stage: "claude-block" }),
+    );
+  });
+
+  it("names the unset env var in the trace, so the operator edits the right thing", () => {
+    const undeployed = companyA(() => {}, {});
+    const decision = selectModel({ descriptor: frontier, config: undeployed });
+    const rejection = decision.rejections.find(
+      (entry) => entry.modelId === "claude-sonnet-5" && entry.stage === "claude-block",
+    );
+
+    // The old trace for a blocked Claude id advised "name the bare model id and
+    // let an OmniRoute combo resolve it". Unarmed, that advice moves the
+    // operator off a BLOCKED leak and onto a SILENT one.
+    expect(rejection?.reason).toContain(CLAUDE_COMBO_ARMED_ENV);
+    expect(rejection?.reason).not.toMatch(/name the bare model id and let an OmniRoute combo/);
+  });
+
+  it("is an instance decision: a company cannot arm the lane from its own config row", () => {
+    // Phase 4 installs this plugin into companies whose config the owner does
+    // not review. If this were a `providers.*` field, an installee could
+    // re-open a rule-1 hole in the OWNER's router by editing its own row.
+    const claimsArmed = companyA((raw) => {
+      raw.providers.claudeComboArmed = true;
+      raw.providers.claudeLaneArmed = true;
+      raw.claudeComboArmed = true;
+    }, {});
+
+    expect(claimsArmed.providers.claudeComboArmed).toBe(false);
+    expect(
+      selectModel({ descriptor: frontier, config: claimsArmed }).candidates.map((c) => c.modelId),
+    ).not.toContain("claude-sonnet-5");
   });
 
   it("does not let `claudePaygEnabled` unlock provider-naming", () => {

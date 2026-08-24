@@ -10,7 +10,7 @@
 export const PLUGIN_ID = "togetherweown.paperclip-model-router";
 
 /** Kept in sync with package.json by `npm run verify` (see tests/manifest.spec.ts). */
-export const PLUGIN_VERSION = "0.2.4";
+export const PLUGIN_VERSION = "0.2.5";
 
 /** Host plugin API generation this manifest targets. */
 export const PLUGIN_API_VERSION = 1 as const;
@@ -181,8 +181,11 @@ export function isClaudeProviderAllowed(provider: string): boolean {
  * OmniRoute ids are `<<provider>>/<<model>>` — `oc/claude-opus-5`,
  * `openrouter/anthropic/claude-opus-5`, `aug/opus4.7`. The prefix is not
  * decoration: it is what OmniRoute routes on. A bare id like `claude-opus-5`
- * carries no prefix and is resolved by a combo, which is the form owner rule 3
- * requires — Paperclip names a MODEL and never picks a provider.
+ * carries no prefix and is *intended* to be resolved by a combo, which is the
+ * form owner rule 3 requires — Paperclip names a MODEL and never picks a
+ * provider. Whether a combo actually resolves it is a separate question, and
+ * TOG-294 established that assuming the answer is a rule-1 hole. See
+ * `claudeComboArmed`.
  */
 export function routingPrefixOf(modelId: string): string | null {
   const trimmed = modelId.trim();
@@ -212,8 +215,26 @@ export function routingPrefixOf(modelId: string): string | null {
  * ignored the instruction.
  *
  * So the prefix is checked against the same code allowlist, and deny-by-default:
- * a Claude id may carry no prefix (combo-resolved, the rule-3 form) or a prefix
- * that is itself a sanctioned Claude destination. Anything else is refused.
+ * a Claude id may carry a prefix that is itself a sanctioned Claude destination,
+ * or no prefix at all PROVIDED a combo is known to resolve it (`comboArmed`).
+ * Anything else is refused.
+ *
+ * The bare-id case used to return `ok` unconditionally, on the stated ground
+ * that a bare id "is resolved by a combo". TOG-294 measured that assumption
+ * failing against the live router:
+ *
+ *   - `GET /api/v1/models` lists 1,438 ids, of which ZERO are bare, and
+ *     `teamclaude/*` is EMPTY — there is no teamclaude combo, because TOG-153
+ *     is not deployed.
+ *   - `POST /v1/messages` with `{"model": "claude-sonnet-5"}` nonetheless
+ *     returned 200, echoing `"model": "anthropic/claude-sonnet-5"` — an id that
+ *     is ALSO absent from the catalogue. Same for `claude-opus-5` and
+ *     `claude-fable-5`. So an unlisted bare Claude id does not fail; it is
+ *     silently rewritten onto a non-teamclaude Anthropic route and served.
+ *
+ * That is owner rule 1 broken by the exact id form owner rule 3 mandates, which
+ * is why it cannot be fixed by banning bare ids. It is fixed by refusing to
+ * emit one until the combo that gives it its rule-1 meaning exists.
  *
  * Deliberately NOT conditioned on `claudePaygEnabled`. Enabling PAYG is the
  * owner adding a second leg to a COMBO, per this epic's architecture; it never
@@ -221,13 +242,53 @@ export function routingPrefixOf(modelId: string): string | null {
  * company that flips the PAYG flag must not thereby acquire the ability to name
  * `oc/claude-opus-5`.
  */
-export function claudeDestinationPermitted(modelId: string): {
+export function claudeDestinationPermitted(
+  modelId: string,
+  comboArmed: boolean,
+): {
   ok: boolean;
   prefix: string | null;
+  reason: "prefix-not-allowed" | "combo-not-armed" | null;
 } {
   const prefix = routingPrefixOf(modelId);
-  if (prefix === null) return { ok: true, prefix: null };
-  return { ok: isClaudeProviderAllowed(prefix), prefix };
+  if (prefix === null) {
+    return comboArmed
+      ? { ok: true, prefix: null, reason: null }
+      : { ok: false, prefix: null, reason: "combo-not-armed" };
+  }
+  return isClaudeProviderAllowed(prefix)
+    ? { ok: true, prefix, reason: null }
+    : { ok: false, prefix, reason: "prefix-not-allowed" };
+}
+
+/**
+ * Instance-level assertion that the teamclaude Claude combos exist in OmniRoute.
+ *
+ * This is the on-switch for the bare-id path above, and it is env-read for the
+ * same reason `CLAUDE_PAYG_UNLOCK_ENV` is: the claim being made is about the
+ * OWNER's OmniRoute deployment, not about the company running the plugin.
+ * Phase 4 installs this plugin into companies whose config the owner does not
+ * review; letting a config row assert "the combo exists" would let an installee
+ * re-open a rule-1 hole in the owner's infrastructure by editing its own row.
+ *
+ * Default OFF, and off means the Claude lane is refused rather than routed
+ * somewhere unverified. That is the deliberate failure direction: a company
+ * that has not deployed the combos gets no Claude, instead of getting Claude
+ * from whoever OmniRoute's alias table happens to pick.
+ *
+ * WHO FLIPS THIS AND ON WHAT EVIDENCE: the operator, after TOG-153 registers
+ * teamclaude as an OmniRoute provider AND the Claude combos are mapped, with
+ * `TOG-153-verify.sh` green. The check that this was flipped honestly is
+ * `teamclaude/*` being non-empty in `GET /api/v1/models` — a routing-scope read
+ * that needs no management token, so anyone can audit it. `scripts/claude-lane-preflight.sh`
+ * does exactly that read.
+ */
+export const CLAUDE_COMBO_ARMED_ENV = "MODEL_ROUTER_CLAUDE_COMBO_ARMED";
+
+/** True when the instance operator has declared the teamclaude combos deployed. */
+export function claudeComboArmed(env: Record<string, string | undefined>): boolean {
+  const raw = env[CLAUDE_COMBO_ARMED_ENV];
+  return typeof raw === "string" && raw.trim() === "1";
 }
 
 /**

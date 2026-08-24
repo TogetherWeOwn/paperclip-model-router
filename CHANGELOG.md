@@ -10,6 +10,64 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-08-24
+
+### Fixed
+
+- **A bare Claude id is no longer trusted to mean "teamclaude" (TOG-294, owner
+  rule 1).** v0.2.4 refused a Claude id carrying a non-teamclaude routing prefix
+  (`oc/claude-opus-5`) and permitted a **bare** one (`claude-sonnet-5`)
+  unconditionally, on the stated ground that a bare id "is resolved by a combo".
+  That ground was never checked. Measured against the live router:
+
+  - `GET /api/v1/models` returns **1,438** ids, of which **zero** are bare, and
+    **`teamclaude/*` is empty** — there is no teamclaude combo, because TOG-153
+    is not deployed.
+  - `POST /v1/messages` with `{"model": "claude-sonnet-5"}` nonetheless returned
+    **200**, echoing `"model": "anthropic/claude-sonnet-5"` — an id that is
+    *also* absent from the catalogue. Same for `claude-opus-5` and
+    `claude-fable-5`. `claude-haiku-4-5-20251001` returned 400, so this is an
+    alias table rather than a blanket passthrough.
+
+  An unlisted bare Claude id therefore does not fail closed at the router; it is
+  silently rewritten onto a non-teamclaude Anthropic route and served. That is
+  owner rule 1 broken by **the exact id form owner rule 3 mandates**, which is
+  why it cannot be fixed by banning bare ids.
+
+  The plugin cannot fix the router, so it refuses to walk into it. A bare Claude
+  id is now permitted only when `MODEL_ROUTER_CLAUDE_COMBO_ARMED=1` declares the
+  teamclaude combos deployed. Default off, and off blocks the model at
+  `claude-block` rather than routing it somewhere unverified.
+
+  The prior `claude-block` trace made this worse: it advised *"name the bare
+  model id and let an OmniRoute combo resolve it"*, which moved an operator off
+  a **blocked** leak and onto a **silent** one. That advice is now conditional on
+  the lane being armed, and the unarmed trace names the env var and the deploy
+  step instead.
+
+### Added
+
+- **`scripts/claude-lane-preflight.sh`** — answers "is it honest to arm this?"
+  with one **read-only** `GET /api/v1/models`; exits non-zero while
+  `teamclaude/*` is empty. It deliberately sends **no completion**: TOG-294 was
+  found because a verify script sent three live Claude completions off-teamclaude
+  while the owner has that lane disabled, and a preflight whose job is to check
+  that a lane is safe must not use the lane to find out. Needs only a
+  routing-scope key, so the arming claim is auditable by anyone.
+
+### Compatibility
+
+- **No config change, and none is possible.** `claudeComboArmed` is env-derived
+  only; there is deliberately no `providers.*` field for it, and
+  `additionalProperties: false` turns an attempt to set one into a write-time
+  error. Phase 4 installs this plugin into companies whose config the owner does
+  not review, so an installee must not be able to assert facts about the owner's
+  router.
+- **Existing installs lose the Claude lane until the operator arms it.** That is
+  intended and is the point of the release: on this instance the lane was
+  resolving to a non-teamclaude Anthropic route, so what is lost is a route the
+  owner had disabled. Run the preflight, deploy TOG-153, then arm.
+
 ## [0.2.4] - 2026-08-24
 
 ### Fixed

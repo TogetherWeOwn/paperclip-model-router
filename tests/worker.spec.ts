@@ -8,12 +8,25 @@
  */
 
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import manifest from "../src/manifest.js";
 import { ACTION_KEYS, DATA_KEYS, STATE_KEYS, TOOL_NAMES } from "../src/constants.js";
 import { createPlugin } from "../src/worker.js";
 import { readFixture } from "./helpers.js";
+
+// The worker resolves config through `process.env`, not an injected env, so the
+// combo-armed signal has to be stubbed at the process level here. These tests
+// assert what the worker does with a WORKING Claude lane; without this the
+// fixtures' bare Claude ids are refused at the claude-block gate, which is the
+// undeployed case and is covered in `gate-integrity.spec.ts`. TOG-294.
+beforeEach(() => {
+  vi.stubEnv("MODEL_ROUTER_CLAUDE_COMBO_ARMED", "1");
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 const COMPANY_A = "11111111-1111-4111-8111-111111111111";
 const COMPANY_B = "22222222-2222-4222-8222-222222222222";
