@@ -31,7 +31,8 @@
     "verify:host": "node scripts/verify-against-host.mjs",
     "rehearse": "node scripts/acceptance-rehearsal.mjs",
     "check:pin": "node scripts/release-pin-check.mjs",
-    "preflight:tog178": "node scripts/tog178-catalogue-revalidate.mjs"
+    "preflight:tog178": "node scripts/tog178-catalogue-revalidate.mjs",
+    "preflight:tog473": "node scripts/tog473-mapping-guard-calibration.mjs"
   },
   "dependencies": {
     "@paperclipai/plugin-sdk": "2026.817.0"
