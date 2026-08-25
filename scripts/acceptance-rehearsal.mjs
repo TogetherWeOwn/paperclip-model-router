@@ -75,6 +75,19 @@ const FIXTURE_B = process.env.FIXTURE_B ?? "tests/fixtures/company-b.json";
 // the runbook says so.
 process.env.MODEL_ROUTER_CLAUDE_PAYG_UNLOCK ??= "1";
 
+// Likewise, every Claude evidence item below asserts what a WORKING Claude lane
+// does, and a bare Claude id only means "teamclaude" once an OmniRoute combo
+// says so. TOG-294 measured the alternative on the live router: no teamclaude
+// combo exists, and a bare `claude-sonnet-5` was silently resolved to
+// `anthropic/claude-sonnet-5` and served. So the rehearsal models a deployed
+// instance, and says so in its transcript rather than leaving it implicit.
+//
+// The operator's LIVE run must NOT set this by hand. If the live instance has
+// not deployed the teamclaude combos, the Claude evidence items are SUPPOSED to
+// fail — that failure is the rehearsal correctly reporting that the lane is not
+// there yet. Confirm with `scripts/claude-lane-preflight.sh` first.
+process.env.MODEL_ROUTER_CLAUDE_COMBO_ARMED ??= "1";
+
 // --- reporting ---------------------------------------------------------------
 
 const results = [];
@@ -391,7 +404,13 @@ configs.set(COMPANY_B, {
 
 const archBlocked = (await route(COMPANY_B, { taskClass: "architecture" })).body.decision;
 const blocks = archBlocked.rejections.filter((r) => r.stage === "claude-block");
-const claudeIds = new Set(B.models.filter((m) => m.family === "claude").map((m) => m.id));
+// Deliberately NOT `m.family === "claude"`. That was the TOG-237 defect, and an
+// oracle that trusts the same field the engine stopped trusting would pass
+// vacuously on exactly the config that breaks the block: mislabel the model and
+// it drops out of this set, so "no Claude model was served" becomes true by
+// omission. Classify the way the engine now does — id OR declared family.
+const isClaude = (m) => /claude|anthropic/i.test(m.id) || (B.providers.claudeFamilies ?? []).includes(m.family);
+const claudeIds = new Set(B.models.filter(isClaude).map((m) => m.id));
 console.log(`  company B with claudePaygEnabled flipped to false: ${archBlocked.outcome} -> ${archBlocked.modelId}`);
 for (const line of archBlocked.trace) console.log(`      ${line}`);
 for (const block of blocks) console.log(`      REFUSED ${block.modelId}: ${block.detail ?? block.stage}`);
@@ -428,6 +447,38 @@ check(
   "a fallback naming a Claude model does not cross the Claude block (TOG-228 defect 1)",
   archHostile.modelId === null || !claudeIds.has(archHostile.modelId),
   `outcome=${archHostile.outcome} model=${archHostile.modelId} fallback=claude-sonnet-5`,
+);
+
+// The other way to get a Claude model past the block needs no fallback at all:
+// mislabel it. `family` is company-supplied, and until TOG-237 the block was
+// decided entirely from that field, so `"family": "gpt"` on a `claude-*` id
+// exempted the model outright — `selected`, empty `rejections`, not one trace
+// line. The gate did not fail; it was never asked. Both layers are checked
+// here, because they fail independently: the write should be refused, and the
+// engine should hold even if a config reaches it some other way.
+const mislabelledB = {
+  ...storedB,
+  providers: { ...storedB.providers, claudePaygEnabled: false },
+  models: storedB.models.map((m) => (m.id === "claude-sonnet-5" ? { ...m, family: "gpt" } : m)),
+};
+
+const mislabelVerdict = await definition.onValidateConfig(mislabelledB);
+check(
+  "a Claude id filed under a non-Claude family is refused at config-write time (TOG-237)",
+  mislabelVerdict.ok === false,
+  `ok=${mislabelVerdict.ok} errors=${mislabelVerdict.errors.join("; ") || "(none)"}`,
+);
+
+configs.set(COMPANY_B, mislabelledB);
+const archMislabelled = (await route(COMPANY_B, { taskClass: "architecture" })).body.decision;
+const mislabelBlocks = archMislabelled.rejections.filter((r) => r.stage === "claude-block");
+console.log(`  company B, PAYG off and claude-sonnet-5 mislabelled "family":"gpt": ${archMislabelled.outcome} -> ${archMislabelled.modelId}`);
+for (const line of archMislabelled.trace) console.log(`      ${line}`);
+for (const block of mislabelBlocks) console.log(`      REFUSED ${block.modelId}: ${block.detail ?? block.stage}`);
+check(
+  "the engine still blocks a mislabelled Claude model — the id is enough (TOG-237)",
+  mislabelBlocks.some((r) => r.modelId === "claude-sonnet-5") && archMislabelled.modelId !== "claude-sonnet-5",
+  `outcome=${archMislabelled.outcome} model=${archMislabelled.modelId} claude-block rejections=${mislabelBlocks.length}`,
 );
 
 configs.set(COMPANY_B, storedB);

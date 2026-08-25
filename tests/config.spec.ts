@@ -62,6 +62,18 @@ describe("instanceConfigSchema", () => {
     expect(hostValidator()({ modelTable: [] })).toBe(false);
   });
 
+  it("rejects a company trying to arm the Claude lane from its own config row", () => {
+    // Whether OmniRoute has teamclaude combos is a fact about the OWNER's
+    // router, so there is deliberately no `providers.*` field for it and
+    // `additionalProperties: false` turns the attempt into a write-time error
+    // rather than a silently ignored key. The engine ignores it as well —
+    // see gate-integrity.spec.ts — because a host that never calls the schema
+    // must still fail closed. TOG-294.
+    for (const key of ["claudeComboArmed", "claudeLaneArmed"]) {
+      expect(hostValidator()({ providers: { [key]: true } }), key).toBe(false);
+    }
+  });
+
   it("rejects a model row that is missing a price", () => {
     const validate = hostValidator();
     const valid = validate({

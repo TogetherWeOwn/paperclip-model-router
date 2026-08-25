@@ -14,6 +14,7 @@ import { validateSecretRefShape } from "./config/secret-ref.js";
 import type { RouterConfig } from "./config/types.js";
 import {
   ACTION_KEYS,
+  CLAUDE_ID_PATTERN_SOURCE,
   CLAUDE_PAYG_UNLOCK_ENV,
   CLAUDE_PROVIDER_ALLOWLIST,
   DATA_KEYS,
@@ -378,7 +379,12 @@ export function createPlugin() {
         const declaredClaude = claudeFamilies.has(model.family.toLowerCase());
         if (idNamesClaude(model.id) && !declaredClaude) {
           errors.push(
-            `model ${model.id} has a Claude/Anthropic id but declares family "${model.family}", which is not in providers.claudeFamilies (${resolved.providers.claudeFamilies.join(", ") || "empty"}). ` +
+            // Say WHICH rule matched. "has a Claude/Anthropic id" was accurate
+            // when the pattern was `claude|anthropic`; TOG-149 widened it to the
+            // family names, and an operator reading that sentence about
+            // `aug/opus4.7` — an id containing neither word — has been told
+            // something visibly untrue about their own config. TOG-248.
+            `model ${model.id} has an id the Claude block classifies as Claude (it matches /${CLAUDE_ID_PATTERN_SOURCE}/i) but declares family "${model.family}", which is not in providers.claudeFamilies (${resolved.providers.claudeFamilies.join(", ") || "empty"}). ` +
               "Before TOG-237 this silently exempted the model from the Claude block; it no longer does, but the table must not disagree with itself. " +
               "Set the family to a configured Claude family, or add this family to providers.claudeFamilies.",
           );

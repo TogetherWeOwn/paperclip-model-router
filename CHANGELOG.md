@@ -10,6 +10,367 @@ version is not present here.
 
 ## [Unreleased]
 
+### Security
+
+- **The secret scanner was printing the credential it caught into the CI log
+  (TOG-227).** Both custom rules in `.gitleaks.toml` put their capture group on
+  the *key name* rather than the value. gitleaks treats capture group 1 as "the
+  secret" — it is what `--redact` replaces and what `[allowlist] regexes` are
+  matched against — so `--redact` suppressed the word `ANTHROPIC` and printed
+  the key. Reproduced: a file containing `ANTHROPIC_API_KEY = "sk-ant-api03-…"`
+  renders in the scan output as `REDACTED_API_KEY = "sk-ant-api03-…"`.
+
+  That path only executes when a real key is actually present — the one case
+  where being wrong costs something, and the one case no green build ever
+  exercises. Both rules now capture the value, and `omniroute-credential`'s
+  value class excludes quotes so the captured secret is the credential rather
+  than the credential with the source file's punctuation attached.
+
+  Fixed alongside it: allowlist entries were unanchored, so exempting the
+  fixture `sk-live-not-a-reference` silently exempted
+  `sk-live-not-a-reference<real key>` too. All entries are now `^…$`, which is
+  what the "exempted by exact value" comment already claimed. The three
+  name-based entries (`apiKeySecretRef`, `OMNIROUTE_API_KEY`,
+  `ANTHROPIC_API_KEY`) are removed: they were matched against the captured
+  secret, never against the variable name, so they had never had any effect.
+
+### Added
+
+- **`npm run preflight:tog473` — the broker's mapping guard is now graded
+  against the live catalogue instead of hand-written strings (TOG-473).**
+  `mappings.create` is the only broker verb that moves traffic, and its safety
+  argument rests on one empirical claim: the family regex blocks every
+  Claude-bearing id OmniRoute serves. The broker's own unit tests assert that
+  against literals — the same blind spot that let TOG-237 ship. The script
+  imports the guard from the broker (so a copied regex cannot certify itself)
+  and runs it over the real corpus: 350/350 Claude-bearing ids blocked, 0
+  escaped, all 52 planned TOG-178 mappings still permitted. A harness failure
+  exits 2, never 0 and never 1, so a broken checker cannot read as a clean
+  guard.
+
+- **`npm run check:pin` — the version an operator is handed is now checked by a
+  script, not by a run that re-improvises it (TOG-227).** Nothing in `verify`
+  or `verify:host` looks at the *published release asset*, which is the only
+  artifact an operator actually installs. Three separate cards reached the
+  owner's queue carrying a pin that did not hold: `v0.1.1` named a tag with no
+  tarball behind it, `v0.2.3` named a version the runbook itself had already
+  marked unsafe, and `v0.2.4` was four `src/` commits stale by the time it was
+  read. All three are mechanical comparisons.
+
+  `scripts/release-pin-check.mjs` runs seven gates against a tag: it resolves;
+  `package.json` and `CHANGELOG.md` **at that tag** agree with it; a published
+  non-draft release exists with exactly one `.tgz`; the asset downloads and
+  matches `--expect-sha256`; the asset's `dist/*.js` are **byte-identical to a
+  fresh build of the working tree**; and `git diff <tag>..HEAD -- src` is empty.
+
+  Gate 6 is the one no human does by hand, and it is what collapses "the tests
+  passed on `main`" and "the operator installs the tarball" into one claim.
+  Gate 7 is permitted to fail; when it does the answer is to cut a new tag
+  rather than reword the runbook, and the failure says so.
+
+  The GitHub token comes from the repo's own git credential helper, so there is
+  nothing to configure. Network gates **fail** rather than skip when they cannot
+  run — a pin that could not be checked is precisely the case this exists to
+  catch. `--for-card` prints a paste-ready block and refuses to print it if any
+  gate failed *or skipped*; `--offline` is rejected alongside it.
+
+  Deliberately not part of `npm run verify`: at commit time the release for the
+  version under development does not exist, so folding it in would fail every
+  build and train everyone to ignore it. See `docs/PROCESS.md`, "Handing a
+  version to an operator".
+
+- **`scripts/gitleaks-selftest.sh` — a test for the secret scanner itself
+  (TOG-227).** `gitleaks dir .` proves the repository is clean under the current
+  config and says nothing about whether that config still detects anything. A
+  defanged rule and a clean repository produce identical output, so green is
+  also what a broken scanner looks like — which is how both defects above
+  survived.
+
+  > **Not yet wired into CI.** It belongs as a step in the `secret-scan` job,
+  > ahead of the two scans, reusing the gitleaks binary that job already
+  > installs. The push was rejected: `refusing to allow a GitHub App to create
+  > or update workflow .github/workflows/ci.yml without workflows permission`.
+  > Until the App installation gets that scope, run it by hand —
+  > `scripts/gitleaks-selftest.sh "$(command -v gitleaks)"` — and treat the
+  > secret-scan job's green as unverified. Tracked separately.
+
+  Ten assertions: each rule fires on a realistic key; each allowlist entry
+  exempts its fixture and *not* that fixture with a suffix appended; and
+  `--redact` suppresses the value while leaving the variable name visible.
+  Mutation-tested against all three defects — reinstating the key-name capture
+  group fails 3 assertions, un-anchoring an allowlist entry fails 1, widening
+  the value class back to `\S` fails 1.
+
+  Two notes for anyone adding a probe. Values must look like real credentials:
+  gitleaks' default allowlist discards low-entropy matches, so an `"AAAA…"`
+  probe reports zero findings and reads as a broken rule. And a probe's name and
+  value are held in separate variables and joined at runtime, because a
+  credential-shaped literal in this file would be flagged by the very scan it
+  tests — and exempting the probes is not a way out, since they run under the
+  same config and would stop firing.
+
+### Fixed
+
+- **`main` was red.** `322de62` (TOG-152, PR #19) added
+  `OMNIROUTE_API_KEY: "sk-not-a-real-key"` to `tests/tog178-preflight.spec.ts`
+  — a deliberate placeholder, needed so the test can prove the preflight exits
+  `2` on an unreachable catalogue instead of reading as a clean spec. The
+  secret scan has failed on every commit since. It is now exempted by exact
+  anchored value.
+
+## [0.2.6] - 2026-08-24
+
+### Fixed
+
+- **`verify:host` stopped claiming an install it had only half-checked
+  (TOG-232).** Raised by the TOG-228 QA review, question 6. The script really
+  did run the host's own validators for install steps 3–4, and that was the
+  whole of its coverage — `plugin-loader.ts` runs three further gates before it
+  writes a plugin row, so a manifest could pass `npm run verify:host` and still
+  be rejected by a real install. All three now run:
+
+  - **step 5**, `capabilityValidator.validateManifestCapabilities` — declared
+    features must be covered by declared capabilities. This is the gate that
+    decides whether TOG-228's least-privilege trim went one capability too far.
+    It is *not* redundant with the schema check above it: the Zod schema carries
+    the same rule for top-level feature blocks like `tools`, but has none for
+    `ui.slots` or `launchers`, so a `dashboardWidget` slot missing
+    `ui.dashboardWidget.register` parses clean and is caught only here.
+  - **step 5b**, page-route path collision. This plugin declares no page routes,
+    so the half that can be checked offline — duplicates within one manifest —
+    has nothing to reject today. A synthetic probe keeps the detector proven
+    live rather than merely present. The other half compares against
+    `registry.listInstalled()` and needs a running instance; it prints `SKIP`.
+  - **step 6**, `getMinimumHostVersion` vs the running server. Also a no-op for
+    this manifest today, and it says so instead of passing silently.
+
+  With `PAPERCLIP_HOST` pointed at a checkout root (auto-detected at `/app`),
+  step 5 runs the host's compiled `plugin-capability-validator.js` — the real
+  `FEATURE_CAPABILITIES` table. Without one, mirrored implementations run and
+  label every line `[MIRROR]`; when a host *is* reachable the mirror is
+  re-derived against it entry by entry and any disagreement fails the run, so
+  the copy cannot rot through a release unnoticed.
+
+- **The apiVersion check no longer disappears when you aim the script more
+  precisely (TOG-232).** It read `PLUGIN_API_VERSION` off whatever
+  `PAPERCLIP_SHARED` named and did nothing at all — no PASS, no FAIL, no line —
+  when the export was absent. The pointer the README documents,
+  `packages/shared/dist/validators/plugin.js`, is exactly such a module: it
+  carries the schema, while the constant lives in `dist/constants.js` beside it.
+  So the closer you aimed at a real host, the more of the check switched itself
+  off. The constant is now resolved through the entry, its siblings, the host
+  checkout and the SDK in turn; a genuine miss prints `SKIP`. Where
+  `PAPERCLIP_HOST` is set, the host's `getSupportedVersions()` — the gate
+  install step 4 actually applies, and a set rather than a single constant —
+  runs as well.
+
+- **Skipped checks are part of the verdict.** The summary line now reports them
+  next to the failure count, because "all host-side checks passed" while three
+  of them never ran is the sentence this script exists to make unwritable.
+
+- **The fallback stopped being judged by gates that never ran (TOG-248, owner
+  rule 1).** Found by the post-merge review of TOG-237/PR #6, which asked for a
+  route the union in `isClaudeFamily` did not close. This is not that route —
+  the classifier holds — it is one layer further out: the fallback never asked
+  the classifier anything.
+
+  `routing.fallbackModelId` decided whether it was allowed to run by SEARCHING
+  the rejection list for an entry naming it with a non-negotiable stage
+  (`not-in-table`, `claude-block`, `provider-not-permitted`, `quota-gate`). That
+  is evidence-based, and the evidence only exists if the candidate loop reached
+  the gate. The loop rejects on **capability** and **context window** first and
+  `continue`s, so a fallback that failed one of those was never asked the Claude
+  question at all — and the *absence* of a rejection was read as clearance.
+
+  One descriptor field the caller controls was enough:
+
+  ```
+  descriptor: { requiredContextTokens: 10_000_000 }
+  config:     { routing.fallbackModelId: "claude-opus-5",
+                providers.permitted: ["opencode-go", "openrouter"] }
+
+  v0.2.5:     outcome "selected", modelId "claude-opus-5", fallbackUsed true
+  ```
+
+  on a company where `teamclaude` was not a permitted provider, with the trace
+  asserting *"it clears every hard constraint"*. The same descriptor also
+  carried `oc/claude-opus-5` past the routing-prefix rule (TOG-149), carried a
+  bare Claude id past an unarmed instance (TOG-294), and carried Claude work
+  through a **paused** pooled quota (TOG-228). Three defences that all live
+  inside or below the Claude block, and one upstream `continue` that meant none
+  of them ran.
+
+  The fallback now **asks** the gates instead of looking for their footprints:
+  `nonNegotiableRejectionFor` evaluates the four hard constraints directly
+  against the model, and the candidate loop calls the same function, so the two
+  cannot drift. A gate that never ran returns its verdict on demand. The refusal
+  is also recorded in `rejections`, not only in the trace, so the decision log
+  still carries it when the loop never got far enough to say so.
+
+  The pin and stickiness were checked and were never exposed — both are judged
+  against `qualified`, which a model rejected upstream never enters. There is
+  now a test asserting that rather than a claim.
+
+  Compatibility: no config change. A fallback that was legitimately usable is
+  still usable, including past the estimates it exists to override (quality
+  floor, tier ceiling, a capability the caller only thinks it needs).
+
+### Changed
+
+- **The mislabel error stopped describing a pattern it outgrew (TOG-248).** The
+  validator told operators that `aug/opus4.7` "has a Claude/Anthropic id" — an
+  id containing neither word. The sentence was accurate when the pattern was
+  `claude|anthropic`; TOG-149 widened it to the family names and the message did
+  not follow. Both the validator error and the schema's `family` description now
+  quote the pattern that actually classified the id, so an operator can see why
+  their row was refused instead of being told something visibly untrue about it.
+
+## [0.2.5] - 2026-08-24
+
+### Fixed
+
+- **A bare Claude id is no longer trusted to mean "teamclaude" (TOG-294, owner
+  rule 1).** v0.2.4 refused a Claude id carrying a non-teamclaude routing prefix
+  (`oc/claude-opus-5`) and permitted a **bare** one (`claude-sonnet-5`)
+  unconditionally, on the stated ground that a bare id "is resolved by a combo".
+  That ground was never checked. Measured against the live router:
+
+  - `GET /api/v1/models` returns **1,438** ids, of which **zero** are bare, and
+    **`teamclaude/*` is empty** — there is no teamclaude combo, because TOG-153
+    is not deployed.
+  - `POST /v1/messages` with `{"model": "claude-sonnet-5"}` nonetheless returned
+    **200**, echoing `"model": "anthropic/claude-sonnet-5"` — an id that is
+    *also* absent from the catalogue. Same for `claude-opus-5` and
+    `claude-fable-5`. `claude-haiku-4-5-20251001` returned 400. Whether an
+    alias table or a passthrough onto the live `anthropic` provider rewrote
+    the id is still open — it needs a management-token read of the alias map
+    — and the plugin's behaviour does not depend on the answer, because it
+    refuses the bare id either way.
+
+  An unlisted bare Claude id therefore does not fail closed at the router; it is
+  silently rewritten onto a non-teamclaude Anthropic route and served. That is
+  owner rule 1 broken by **the exact id form owner rule 3 mandates**, which is
+  why it cannot be fixed by banning bare ids.
+
+  The plugin cannot fix the router, so it refuses to walk into it. A bare Claude
+  id is now permitted only when `MODEL_ROUTER_CLAUDE_COMBO_ARMED=1` declares the
+  teamclaude combos deployed. Default off, and off blocks the model at
+  `claude-block` rather than routing it somewhere unverified.
+
+  The prior `claude-block` trace made this worse: it advised *"name the bare
+  model id and let an OmniRoute combo resolve it"*, which moved an operator off
+  a **blocked** leak and onto a **silent** one. That advice is now conditional on
+  the lane being armed, and the unarmed trace names the env var and the deploy
+  step instead.
+
+### Changed
+
+- **`claude-lane-preflight.sh` leads with a provider probe, not the
+  catalogue (TOG-294).** An earlier cut of this script inferred "teamclaude is not a
+  registered provider" from "`teamclaude/*` is absent from the catalogue". A
+  read-only check on the routing scope — `GET /api/v1/providers/{provider}/
+  models`, which answers 200 for a known provider and 400 for an unknown one —
+  shows that inference does not hold:
+
+  | provider | probe | models in catalogue |
+  |---|---|---|
+  | `anthropic` | 200 | 0 |
+  | `claude` | 200 | 0 |
+  | `cc` | 200 | 0 |
+  | `oc` | 200 | 166 |
+  | `openrouter` | 200 | 1012 |
+  | `teamclaude` | **400** | 0 |
+
+  `anthropic` is a **registered provider contributing zero ids to the
+  catalogue**. So catalogue absence never meant "not routable", it meant "no
+  synced model list" — which is why an unlisted `anthropic/claude-sonnet-5` was
+  served. **Catalogue membership is not a containment boundary and the plugin no
+  longer treats it as one.**
+
+  For teamclaude the old check would eventually have produced a **false
+  negative**: once the provider is registered the lane can be live while its
+  catalogue is still empty, and a catalogue-only check would report `NOT ARMED`
+  forever, blocking a lane that had been deployed correctly. The result is now
+  three-state — provider unknown (`NOT ARMED`, TOG-153 outstanding), provider
+  registered but catalogue empty (`NOT ARMED`, insufficient evidence, distinct
+  next step), both signals present (`ARMED IS SUPPORTED`). Still read-only, still
+  no completion; it is two GETs instead of one.
+
+  Live result is unchanged — `teamclaude` probes **400**, so `NOT ARMED`, exit 1.
+  That claim is now measured rather than inferred.
+
+### Added
+
+- **`scripts/claude-lane-preflight.sh`** — answers "is it honest to arm this?"
+  with two **read-only** GETs — a provider probe and `GET /api/v1/models`;
+  exits non-zero while the teamclaude lane is unproven (see **Changed**
+  above for the three-state result). It deliberately sends **no completion**: TOG-294 was
+  found because a verify script sent three live Claude completions off-teamclaude
+  while the owner has that lane disabled, and a preflight whose job is to check
+  that a lane is safe must not use the lane to find out. Needs only a
+  routing-scope key, so the arming claim is auditable by anyone.
+
+### Compatibility
+
+- **No config change, and none is possible.** `claudeComboArmed` is env-derived
+  only; there is deliberately no `providers.*` field for it, and
+  `additionalProperties: false` turns an attempt to set one into a write-time
+  error. Phase 4 installs this plugin into companies whose config the owner does
+  not review, so an installee must not be able to assert facts about the owner's
+  router.
+- **Existing installs lose the Claude lane until the operator arms it.** That is
+  intended and is the point of the release: on this instance the lane was
+  resolving to a non-teamclaude Anthropic route, so what is lost is a route the
+  owner had disabled. Run the preflight, deploy TOG-153, then arm.
+
+## [0.2.4] - 2026-08-24
+
+### Fixed
+
+- **The model id's routing prefix outranks `models[].providers` (TOG-149,
+  owner decision `rule1_scope: teamclaude_only`).** v0.2.3 moved *which models
+  are Claude* into code but left *who serves a Claude model* resting on
+  `models[].providers` — the same kind of company-supplied claim TOG-237 had
+  just removed one layer down. The shortest reproduction on v0.2.3:
+
+  ```json
+  { "id": "oc/claude-opus-5", "family": "claude", "providers": ["teamclaude"] }
+  ```
+
+  cleared every gate with an **empty** `claude-block` rejection list, and when
+  pinned returned `outcome: "selected"` with `honored: true`. Paperclip would
+  then name `oc/claude-opus-5` to OmniRoute, which routes on the `oc/` prefix —
+  so opencode serves Claude. The `providers` array is a claim *about* the
+  destination; the prefix *is* the destination, and the gate read the claim
+  while ignoring the instruction. A Claude id may now carry no prefix (the
+  rule-3 form an OmniRoute combo resolves) or a prefix that is itself a
+  sanctioned Claude destination; anything else is refused, and the rejection
+  names the prefix so an operator does not go and edit the wrong field.
+
+  Deliberately not conditioned on `claudePaygEnabled`: enabling PAYG is the
+  owner adding a second leg to a **combo**, and never makes it correct for
+  Paperclip to hardcode a provider into a model id.
+
+- **Claude models named by family only are now recognised (TOG-149).** The
+  Claude id pattern was `claude|anthropic`. Measured against the live OmniRoute
+  catalogue on 2026-08-24 (1,438 ids), that **missed 15 real Claude routes** —
+  `aug/opus4.7`, `aug/sonnet5-high`, `aug/haiku4.5`, `aug/fable-5` and siblings
+  name the model by family and contain neither substring, so `idNamesClaude`
+  returned false, the Claude block was never entered, and auggie served Claude.
+  The operator-run combo CLI has refused these since TOG-151; the policy layer
+  was selecting them. **The two layers disagreeing was itself the defect.** The
+  pattern is now the CLI's suspicion list,
+  `claude|anthropic|opus|sonnet|haiku|fable|prism`, measured before widening:
+  across all 1,438 live ids it introduces zero matches that are not Claude or
+  Claude-blended.
+
+### Compatibility
+
+No config migration. Both changes only ever **refuse** a route that previously
+resolved, so a company whose model table names bare ids (every shipped fixture)
+is unaffected. A company that had named a prefixed Claude id was relying on the
+defect and must switch to the bare id.
+
 ## [0.2.3] - 2026-08-23
 
 ### Fixed

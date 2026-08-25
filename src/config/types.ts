@@ -52,6 +52,15 @@ export interface ProvidersConfig {
   claudeFamilyProvider: string;
   /** Family names treated as Claude for the purposes of the Claude block. */
   claudeFamilies: string[];
+  /**
+   * True when the instance operator has declared that OmniRoute has teamclaude
+   * Claude combos, so a BARE Claude id resolves to teamclaude rather than to
+   * whatever the router's alias table picks.
+   *
+   * Env-derived only (`MODEL_ROUTER_CLAUDE_COMBO_ARMED`); there is no schema
+   * field for it, so this is never a company's claim to make. TOG-294.
+   */
+  claudeComboArmed: boolean;
 }
 
 export interface TaskClassConfig {
