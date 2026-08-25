@@ -80,3 +80,41 @@ failing on any disagreement. Skipping it does not make a release unsafe; it
 makes the `[MIRROR]` lines in CI unverified for as long as you skip it, which is
 how a copied table quietly stops describing the host it was copied from
 (TOG-232).
+
+## Handing a version to an operator
+
+Everything above proves the *working tree* is good. It says nothing about the
+thing an operator installs: a published release asset, named by a tag, quoted in
+a runbook or approval card written some hours earlier. Run this before you write
+that version into any operator-facing text, and again before you re-cut a card
+that names it:
+
+```bash
+npm run check:pin -- --tag v0.2.5 --expect-sha256 <the sha in the card> --for-card
+```
+
+Seven gates: the tag resolves; `package.json` and `CHANGELOG.md` **at the tag**
+agree with it; a published, non-draft release exists with exactly one `.tgz`;
+the asset downloads and matches the sha you pinned; the asset's `dist/*.js` are
+**byte-identical to a fresh build of the working tree**; and `git diff
+<tag>..HEAD -- src` is empty.
+
+The last two are the point. Gate 6 is what makes "I ran the tests on `main`" and
+"the operator installs the tarball" the same sentence rather than two hopes.
+Gate 7 is allowed to fail, and when it does the answer is to **cut a new tag**,
+not to reword the runbook.
+
+`--for-card` prints a block to paste into the card, and refuses to print it if
+any gate failed *or skipped* — a card is a claim to someone who cannot check it,
+so it may only quote a complete run. `--offline` is refused alongside it.
+
+This is not part of `npm run verify` on purpose: at commit time the release for
+the version under development does not exist yet, so folding it in would either
+fail every build or teach everyone to ignore it. It is a release-and-handoff
+gate, run deliberately.
+
+Three shipped mistakes it would have caught, all of them cards that reached the
+owner's queue: `v0.1.1` (a tag with no published tarball behind it), `v0.2.3`
+(a card naming a version the runbook had already marked unsafe), and `v0.2.4`
+(four `src/` files changed after the tag, so the pinned artifact no longer
+matched the code being tested).
