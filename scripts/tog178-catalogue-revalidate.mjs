@@ -46,7 +46,7 @@ const KEY = process.env.OMNIROUTE_API_KEY
 // The family regex the TOG-178 brief mandates. A `claude` SUBSTRING match is not
 // sufficient and is the documented trap: 13 Claude-bearing ids (the whole aug/ prefix)
 // contain no `claude` string, so a substring audit clears them all.
-const CLAUDE_RE = /(claude|sonnet|opus|haiku|fable)/i
+const CLAUDE_RE = /(claude|sonnet|opus|haiku|fable|mythos|prism)/i
 
 const PROTECTED_PREFIXES = ['hindsight/', 'auto/', 'qtSd/']
 
@@ -170,7 +170,7 @@ checks++
   }
   for (const m of mappings) if (CLAUDE_RE.test(m.pattern)) hits.push(`mapping pattern ${m.pattern}`)
   if (hits.length) fail('C4', `${hits.length} Claude-family references inside a pc/* combo or mapping — containment breach`, hits)
-  else pass('C4', `zero Claude-family ids in any combo name, leg, or mapping pattern (/(claude|sonnet|opus|haiku|fable)/i)`)
+  else pass('C4', `zero Claude-family ids in any combo name, leg, or mapping pattern (${CLAUDE_RE})`)
 }
 
 // ---- C5  no mapping pattern can capture a Claude id ---------------------------------

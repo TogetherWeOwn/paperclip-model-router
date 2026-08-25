@@ -838,9 +838,10 @@ test("mappings.create refuses wildcard patterns", () => {
 });
 
 test("mappings.create refuses the protected model families, by family and not by substring", () => {
-  // Each of these carries a family name but NOT the substring "claude" — the
-  // TOG-237 bypass class. A `claude` check would pass every one of them.
-  for (const pattern of ["aug/opus-5", "sonnet-5", "haiku-4-5", "fable-5", "claude-opus-5"]) {
+  // Each of these carries a family name but NOT necessarily the substring
+  // "claude" — the TOG-237 bypass class. Mythos is not in today's live catalogue,
+  // so this unit case makes the new Claude family fail closed on first appearance.
+  for (const pattern of ["aug/opus-5", "sonnet-5", "haiku-4-5", "fable-5", "mythos-5", "claude-opus-5"]) {
     assert.throws(
       () => buildRequest(resolveVerb("mappings.create"), { body: { ...MAPPING_OK, pattern } }),
       (error) => error instanceof VerbError && error.status === 403,

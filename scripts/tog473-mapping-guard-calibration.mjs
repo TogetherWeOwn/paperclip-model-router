@@ -8,12 +8,12 @@
 // `assertMappingCreate`), and the whole security argument for that guard rests on ONE
 // empirical claim:
 //
-//     the family regex /(claude|sonnet|opus|haiku|fable)/i blocks EVERY Claude-bearing id
+//     the family regex /(claude|sonnet|opus|haiku|fable|mythos|prism)/i blocks EVERY Claude-bearing id
 //     in the catalogue, and blocks NONE of the ids TOG-178 legitimately needs to re-point.
 //
 // That claim is about data, not code. It was true on 2026-08-25 (350/350 blocked, 0/130
 // over-blocked). It can rot silently the moment OmniRoute's catalogue churns — a new
-// Anthropic-served id under some future prefix that spells none of the five family names
+// Anthropic-served id under some future prefix that spells none of the protected family names
 // would pass the guard, and the guard would still look green because every unit test in
 // the broker suite asserts against hand-written strings.
 //

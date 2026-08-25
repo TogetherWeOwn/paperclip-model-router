@@ -367,10 +367,15 @@ export const MAPPING_WILDCARD = /[*?]/;
  * non-Claude model is a recoverable annoyance; letting Claude traffic through
  * is the failure this guard exists to prevent.
  *
- * If a future blended id shares this shape, it must be added here too — this
- * class of model is not derivable from the id and will not announce itself.
+ * `mythos` is a current Claude family name. It is included even though the live
+ * OmniRoute catalogue does not expose a Mythos id today: the guard must reject a
+ * future provider alias such as `aug/mythos5` on first appearance, rather than
+ * waiting for catalogue drift to turn it into another live bypass.
+ *
+ * If a future blended id shares the Prism shape, it must be added here too —
+ * that class of model is not derivable from the id and will not announce itself.
  */
-export const MAPPING_PROTECTED_FAMILY = /(claude|sonnet|opus|haiku|fable|prism)/i;
+export const MAPPING_PROTECTED_FAMILY = /(claude|sonnet|opus|haiku|fable|mythos|prism)/i;
 
 /** Matches the shipped route's zod: pattern is 1..500. */
 const MAPPING_PATTERN_MAX = 500;
