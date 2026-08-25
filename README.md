@@ -73,11 +73,12 @@ deployable artifact is the **version-pinned tarball** attached to each GitHub
 release by `.github/workflows/release.yml`.
 
 ```bash
-# pinned to a known-good version, and rollable back — but not below v0.2.3.
-gh release download v0.2.3 \
+# Pinned to a known-good version. Note that there is currently nothing safe to
+# roll back TO: the floor is v0.2.6, which is also the newest release. See below.
+gh release download v0.2.6 \
   --repo TogetherWeOwn/paperclip-model-router --pattern '*.tgz' --dir /tmp
 mkdir -p /opt/paperclip-plugins/model-router
-tar -xzf /tmp/togetherweown-paperclip-model-router-0.2.3.tgz \
+tar -xzf /tmp/togetherweown-paperclip-model-router-0.2.6.tgz \
   -C /opt/paperclip-plugins/model-router --strip-components=1
 
 # The tarball ships dist/ but not node_modules, and the plugin SDK is
@@ -97,19 +98,34 @@ paperclipai plugin inspect togetherweown.paperclip-model-router
 ```
 
 If the instance gains a private npm registry, publish there and
-`paperclipai plugin install @togetherweown/paperclip-model-router --version 0.2.3`
+`paperclipai plugin install @togetherweown/paperclip-model-router --version 0.2.6`
 becomes the preferred form — the install record is then reproducible by any
 operator without a checkout.
 
-> **`v0.2.3` is a floor, not just the newest tag.** Every version below it ships
-> a routing rule the installee can edit out of the way. `v0.1.1` and earlier
-> allow the budget and quota gates to be bypassed (TOG-228); `v0.2.1` and earlier
-> serve a Claude model whose `family` the config mislabels (TOG-237); `v0.2.2`
-> still lets `providers.claudeFamilyProvider` and `providers.claudePaygEnabled`
-> aim or disable the Claude block from a company's own config row. Phase 4 exists
-> to install this into companies whose config the owner never reviews, so pin
-> forward, not back. The versions in these commands are checked against
-> `package.json` by [`tests/docs-install-version.spec.ts`](tests/docs-install-version.spec.ts).
+> **`v0.2.6` is a floor.** Every version below it ships a routing rule the
+> installee can edit or reason its way around:
+>
+> | below | what it lets through | closed in |
+> |---|---|---|
+> | `v0.1.1` and earlier | the budget and quota gates can be bypassed (TOG-228) | `v0.2.0` |
+> | `v0.2.1` and earlier | a Claude model whose `family` the config mislabels is served (TOG-237) | `v0.2.2` |
+> | `v0.2.2` | `providers.claudeFamilyProvider` / `providers.claudePaygEnabled` aim or disable the Claude block from a company's own config row | `v0.2.3` |
+> | `v0.2.3` | `models[].providers` outranks the id's routing prefix, and a Claude model named by family alone is not recognised (TOG-149) | `v0.2.4` |
+> | `v0.2.4` | a **bare** Claude id is trusted to mean "teamclaude" when nothing in the catalogue resolves it that way (TOG-294) | `v0.2.5` |
+> | `v0.2.5` | the fallback is judged by gates that never ran (TOG-248) | `v0.2.6` |
+>
+> Every release since `v0.2.3` closed another way around owner rule 1, so the
+> floor has tracked the newest tag rather than lagging it. The practical
+> consequence: **rollback is not currently an available remedy.** If a
+> regression forces you below the floor, disable the plugin rather than pin
+> under it, and say so on the issue. Phase 4 exists to install this into
+> companies whose config the owner never reviews, so pin forward, not back.
+>
+> The versions in the commands above are checked against `package.json` by
+> [`tests/docs-install-version.spec.ts`](tests/docs-install-version.spec.ts).
+> That check is what keeps this section from going stale silently; the floor
+> table is prose and is **not** checked, so it must be updated by hand whenever
+> a release closes another bypass.
 
 Confirm the target instance before installing — `paperclipai plugin target`
 prints the API base URL and server version it will act against.

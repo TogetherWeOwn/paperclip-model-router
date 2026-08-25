@@ -27,11 +27,12 @@ paperclipai plugin target
 #    Read the API base URL and version. If it is not the instance you mean, stop.
 
 # 2. Install the version-pinned tarball from the GitHub release.
-#    v0.2.3 is the floor — see Rollback below before choosing anything older.
-gh release download v0.2.3 \
+#    v0.2.6 is BOTH the floor and the newest release, so there is nothing older
+#    that is safe to choose. See Rollback below.
+gh release download v0.2.6 \
   --repo TogetherWeOwn/paperclip-model-router --pattern '*.tgz' --dir /tmp
 mkdir -p /opt/paperclip-plugins/model-router
-tar -xzf /tmp/togetherweown-paperclip-model-router-0.2.3.tgz \
+tar -xzf /tmp/togetherweown-paperclip-model-router-0.2.6.tgz \
   -C /opt/paperclip-plugins/model-router --strip-components=1
 
 #    The tarball ships dist/ but not node_modules. The plugin SDK is
@@ -134,15 +135,27 @@ paperclipai plugin upgrade togetherweown.paperclip-model-router <version>
 paperclipai plugin inspect togetherweown.paperclip-model-router
 ```
 
-> **Do not roll back below `v0.2.3`.** Rollback is a safety valve for a
-> regression, and below that floor it reintroduces one instead: the gate
-> bypasses closed in `v0.2.0` (TOG-228), the mislabelled-`family` route around
-> the Claude block closed in `v0.2.2` (TOG-237), and the `claudeFamilyProvider` /
-> `claudePaygEnabled` route around it closed in `v0.2.3`. Each of those is
-> reachable from a company's own config row, so the blast radius of rolling back
-> is every company on the instance, not just the one you were fixing. If a
-> regression forces you below the floor, disable the plugin rather than pin under
-> it, and say so on the issue.
+> **Do not roll back below `v0.2.6` — which today means do not roll back.**
+> Rollback is a safety valve for a regression, and below the floor it
+> reintroduces one instead. Every release from `v0.2.0` onward closed a way
+> around a gate the owner set:
+>
+> - `v0.2.0` — the budget and quota gate bypasses (TOG-228)
+> - `v0.2.2` — the mislabelled-`family` route around the Claude block (TOG-237)
+> - `v0.2.3` — the `claudeFamilyProvider` / `claudePaygEnabled` route around it
+> - `v0.2.4` — `models[].providers` outranking the id's own routing prefix (TOG-149)
+> - `v0.2.5` — a bare Claude id being read as proof of a teamclaude route (TOG-294)
+> - `v0.2.6` — the fallback being judged by gates that never ran (TOG-248)
+>
+> Each of those is reachable from a company's own config row, so the blast
+> radius of rolling back is every company on the instance, not just the one you
+> were fixing. Because the floor has kept pace with the newest tag, **there is
+> currently no earlier version to fall back to.** If a regression forces you
+> below the floor, disable the plugin rather than pin under it, and say so on
+> the issue.
+>
+> This list is prose and nothing checks it. When a release closes another
+> bypass, add it here and in the README's floor table in the same commit.
 
 Company configs do not need to be rolled back with it. Unknown keys are rejected
 at write time, so a stored config never contains a key an older build cannot

@@ -10,6 +10,30 @@ version is not present here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The documented install path had rotted three releases behind, and the
+  rollback floor was understating itself by three (TOG-156).** The README and
+  `docs/OPERATIONS.md` told an operator to `gh release download v0.2.3` while
+  the repo shipped `0.2.6`. Those commands are copy-pasted verbatim onto a live
+  instance, so a stale version there is not a typo — it installs an older build.
+
+  `tests/docs-install-version.spec.ts` now pins every *executable* install
+  command to `package.json`, so the next bump fails the suite until the docs
+  move with it. Its patterns are anchored on the command shape rather than on a
+  bare `vX.Y.Z`, so prose that names an old version deliberately is left alone,
+  and a vacuity check asserts the commands are still present at all — the guard
+  cannot pass by matching nothing.
+
+  Separately, the stated floor was wrong. It read `v0.2.3`, but `v0.2.4`
+  (`models[].providers` outranking the id's routing prefix, TOG-149), `v0.2.5`
+  (a bare Claude id read as proof of a teamclaude route, TOG-294) and `v0.2.6`
+  (the fallback judged by gates that never ran, TOG-248) each closed a further
+  way around owner rule 1. The floor is `v0.2.6`, which is also the newest
+  release — so rollback is not currently an available remedy, and both documents
+  now say that outright instead of implying an earlier safe version exists.
+  Nothing checks the floor list; both places say so and say to update it by hand.
+
 ### Security
 
 - **The secret scanner was printing the credential it caught into the CI log
