@@ -29,7 +29,8 @@
     "test:watch": "vitest",
     "verify": "npm run typecheck && npm run test && npm run build && npm run verify:host && npm run rehearse",
     "verify:host": "node scripts/verify-against-host.mjs",
-    "rehearse": "node scripts/acceptance-rehearsal.mjs"
+    "rehearse": "node scripts/acceptance-rehearsal.mjs",
+    "preflight:tog178": "node scripts/tog178-catalogue-revalidate.mjs"
   },
   "dependencies": {
     "@paperclipai/plugin-sdk": "2026.817.0"
