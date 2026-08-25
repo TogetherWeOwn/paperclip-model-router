@@ -44,23 +44,37 @@
 //   TOG473_CATALOGUE_FIXTURE
 //         Path to a saved /v1/models JSON body, used INSTEAD of the live GET. A fixture
 //         run is NOT a live check and says so, loudly, in the banner and the RESULT line.
-//   TOG473_BROKER_DIR     default: the omniroute-broker checkout beside this repo.
-//                         The guard is imported FROM THE BROKER, never re-implemented
+//   TOG473_BROKER_DIR     default: the VENDORED broker at plugins/omniroute-broker in this
+//                         repo. The guard is imported FROM THE BROKER, never re-implemented
 //                         here — a copy of the regex would drift and this script would
 //                         then certify itself rather than the shipped code.
+//
+//                         ⚠️ Vendoring introduces a SECOND failure mode that did not exist
+//                         when the broker lived on one loose disk path: two copies that
+//                         silently diverge, so this script certifies one while the operator
+//                         installs the other. Check 0 below closes it — whenever an
+//                         out-of-repo copy is present, its dist/ fingerprint must equal the
+//                         vendored one, or the run FAILS. Divergence is never a warning.
 //   TOG178_DIR            default /paperclip/operator-handoff (for the 52-mapping plan)
 
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = resolve(HERE, '..')
 
+// The vendored copy is authoritative: it is the only one under version control, the only
+// one CI can see, and the only one a reviewer can diff. The loose sibling checkout is the
+// pre-TOG-391 location and is kept working only so an operator mid-install is not stranded.
+const VENDORED_BROKER = resolve(REPO, 'plugins', 'omniroute-broker')
+const LEGACY_BROKER = resolve(REPO, '..', 'omniroute-broker')
+
 const MODELS_URL = process.env.OMNIROUTE_MODELS_URL || 'http://omniroute:20129/v1/models'
 const KEY = process.env.OMNIROUTE_API_KEY
 const FIXTURE = process.env.TOG473_CATALOGUE_FIXTURE
-const BROKER_DIR = process.env.TOG473_BROKER_DIR || resolve(REPO, '..', 'omniroute-broker')
+const BROKER_DIR = process.env.TOG473_BROKER_DIR || VENDORED_BROKER
 const TOG178_DIR = process.env.TOG178_DIR || '/paperclip/operator-handoff'
 
 let failures = 0
@@ -72,6 +86,87 @@ function die(msg) {
   console.log(`\nRESULT: COULD NOT CHECK — ${msg}`)
   console.log('This is not a pass. Exit 2.')
   process.exit(2)
+}
+
+// ── Check 0: no two brokers may disagree. ────────────────────────────────────────────
+// Fingerprint dist/*.js by content, sorted by name so the hash is order-independent.
+// Returns null when the directory has no dist/ — "absent" and "different" are not the
+// same answer and must not collapse into one.
+function fingerprintDist(dir) {
+  const distDir = join(dir, 'dist')
+  if (!existsSync(distDir)) return null
+  const files = readdirSync(distDir).filter((f) => f.endsWith('.js')).sort()
+  if (files.length === 0) return null
+  const h = createHash('sha256')
+  for (const f of files) {
+    h.update(f)
+    h.update('\0')
+    h.update(readFileSync(join(distDir, f)))
+    h.update('\0')
+  }
+  return { hash: h.digest('hex'), count: files.length }
+}
+
+const vendoredPrint = fingerprintDist(VENDORED_BROKER)
+if (!vendoredPrint) {
+  die(`no vendored broker at ${VENDORED_BROKER}. The in-repo copy is authoritative and must exist.`)
+}
+info(`vendored broker: ${vendoredPrint.count} dist file(s), sha256 ${vendoredPrint.hash.slice(0, 16)}`)
+
+// The vendored guard is only authoritative if it is actually COMMITTED. The repo's blanket
+// `dist/` ignore rule matched this directory during the TOG-391 vendoring and silently left
+// every guard file untracked — and this script still passed, because it reads the disk, not
+// the index. A guard that exists only on one developer's filesystem is the exact problem
+// vendoring was meant to end, so assert tracked-ness rather than presence.
+try {
+  const { execFileSync } = await import('node:child_process')
+  const tracked = execFileSync('git', ['ls-files', '-z', '--', 'plugins/omniroute-broker/dist'], {
+    cwd: REPO,
+    encoding: 'utf8',
+  })
+    .split('\0')
+    .filter((p) => p.endsWith('.js'))
+  if (tracked.length === 0) {
+    fail(`the vendored broker's dist/ is NOT tracked by git — it exists on disk only.`)
+    info(`\`git check-ignore -v plugins/omniroute-broker/dist/verbs.js\` will name the rule.`)
+    info(`.gitignore needs \`!plugins/omniroute-broker/dist/\` (un-ignore the DIRECTORY).`)
+  } else if (tracked.length !== vendoredPrint.count) {
+    fail(`git tracks ${tracked.length} broker dist file(s) but ${vendoredPrint.count} are on disk — some are untracked.`)
+    info(`untracked guard files are invisible to CI and to every other checkout.`)
+  } else {
+    pass(`all ${tracked.length} vendored broker dist file(s) are tracked by git`)
+  }
+} catch {
+  info(`could not consult git (not a checkout, or git unavailable) — tracked-ness NOT verified.`)
+}
+
+// Any other copy on this box that the operator might install instead must be byte-identical.
+let comparedAny = false
+for (const other of [LEGACY_BROKER, process.env.TOG473_BROKER_DIR]) {
+  if (!other) continue
+  const otherDir = resolve(other)
+  if (otherDir === VENDORED_BROKER) continue
+  const otherPrint = fingerprintDist(otherDir)
+  if (!otherPrint) continue
+  comparedAny = true
+  if (otherPrint.hash !== vendoredPrint.hash) {
+    fail(`BROKER DIVERGENCE — two copies of the broker are not byte-identical.`)
+    info(`vendored (authoritative): ${VENDORED_BROKER}`)
+    info(`  ${vendoredPrint.count} file(s), sha256 ${vendoredPrint.hash}`)
+    info(`other copy:               ${otherDir}`)
+    info(`  ${otherPrint.count} file(s), sha256 ${otherPrint.hash}`)
+    info(`Whatever this run certifies may not be what gets installed. Reconcile them first:`)
+    info(`  diff -ru "${VENDORED_BROKER}/dist" "${otherDir}/dist"`)
+    info(`The in-repo copy wins unless you can show the loose one has a fix that never landed.`)
+  } else {
+    pass(`the copy at ${otherDir} is byte-identical to the vendored broker`)
+  }
+}
+if (!comparedAny) {
+  // Say so out loud. A check that quietly compared nothing is indistinguishable in the
+  // output from one that compared and agreed — that is how vacuous gates ship green.
+  info(`no second broker copy found — divergence check COMPARED NOTHING (not a pass).`)
+  info(`before installing, re-run with TOG473_BROKER_DIR=<the directory you are about to install>.`)
 }
 
 // ── Load the guard from the broker itself. Never re-implement it here. ───────────────
