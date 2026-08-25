@@ -172,7 +172,10 @@ describe("a broken harness must never read as a clean spec", () => {
   it("an unreachable catalogue exits 2, not 0", () => {
     const r = run(stage(), {
       TOG178_CATALOGUE_FIXTURE: "",
-      OMNIROUTE_MODELS_URL: "http://omniroute:29999/v1/models",
+      // Port 1 on loopback is refused deterministically on every runner. Pointing at
+      // the `omniroute` alias instead would make this test depend on DNS that exists
+      // in an agent container and not in CI.
+      OMNIROUTE_MODELS_URL: "http://127.0.0.1:1/v1/models",
       OMNIROUTE_API_KEY: "sk-not-a-real-key",
     });
     expect(r.code, r.out).toBe(2);
