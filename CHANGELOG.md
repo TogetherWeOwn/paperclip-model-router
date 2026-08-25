@@ -10,7 +10,70 @@ version is not present here.
 
 ## [Unreleased]
 
-Nothing yet.
+### Security
+
+- **The secret scanner was printing the credential it caught into the CI log
+  (TOG-227).** Both custom rules in `.gitleaks.toml` put their capture group on
+  the *key name* rather than the value. gitleaks treats capture group 1 as "the
+  secret" — it is what `--redact` replaces and what `[allowlist] regexes` are
+  matched against — so `--redact` suppressed the word `ANTHROPIC` and printed
+  the key. Reproduced: a file containing `ANTHROPIC_API_KEY = "sk-ant-api03-…"`
+  renders in the scan output as `REDACTED_API_KEY = "sk-ant-api03-…"`.
+
+  That path only executes when a real key is actually present — the one case
+  where being wrong costs something, and the one case no green build ever
+  exercises. Both rules now capture the value, and `omniroute-credential`'s
+  value class excludes quotes so the captured secret is the credential rather
+  than the credential with the source file's punctuation attached.
+
+  Fixed alongside it: allowlist entries were unanchored, so exempting the
+  fixture `sk-live-not-a-reference` silently exempted
+  `sk-live-not-a-reference<real key>` too. All entries are now `^…$`, which is
+  what the "exempted by exact value" comment already claimed. The three
+  name-based entries (`apiKeySecretRef`, `OMNIROUTE_API_KEY`,
+  `ANTHROPIC_API_KEY`) are removed: they were matched against the captured
+  secret, never against the variable name, so they had never had any effect.
+
+### Added
+
+- **`scripts/gitleaks-selftest.sh` — a test for the secret scanner itself
+  (TOG-227).** `gitleaks dir .` proves the repository is clean under the current
+  config and says nothing about whether that config still detects anything. A
+  defanged rule and a clean repository produce identical output, so green is
+  also what a broken scanner looks like — which is how both defects above
+  survived.
+
+  > **Not yet wired into CI.** It belongs as a step in the `secret-scan` job,
+  > ahead of the two scans, reusing the gitleaks binary that job already
+  > installs. The push was rejected: `refusing to allow a GitHub App to create
+  > or update workflow .github/workflows/ci.yml without workflows permission`.
+  > Until the App installation gets that scope, run it by hand —
+  > `scripts/gitleaks-selftest.sh "$(command -v gitleaks)"` — and treat the
+  > secret-scan job's green as unverified. Tracked separately.
+
+  Ten assertions: each rule fires on a realistic key; each allowlist entry
+  exempts its fixture and *not* that fixture with a suffix appended; and
+  `--redact` suppresses the value while leaving the variable name visible.
+  Mutation-tested against all three defects — reinstating the key-name capture
+  group fails 3 assertions, un-anchoring an allowlist entry fails 1, widening
+  the value class back to `\S` fails 1.
+
+  Two notes for anyone adding a probe. Values must look like real credentials:
+  gitleaks' default allowlist discards low-entropy matches, so an `"AAAA…"`
+  probe reports zero findings and reads as a broken rule. And a probe's name and
+  value are held in separate variables and joined at runtime, because a
+  credential-shaped literal in this file would be flagged by the very scan it
+  tests — and exempting the probes is not a way out, since they run under the
+  same config and would stop firing.
+
+### Fixed
+
+- **`main` was red.** `322de62` (TOG-152, PR #19) added
+  `OMNIROUTE_API_KEY: "sk-not-a-real-key"` to `tests/tog178-preflight.spec.ts`
+  — a deliberate placeholder, needed so the test can prove the preflight exits
+  `2` on an unreachable catalogue instead of reading as a clean spec. The
+  secret scan has failed on every commit since. It is now exempted by exact
+  anchored value.
 
 ## [0.2.6] - 2026-08-24
 

@@ -7,16 +7,41 @@
 [extend]
 useDefault = true
 
+# Both rules below capture THE VALUE, not the variable name.
+#
+# They did not, originally, and it mattered twice. gitleaks reports capture
+# group 1 as "the secret": it is what `--redact` replaces, and it is what the
+# `[allowlist] regexes` below are matched against. With the group wrapped around
+# `(anthropic|teamclaude)` / `(api[_-]?key|password|token)`, both consequences
+# were backwards:
+#
+#   1. `--redact` hid the harmless word and printed the credential. Reproduced:
+#      `ANTHROPIC_API_KEY = "sk-ant-api03-…"` in a scanned file rendered in the
+#      CI log as `REDACTED_API_KEY = "sk-ant-api03-…"`. A scanner whose whole
+#      job is to stop a key reaching a third party was publishing that key into
+#      a GitHub Actions log, on the one code path that only runs when a real key
+#      is present.
+#   2. The allowlist could not exempt a value, only the literal strings
+#      `anthropic` / `API_KEY` — which would have disabled the rule wholesale.
+#
+# The groups are now non-capturing on the name and capturing on the value, so
+# `--redact` redacts the secret and a fixture can be exempted by its exact
+# value. TOG-227.
+
 [[rules]]
 id = "teamclaude-proxy-key"
 description = "teamclaude / Anthropic proxy key"
-regex = '''(?i)(anthropic|teamclaude)[_-]?api[_-]?key["'\s:=]+[A-Za-z0-9_\-]{20,}'''
+regex = '''(?i)(?:anthropic|teamclaude)[_-]?api[_-]?key["'\s:=]+([A-Za-z0-9_\-]{20,})'''
 tags = ["key", "anthropic"]
 
 [[rules]]
 id = "omniroute-credential"
 description = "OmniRoute API key or management password"
-regex = '''(?i)omniroute[_-]?(api[_-]?key|password|token)["'\s:=]+\S{12,}'''
+# The value class excludes quotes, so the captured secret is the credential and
+# not `sk-…",` with the source file's punctuation glued on. `\S{12,}` swallowed
+# the closing quote and comma, which both defeats an anchored allowlist entry
+# and makes the reported secret not equal to the secret.
+regex = '''(?i)omniroute[_-]?(?:api[_-]?key|password|token)["'\s:=]+([^\s"']{12,})'''
 tags = ["key", "omniroute"]
 
 [allowlist]
@@ -32,18 +57,24 @@ description = "Config keys and documentation that name a credential without cont
 # The regex allowlist below is enough on its own: it exempts the specific
 # credential-shaped strings the docs legitimately contain, everywhere, and
 # leaves every other rule live in every file. TOG-228.
+# Every entry is ANCHORED (`^…$`). gitleaks matches these against the captured
+# secret with an unanchored search, so a bare `sk-live-not-a-reference` also
+# exempts `sk-live-not-a-referenceAAAA…` — a real key is one careless prefix
+# away from inheriting a fixture's exemption. Anchoring is what makes the
+# "exempted by exact value" claim below actually true. TOG-227.
 regexes = [
-  # The config field holds a Paperclip secret *reference*, never a value.
-  '''apiKeySecretRef''',
-  '''OMNIROUTE_API_KEY''',
-  '''ANTHROPIC_API_KEY''',
   # Test fixtures deliberately assert that credential-shaped strings are rejected.
-  '''sk-live-not-a-reference''',
+  '''^sk-live-not-a-reference$''',
+  # tests/tog178-preflight.spec.ts points the preflight at a refused port to prove
+  # it exits 2 rather than reading as a clean spec. Reaching that assertion needs
+  # SOME value in OMNIROUTE_API_KEY. This finding turned `main` red at 322de62
+  # (TOG-152, PR #19).
+  '''^sk-not-a-real-key$''',
   # A Paperclip secret ID is a UUID pointer, not a value — that is the whole
   # point of `format: "secret-ref"`. The tests and the host-validation script
   # need one well-formed id to assert that the accepted shape is still accepted,
   # and the generic-api-key rule cannot tell a UUID from a token. Exempted by
   # exact value, so any OTHER UUID-shaped string next to a secret-ish key still
   # trips the rule.
-  '''3f2504e0-4f89-41d3-9a0c-0305e82c3301''',
+  '''^3f2504e0-4f89-41d3-9a0c-0305e82c3301$''',
 ]
