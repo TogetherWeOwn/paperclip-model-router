@@ -10,6 +10,21 @@ version is not present here.
 
 ## [Unreleased]
 
+### Changed
+
+- **The Claude provider allowlist now includes `cliproxy` by owner-approved policy
+  widening (TOG-502).** This is not a bug fix: the owner answered TOG-424 with
+  `admit`, TOG-360 records that policy, and TOG-352 verified the CLIProxy lane
+  live through OmniRoute before this code change. `CLAUDE_PROVIDER_ALLOWLIST`
+  therefore widens from `teamclaude` to `teamclaude` plus `cliproxy`.
+
+  `providers.claudeFamilyProvider` still selects exactly one entry from that
+  code list. It can choose either approved provider, case-insensitively, but it
+  cannot combine them or admit a provider such as `openrouter`; values outside
+  the list remain a config-validation error and fail closed in the engine.
+  Removing `cliproxy` would reverse the stated owner preference and requires a
+  new owner decision rather than an ordinary rollback.
+
 ### Fixed
 
 - **The documented install path had rotted three releases behind, and the

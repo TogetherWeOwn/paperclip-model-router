@@ -147,23 +147,24 @@ export function idNamesClaude(modelId: string): boolean {
  *     boolean that skipped the branch outright and produced a warning, not an
  *     error.
  *
- * Both reproduced on v0.2.2. Owner rule 1 says Claude runs on teamclaude only
- * and that PAYG stays disabled until the OWNER enables it — so neither of those
- * may be a company's decision to make. Phase 4 installs this plugin into other
- * companies, whose config the owner does not review; a rule enforced by a field
- * the installee sets is not enforced.
+ * Both reproduced on v0.2.2. Owner rule 1 says Claude runs only on an
+ * owner-approved provider and that PAYG stays disabled until the OWNER enables
+ * it — so neither of those may be a company's decision to make. Phase 4
+ * installs this plugin into other companies, whose config the owner does not
+ * review; a rule enforced by a field the installee sets is not enforced.
  *
  * Configuration may still NARROW this list — `claudeFamilyProvider` picks one
  * entry from it — and can no longer widen it. A value outside this list
  * intersects to the empty set and the model is blocked, so the failure
  * direction is a refusal.
  *
- * This is the list to edit if the owner's answer to `rule1_scope` is the
- * permissive reading (adding `"opencode"` for `oc/claude-*`). That is a
- * one-line change here, deliberately: the enforcement architecture does not
- * depend on which way that question is answered, only its contents do.
+ * This list changes only by owner decision. TOG-502 records the approved
+ * widening from teamclaude to teamclaude plus cliproxy after the CLIProxy lane
+ * was verified live through OmniRoute. The enforcement architecture does not
+ * depend on which providers the list contains; configuration still selects
+ * exactly one entry and cannot add another.
  */
-export const CLAUDE_PROVIDER_ALLOWLIST: readonly string[] = ["teamclaude"];
+export const CLAUDE_PROVIDER_ALLOWLIST: readonly string[] = ["teamclaude", "cliproxy"];
 
 /**
  * True when `provider` may serve Claude while PAYG is off.
