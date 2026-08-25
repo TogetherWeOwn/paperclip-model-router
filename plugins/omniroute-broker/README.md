@@ -261,8 +261,11 @@ record. So it cannot reason about any model whose Claude-ness lives somewhere
 other than the id. That is not hypothetical: `aug/prism-a` is
 `"name": "Prism (Claude + Gemini)"` and carries no family token in its id at all.
 `prism` is therefore **enumerated** in `MAPPING_PROTECTED_FAMILY`, not derived.
-Any future blended id of this shape must be added the same way — it will not
-announce itself.
+`mythos` is also enumerated: it is a current Claude family name even though the
+live OmniRoute catalogue exposes no Mythos id today. A future alias such as
+`aug/mythos5` must be refused on first appearance, not after the next live
+calibration discovers it. Any future blended id of the Prism shape must be added
+the same way — it will not announce itself.
 
 ⚠️ **How it was found, because the method matters more than the fix.** This
 escaped a 480-id catalogue fixture, which reported "350/350 blocked, 0 escaped"

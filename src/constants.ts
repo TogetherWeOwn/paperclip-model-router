@@ -89,14 +89,15 @@ export const DECISION_LOG_LIMIT = 200;
  * rule 1 broken by an id the pattern simply did not recognise.
  *
  * The operator-run combo CLI has refused these since TOG-151 — its suspicion
- * list is `claude|anthropic|opus|sonnet|haiku|fable|prism` plus `aug/*`. The two
+ * list is `claude|anthropic|opus|sonnet|haiku|fable|mythos|prism` plus `aug/*`. The two
  * layers disagreeing is itself the defect: the combo layer refused what the
  * policy layer was willing to select. This pattern is now the CLI's list.
  *
- * `prism` is a blended auggie route (prism-a carries Claude, prism-b does not).
- * Matching prism-b is a deliberate false positive: a blended route cannot be
- * shown to keep Claude out, the CLI refuses blended routes outright, and the
- * failure direction here is a refusal.
+ * `mythos` is a current Claude family name even though the live catalogue has no
+ * Mythos id today. `prism` is a blended auggie route (prism-a carries Claude,
+ * prism-b does not). Matching prism-b is a deliberate false positive: a blended
+ * route cannot be shown to keep Claude out, the CLI refuses blended routes
+ * outright, and the failure direction here is a refusal.
  *
  * Measured before widening, not after: across all 1,438 live ids the added
  * alternatives introduce ZERO matches that are not Claude or Claude-blended.
@@ -105,7 +106,7 @@ export const DECISION_LOG_LIMIT = 200;
  * needs it as a JSON Schema `pattern`, and two copies of a security predicate is
  * one copy too many.
  */
-export const CLAUDE_ID_PATTERN_SOURCE = "claude|anthropic|opus|sonnet|haiku|fable|prism";
+export const CLAUDE_ID_PATTERN_SOURCE = "claude|anthropic|opus|sonnet|haiku|fable|mythos|prism";
 
 /** `CLAUDE_ID_PATTERN_SOURCE` as a case-insensitive matcher. */
 export const CLAUDE_ID_PATTERN = new RegExp(CLAUDE_ID_PATTERN_SOURCE, "i");

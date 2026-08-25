@@ -228,6 +228,7 @@ describe("instanceConfigSchema", () => {
       "claude-opus-5",
       "CLAUDE_4_5_HAIKU",
       "Claude-Sonnet-5",
+      "aug/mythos5",
       "anthropic/claude-3",
       "AnThRoPiC",
       "qwen3-coder",

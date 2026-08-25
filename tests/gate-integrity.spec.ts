@@ -1093,6 +1093,7 @@ describe("rule 1: Claude models named by family only", () => {
     "aug/sonnet5-high",
     "aug/haiku4.5",
     "aug/fable-5",
+    "aug/mythos5",
     "aug/prism-a",
   ];
 
