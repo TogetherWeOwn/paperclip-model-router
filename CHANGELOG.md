@@ -58,6 +58,67 @@ version is not present here.
   next to the failure count, because "all host-side checks passed" while three
   of them never ran is the sentence this script exists to make unwritable.
 
+## [0.2.6] - 2026-08-24
+
+### Fixed
+
+- **The fallback stopped being judged by gates that never ran (TOG-248, owner
+  rule 1).** Found by the post-merge review of TOG-237/PR #6, which asked for a
+  route the union in `isClaudeFamily` did not close. This is not that route —
+  the classifier holds — it is one layer further out: the fallback never asked
+  the classifier anything.
+
+  `routing.fallbackModelId` decided whether it was allowed to run by SEARCHING
+  the rejection list for an entry naming it with a non-negotiable stage
+  (`not-in-table`, `claude-block`, `provider-not-permitted`, `quota-gate`). That
+  is evidence-based, and the evidence only exists if the candidate loop reached
+  the gate. The loop rejects on **capability** and **context window** first and
+  `continue`s, so a fallback that failed one of those was never asked the Claude
+  question at all — and the *absence* of a rejection was read as clearance.
+
+  One descriptor field the caller controls was enough:
+
+  ```
+  descriptor: { requiredContextTokens: 10_000_000 }
+  config:     { routing.fallbackModelId: "claude-opus-5",
+                providers.permitted: ["opencode-go", "openrouter"] }
+
+  v0.2.5:     outcome "selected", modelId "claude-opus-5", fallbackUsed true
+  ```
+
+  on a company where `teamclaude` was not a permitted provider, with the trace
+  asserting *"it clears every hard constraint"*. The same descriptor also
+  carried `oc/claude-opus-5` past the routing-prefix rule (TOG-149), carried a
+  bare Claude id past an unarmed instance (TOG-294), and carried Claude work
+  through a **paused** pooled quota (TOG-228). Three defences that all live
+  inside or below the Claude block, and one upstream `continue` that meant none
+  of them ran.
+
+  The fallback now **asks** the gates instead of looking for their footprints:
+  `nonNegotiableRejectionFor` evaluates the four hard constraints directly
+  against the model, and the candidate loop calls the same function, so the two
+  cannot drift. A gate that never ran returns its verdict on demand. The refusal
+  is also recorded in `rejections`, not only in the trace, so the decision log
+  still carries it when the loop never got far enough to say so.
+
+  The pin and stickiness were checked and were never exposed — both are judged
+  against `qualified`, which a model rejected upstream never enters. There is
+  now a test asserting that rather than a claim.
+
+  Compatibility: no config change. A fallback that was legitimately usable is
+  still usable, including past the estimates it exists to override (quality
+  floor, tier ceiling, a capability the caller only thinks it needs).
+
+### Changed
+
+- **The mislabel error stopped describing a pattern it outgrew (TOG-248).** The
+  validator told operators that `aug/opus4.7` "has a Claude/Anthropic id" — an
+  id containing neither word. The sentence was accurate when the pattern was
+  `claude|anthropic`; TOG-149 widened it to the family names and the message did
+  not follow. Both the validator error and the schema's `family` description now
+  quote the pattern that actually classified the id, so an operator can see why
+  their row was refused instead of being told something visibly untrue about it.
+
 ## [0.2.5] - 2026-08-24
 
 ### Fixed

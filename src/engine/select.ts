@@ -47,7 +47,6 @@ import {
   type ModelEntry,
   type ModelTier,
   type Rejection,
-  type RejectionStage,
   type RoutingDecision,
   type RuntimeSignals,
   type TaskDescriptor,
@@ -56,27 +55,6 @@ import {
 /** Default token estimate when the caller gives none. Only affects ranking. */
 const DEFAULT_INPUT_TOKENS = 8_000;
 const DEFAULT_OUTPUT_TOKENS = 2_000;
-
-/**
- * Rejection stages the fallback model may NOT cross.
- *
- * `routing.fallbackModelId` exists so a company can choose a floor rather than
- * a failure, and it is deliberately allowed past the *estimates*: the tier
- * ceiling, the quality floor, a capability the caller only thinks it needs.
- * Those are judgements about fit.
- *
- * These four are not judgements. They are statements that this company may not
- * be served by this model at all — it is not in the table, it is Claude and
- * Claude is confined to one provider, its provider is not approved, or the
- * pooled quota is exhausted. A fallback that crossed them would be a hole
- * straight through Rule 1, and was: see TOG-228.
- */
-const NON_NEGOTIABLE_STAGES: readonly RejectionStage[] = [
-  "not-in-table",
-  "claude-block",
-  "provider-not-permitted",
-  "quota-gate",
-];
 
 function tierIndex(tier: ModelTier): number {
   const index = MODEL_TIER_ORDER.indexOf(tier);
@@ -241,6 +219,135 @@ function permittedProvidersFor(
   return { providers: intersect, blockedBy: null };
 }
 
+/**
+ * Why the Claude block refused this model, in the operator's language.
+ *
+ * Extracted because it has two call sites now: the candidate loop, and the
+ * fallback check. It used to have one, and the fallback's version of the same
+ * question was "did the loop happen to leave a rejection lying around" — see
+ * `nonNegotiableRejectionFor`.
+ */
+function claudeBlockReason(model: ModelEntry, config: RouterConfig): string {
+  const destination = claudeDestinationPermitted(model.id, config.providers.claudeComboArmed);
+  return (
+    `Claude-family model may only be served by ${CLAUDE_PROVIDER_ALLOWLIST.join(" or ")} while Claude PAYG is disabled` +
+    // Say plainly when it was the ID that refused the model rather than
+    // the config, otherwise the trace blames `providers` for a decision
+    // the routing prefix made and the operator edits the wrong field.
+    (destination.reason === "prefix-not-allowed"
+      ? // Only advise the bare-id form when a combo is actually armed to
+        // resolve it. Unarmed, that advice moved the operator from a
+        // blocked leak (`oc/claude-*`) onto a silent one — TOG-294 measured
+        // a bare id being rewritten to `anthropic/*` and served.
+        ` (routing prefix "${destination.prefix}/" in the model id names a provider that is not an allowed Claude destination — this outranks providers: [${model.providers.join(", ")}], which is a claim about the destination rather than the destination itself; ` +
+        (config.providers.claudeComboArmed
+          ? "name the bare model id and let an OmniRoute combo resolve it)"
+          : `and the bare model id is NOT a fix while ${CLAUDE_COMBO_ARMED_ENV} is unset — an unlisted bare Claude id is silently resolved to a non-teamclaude Anthropic route. Deploy the teamclaude combos first)`)
+      : "") +
+    (destination.reason === "combo-not-armed"
+      ? ` (the model id carries no routing prefix, which is the correct rule-3 form, but ${CLAUDE_COMBO_ARMED_ENV} is unset — this instance has not declared that OmniRoute has teamclaude Claude combos, so a bare Claude id would be resolved by the router's alias table to a non-teamclaude Anthropic route and served without error. Refusing rather than routing it somewhere unverified. Deploy TOG-153, confirm "teamclaude/*" is non-empty in GET /api/v1/models, then set ${CLAUDE_COMBO_ARMED_ENV}=1)`
+      : "") +
+    // Name the config value only when it is the thing that refused the model,
+    // and say plainly that it was overruled. The old message interpolated
+    // `claudeFamilyProvider` unconditionally, so a config that had aimed the
+    // block at OpenRouter printed "may only be served by openrouter" — the
+    // trace stated the misconfiguration back as if it were owner rule 1.
+    (!isClaudeProviderAllowed(config.providers.claudeFamilyProvider)
+      ? ` (providers.claudeFamilyProvider is "${config.providers.claudeFamilyProvider}", which is not an allowed Claude provider; config may narrow this list, never widen it)`
+      : "") +
+    (idNamesClaude(model.id) && !familyDeclaresClaude(model, config)
+      ? ` (classified by id: the config declares family "${model.family}", which is not in providers.claudeFamilies)`
+      : "")
+  );
+}
+
+/** Pooled-quota state the hard gates need, threaded rather than re-derived. */
+interface QuotaContext {
+  gate: GateLevel;
+  utilization: number | undefined;
+  /** The ceiling Claude models are held to while the pool is downshifted. */
+  downshiftedCeiling: ModelTier;
+}
+
+/**
+ * The gates nothing may cross — not the cheapest survivor, and not the fallback.
+ *
+ * Four of them, and none is a judgement about fit. Each is a statement that this
+ * company may not be served by this model AT ALL: it is not in the table, it is
+ * Claude and Claude is confined to one provider, its provider is not approved,
+ * or the pooled quota is exhausted. `routing.fallbackModelId` is deliberately
+ * allowed past the *estimates* — the tier ceiling, the quality floor, a
+ * capability the caller only thinks it needs — and never past these. A fallback
+ * that crossed them is a hole straight through owner rule 1, and was: TOG-228.
+ *
+ * It was again, differently, until TOG-248. The fallback answered this question
+ * by SEARCHING THE REJECTION LIST for an entry naming it with a non-negotiable
+ * stage. That is evidence-based, and the evidence only exists if the candidate
+ * loop actually reached the gate. The loop rejects on capability and context
+ * window first and `continue`s — so a fallback that failed one of those was
+ * never asked the Claude question, no `claude-block` rejection was ever
+ * recorded, and the ABSENCE of a rejection was read as clearance:
+ *
+ *   descriptor: { requiredContextTokens: 10_000_000 }
+ *   config:     { fallbackModelId: "claude-opus-5",
+ *                 providers.permitted: ["opencode-go", "openrouter"] }
+ *   v0.2.5:     outcome "selected", modelId "claude-opus-5", fallbackUsed true
+ *
+ * on a company where teamclaude was not even permitted — and the trace said
+ * "it clears every hard constraint", which was false. The same descriptor
+ * carried `oc/claude-opus-5` past the routing-prefix rule (TOG-149) and carried
+ * Claude work through a PAUSED pooled quota (TOG-228). One descriptor field the
+ * caller controls, and three gates stopped applying.
+ *
+ * So the fallback now ASKS the gates rather than looking for their footprints. A
+ * gate that never ran returns its verdict on demand, and both call sites — the
+ * loop and the fallback — get it from this one function, so they cannot drift.
+ */
+function nonNegotiableRejectionFor(
+  model: ModelEntry,
+  config: RouterConfig,
+  quota: QuotaContext,
+): Rejection | null {
+  if (!model.enabled) {
+    return { modelId: model.id, stage: "not-in-table", reason: "disabled in the model table" };
+  }
+
+  const { blockedBy } = permittedProvidersFor(model, config);
+  if (blockedBy === "claude-block") {
+    return { modelId: model.id, stage: "claude-block", reason: claudeBlockReason(model, config) };
+  }
+  if (blockedBy === "provider-not-permitted") {
+    return {
+      modelId: model.id,
+      stage: "provider-not-permitted",
+      reason:
+        model.providers.length === 0
+          ? "model lists no providers"
+          : `none of ${model.providers.join(", ")} is permitted for this company`,
+    };
+  }
+
+  // the quota gate is a Claude-family gate only; it never touches other families
+  if (isClaudeFamily(model, config)) {
+    if (quota.gate === "halt") {
+      return {
+        modelId: model.id,
+        stage: "quota-gate",
+        reason: `Claude work is paused at ${((quota.utilization ?? 0) * 100).toFixed(0)}% pooled quota utilization`,
+      };
+    }
+    if (quota.gate === "downshift" && tierIndex(model.tier) > tierIndex(quota.downshiftedCeiling)) {
+      return {
+        modelId: model.id,
+        stage: "quota-gate",
+        reason: `Claude tier ${model.tier} exceeds the downshifted ceiling ${quota.downshiftedCeiling}`,
+      };
+    }
+  }
+
+  return null;
+}
+
 function providerRank(providers: string[], config: RouterConfig): number {
   let best = Number.MAX_SAFE_INTEGER;
   for (const provider of providers) {
@@ -384,6 +491,15 @@ export function selectModel(input: SelectInput): RoutingDecision {
   }
   base.effectiveTier = ceiling;
 
+  // Frozen here, above the candidate loop, because the fallback check below has
+  // to ask the pooled-quota gate the same question the loop asks — against the
+  // same ceiling — long after the loop has finished. See TOG-248.
+  const quotaContext: QuotaContext = {
+    gate: claudeQuotaGate,
+    utilization: runtime.claudeQuotaUtilization,
+    downshiftedCeiling: lowerTier(ceiling, 1),
+  };
+
   // ---- required capabilities ----------------------------------------------
   const required = new Set<string>([
     ...(descriptor.requiredCapabilities ?? []),
@@ -430,84 +546,15 @@ export function selectModel(input: SelectInput): RoutingDecision {
       continue;
     }
 
-    // 3. the Claude block, and the permitted-provider list
-    const { providers, blockedBy } = permittedProvidersFor(model, config);
-    if (blockedBy === "claude-block") {
-      rejections.push({
-        modelId: model.id,
-        stage: "claude-block",
-        reason:
-          `Claude-family model may only be served by ${CLAUDE_PROVIDER_ALLOWLIST.join(" or ")} while Claude PAYG is disabled` +
-          // Say plainly when it was the ID that refused the model rather than
-          // the config, otherwise the trace blames `providers` for a decision
-          // the routing prefix made and the operator edits the wrong field.
-          (() => {
-            const destination = claudeDestinationPermitted(
-              model.id,
-              config.providers.claudeComboArmed,
-            );
-            if (destination.reason === "prefix-not-allowed") {
-              // Only advise the bare-id form when a combo is actually armed to
-              // resolve it. Unarmed, that advice moved the operator from a
-              // blocked leak (`oc/claude-*`) onto a silent one — TOG-294 measured
-              // a bare id being rewritten to `anthropic/*` and served.
-              return (
-                ` (routing prefix "${destination.prefix}/" in the model id names a provider that is not an allowed Claude destination — this outranks providers: [${model.providers.join(", ")}], which is a claim about the destination rather than the destination itself; ` +
-                (config.providers.claudeComboArmed
-                  ? "name the bare model id and let an OmniRoute combo resolve it)"
-                  : `and the bare model id is NOT a fix while ${CLAUDE_COMBO_ARMED_ENV} is unset — an unlisted bare Claude id is silently resolved to a non-teamclaude Anthropic route. Deploy the teamclaude combos first)`)
-              );
-            }
-            if (destination.reason === "combo-not-armed") {
-              return ` (the model id carries no routing prefix, which is the correct rule-3 form, but ${CLAUDE_COMBO_ARMED_ENV} is unset — this instance has not declared that OmniRoute has teamclaude Claude combos, so a bare Claude id would be resolved by the router's alias table to a non-teamclaude Anthropic route and served without error. Refusing rather than routing it somewhere unverified. Deploy TOG-153, confirm "teamclaude/*" is non-empty in GET /api/v1/models, then set ${CLAUDE_COMBO_ARMED_ENV}=1)`;
-            }
-            return "";
-          })() +
-          // Name the config value only when it is the thing that refused the model,
-          // and say plainly that it was overruled. The old message interpolated
-          // `claudeFamilyProvider` unconditionally, so a config that had aimed the
-          // block at OpenRouter printed "may only be served by openrouter" — the
-          // trace stated the misconfiguration back as if it were owner rule 1.
-          (!isClaudeProviderAllowed(config.providers.claudeFamilyProvider)
-            ? ` (providers.claudeFamilyProvider is "${config.providers.claudeFamilyProvider}", which is not an allowed Claude provider; config may narrow this list, never widen it)`
-            : "") +
-          (idNamesClaude(model.id) && !familyDeclaresClaude(model, config)
-            ? ` (classified by id: the config declares family "${model.family}", which is not in providers.claudeFamilies)`
-            : ""),
-      });
+    // 3. the Claude block, the permitted-provider list and the pooled quota —
+    //    the gates the fallback is also held to, answered by the same function
+    //    so the two call sites cannot drift apart. See TOG-248.
+    const hardRejection = nonNegotiableRejectionFor(model, config, quotaContext);
+    if (hardRejection) {
+      rejections.push(hardRejection);
       continue;
     }
-    if (blockedBy === "provider-not-permitted") {
-      rejections.push({
-        modelId: model.id,
-        stage: "provider-not-permitted",
-        reason:
-          model.providers.length === 0
-            ? "model lists no providers"
-            : `none of ${model.providers.join(", ")} is permitted for this company`,
-      });
-      continue;
-    }
-
-    // the quota gate is a Claude-family gate only; it never touches other families
-    if (isClaudeFamily(model, config)) {
-      if (claudeQuotaGate === "halt") {
-        rejections.push({
-          modelId: model.id,
-          stage: "quota-gate",
-          reason: `Claude work is paused at ${((runtime.claudeQuotaUtilization ?? 0) * 100).toFixed(0)}% pooled quota utilization`,
-        });
-        continue;
-      }
-      if (claudeQuotaGate === "downshift" && tierIndex(model.tier) > tierIndex(lowerTier(ceiling, 1))) {
-        rejections.push({
-          modelId: model.id,
-          stage: "quota-gate",
-          reason: `Claude tier ${model.tier} exceeds the downshifted ceiling ${lowerTier(ceiling, 1)}`,
-        });
-        continue;
-      }
-    }
+    const { providers } = permittedProvidersFor(model, config);
 
     // 4. quality floor — the one comparison cost may never win
     if (model.quality < qualityFloor) {
@@ -642,24 +689,34 @@ export function selectModel(input: SelectInput): RoutingDecision {
     const fallbackId = config.routing.fallbackModelId;
     if (fallbackId) {
       // The fallback is an escape hatch from the estimates, not from the rules.
-      const blocker = rejections.find(
-        (entry) =>
-          entry.modelId === fallbackId &&
-          NON_NEGOTIABLE_STAGES.includes(entry.stage),
-      );
-      const inTable = config.models.some((model) => model.id === fallbackId);
-      if (blocker) {
-        trace.push(
-          `fallback ${fallbackId} refused — ${blocker.stage}: ${blocker.reason}. A fallback may cross a capability or quality estimate; it may not cross a hard constraint.`,
-        );
-        return { ...base, outcome: "no-eligible-model" };
-      }
-      if (!inTable) {
+      const fallbackModel = config.models.find((model) => model.id === fallbackId);
+      if (!fallbackModel) {
         // Unknown to this company's table means unknown to every gate, so the
         // Claude block never got a chance to look at it. Refuse: an id nobody
         // has vetted is exactly how a Claude model reaches a PAYG provider.
         trace.push(
           `fallback ${fallbackId} refused — it is not in this company's model table, so no gate has vetted it`,
+        );
+        return { ...base, outcome: "no-eligible-model" };
+      }
+      // Asked directly, NOT looked up in `rejections`. The loop may have
+      // rejected this model at capability or context window and `continue`d
+      // before any hard gate ran, in which case there is no rejection to find
+      // and there never was any clearance either. TOG-248.
+      const blocker = nonNegotiableRejectionFor(fallbackModel, config, quotaContext);
+      if (blocker) {
+        // Record it as well as trace it. The decision log is the audit trail for
+        // owner rule 1, and "the fallback was refused by the Claude block" has to
+        // survive in it even when the loop never got far enough to say so.
+        if (
+          !rejections.some(
+            (entry) => entry.modelId === blocker.modelId && entry.stage === blocker.stage,
+          )
+        ) {
+          rejections.push(blocker);
+        }
+        trace.push(
+          `fallback ${fallbackId} refused — ${blocker.stage}: ${blocker.reason}. A fallback may cross a capability or quality estimate; it may not cross a hard constraint.`,
         );
         return { ...base, outcome: "no-eligible-model" };
       }
