@@ -20,7 +20,7 @@ import { selectModel } from "../src/engine/select.js";
 import type { RouterConfig } from "../src/config/types.js";
 import manifest from "../src/manifest.js";
 import { createPlugin } from "../src/worker.js";
-import { CLAUDE_COMBO_ARMED_ENV } from "../src/constants.js";
+import { CLAUDE_COMBO_ARMED_ENV, CLAUDE_PROVIDER_ALLOWLIST } from "../src/constants.js";
 import { CLAUDE_COMBO_DEPLOYED, fixtureConfig, readFixture } from "./helpers.js";
 
 const A = fixtureConfig("company-a", CLAUDE_COMBO_DEPLOYED);
@@ -864,14 +864,47 @@ describe("the Claude block's destination is code, not configuration", () => {
     }
   });
 
-  it("a casing variant of an ALLOWED provider still works — this narrows, it does not break", () => {
+  it.each([
+    ["teamclaude", "TeamClaude"],
+    ["cliproxy", " CLIProxy "],
+  ])("allows owner-approved provider %s, case-insensitively", (provider, configured) => {
     const decision = selectModel({
       descriptor: { taskClass: "architecture" },
       config: companyA((raw) => {
-        raw.providers.claudeFamilyProvider = "TeamClaude";
+        raw.providers.permitted = [provider];
+        raw.providers.preferenceOrder = [provider];
+        raw.providers.claudeFamilyProvider = configured;
+        raw.models = raw.models.map((model: any) =>
+          model.family === "claude" ? { ...model, providers: [provider, "openrouter"] } : model,
+        );
       }),
     });
+
+    expect(CLAUDE_PROVIDER_ALLOWLIST).toEqual(["teamclaude", "cliproxy"]);
     expect(decision.rejections).not.toContainEqual(
+      expect.objectContaining({ modelId: "claude-sonnet-5", stage: "claude-block" }),
+    );
+    expect(decision.outcome).toBe("selected");
+    expect(decision.modelId).toBe("claude-sonnet-5");
+  });
+
+  it("one configured provider narrows the allowlist instead of widening it", () => {
+    const decision = selectModel({
+      descriptor: { taskClass: "architecture" },
+      config: companyA((raw) => {
+        raw.providers.permitted = ["teamclaude", "cliproxy"];
+        raw.providers.preferenceOrder = ["cliproxy", "teamclaude"];
+        raw.providers.claudeFamilyProvider = "teamclaude";
+        raw.models = raw.models.map((model: any) =>
+          model.family === "claude"
+            ? { ...model, providers: ["cliproxy"], enabled: model.id === "claude-sonnet-5" }
+            : { ...model, enabled: false },
+        );
+      }),
+    });
+
+    expect(decision.outcome).toBe("no-eligible-model");
+    expect(decision.rejections).toContainEqual(
       expect.objectContaining({ modelId: "claude-sonnet-5", stage: "claude-block" }),
     );
   });
@@ -927,6 +960,19 @@ describe("Claude PAYG is an owner switch, not a company one", () => {
     expect(verdict.errors?.join(" ")).toContain("not unlocked on this instance");
   });
 
+  it.each(CLAUDE_PROVIDER_ALLOWLIST)(
+    "onValidateConfig accepts owner-approved claudeFamilyProvider %s",
+    async (provider) => {
+      const definition = await validator();
+      const raw = readFixture("company-a") as Record<string, any>;
+      raw.providers.claudeFamilyProvider = provider;
+      raw.providers.permitted = [...new Set([...raw.providers.permitted, provider])];
+
+      const verdict = await definition.onValidateConfig!(raw);
+      expect(verdict.ok, `${provider}: ${verdict.errors?.join("; ")}`).toBe(true);
+    },
+  );
+
   it("onValidateConfig refuses a claudeFamilyProvider outside the allowlist", async () => {
     const definition = await validator();
     const raw = readFixture("company-a") as Record<string, any>;
@@ -935,6 +981,7 @@ describe("Claude PAYG is an owner switch, not a company one", () => {
     const verdict = await definition.onValidateConfig!(raw);
     expect(verdict.ok).toBe(false);
     expect(verdict.errors?.join(" ")).toContain("not a provider owner rule 1 allows");
+    expect(verdict.errors?.join(" ")).toContain("teamclaude, cliproxy");
   });
 });
 
@@ -947,10 +994,10 @@ describe("Claude PAYG is an owner switch, not a company one", () => {
 // are the shortest configs that made the router hand a Claude model to a
 // non-teamclaude provider on v0.2.3, both reproduced before the fix.
 //
-// Owner decision on `rule1_scope` (2026-08-24): teamclaude_only. `oc/claude-*`
-// is excluded too, because Claude served anywhere else does not consume the
-// pooled teamclaude quota the owner is trying to fill, and blinds the usage
-// gate that assumes it sees all Claude spend.
+// The 2026-08-24 `teamclaude_only` decision was widened on 2026-08-25 to
+// admit cliproxy after its live lane was verified. `oc/claude-*` remains
+// excluded: opencode is in neither owner-approved route and would blind the
+// usage gate that assumes it sees all Claude spend.
 // ---------------------------------------------------------------------------
 
 describe("rule 1: the model id's routing prefix is the destination, not `providers`", () => {
