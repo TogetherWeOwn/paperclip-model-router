@@ -31,6 +31,7 @@
     "verify:host": "node scripts/verify-against-host.mjs",
     "rehearse": "node scripts/acceptance-rehearsal.mjs",
     "check:pin": "node scripts/release-pin-check.mjs",
+    "check:ci": "node scripts/ci-health.mjs --require \"typecheck, test, build\" --require \"secret scan\" --require \"version and changelog\" --require \"the packed tarball is installable\"",
     "preflight:tog178": "node scripts/tog178-catalogue-revalidate.mjs",
     "preflight:tog473": "node scripts/tog473-mapping-guard-calibration.mjs"
   },

@@ -40,6 +40,27 @@ configure, verify, roll back, and the blast-radius rules.
    and [`docs/branch-ruleset.main.json`](branch-ruleset.main.json) — but it
    cannot be applied while the org is on the GitHub `free` plan with private
    repos. Until then, escalate merges rather than taking them.
+
+   **"Green" and "ran" are different questions, and the PR page only answers the
+   first.** On 2026-08-25 the org crossed its Actions spending limit and every
+   job in every workflow began failing two seconds in, before checkout. That
+   renders as four red checks — including a red `secret scan`, which is
+   indistinguishable from a committed credential and was nothing of the kind.
+   Nothing had been scanned, typechecked or built. Read the check names in that
+   state and you will either debug a failure no test produced, or learn to wave
+   red builds through.
+
+   So before applying this rule to a commit, run:
+
+   ```
+   npm run check:ci                 # HEAD, all four required checks by name
+   npm run check:ci -- --sha <sha>
+   ```
+
+   It exits `0` green, `1` genuinely red, `2` CI never ran, `3` cannot tell —
+   and it never exits `0` on a commit no check actually passed. Exit `2` is not
+   an engineering problem and there is nothing in the diff to fix; see
+   [`docs/decisions/0010`](decisions/0010-a-check-name-is-not-a-verdict.md).
 2. **Behaviour changes come with a test.** The tests are the specification of
    the routing rules; `tests/two-company.spec.ts` in particular is the
    acceptance criterion for this plugin and must keep passing.
