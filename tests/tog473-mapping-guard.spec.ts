@@ -13,8 +13,8 @@
  * strings, which is the same blind spot that let TOG-237 ship — so the oracle here is the
  * real 480-id corpus, not a literal.
  *
- * M2 is the one that matters most: an Anthropic-served id spelling none of the five
- * family names. A `claude` substring check clears it, and so would any test written by
+ * M2 is the one that matters most: an Anthropic-served id spelling none of the
+ * protected family names. A `claude` substring check clears it, and so would any test written by
  * someone who already believed the regex was right.
  */
 
@@ -27,13 +27,13 @@ import { afterEach, describe, expect, it } from "vitest";
 const REPO = join(import.meta.dirname, "..");
 const SCRIPT = join(REPO, "scripts", "tog473-mapping-guard-calibration.mjs");
 const FX = join(REPO, "tests", "fixtures", "tog178");
-const BROKER = resolve(REPO, "..", "omniroute-broker");
+const BROKER = resolve(REPO, "plugins", "omniroute-broker");
 
-// The broker is a sibling checkout, not a dependency of this repo. When it is absent this
-// suite skips rather than fails: a missing sibling is a workspace fact, not a defect in
-// the guard. It must skip LOUDLY though — see the guard test at the bottom.
+// TOG-391 vendored the broker into this repository because the old sibling copy had no
+// history or CI. A missing vendored broker is now a repository defect, so this suite must
+// fail rather than silently skip.
 const brokerPresent = existsSync(join(BROKER, "dist", "verbs.js"));
-const describeBroker = brokerPresent ? describe : describe.skip;
+const describeBroker = describe;
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -209,18 +209,10 @@ describeBroker("harness failures are not verdicts", () => {
 });
 
 describe("the suite cannot skip silently", () => {
-  it("records whether the sibling broker checkout was present", () => {
-    // A skipped mutation suite reads as green in CI. This test always runs, so the
-    // reason for a skip is visible in the report rather than inferred from absence.
+  it("requires the vendored broker that the mutation suite exercises", () => {
     expect(
-      brokerPresent || !brokerPresent,
-      "tautology by design — the assertion below carries the signal",
+      brokerPresent,
+      `[TOG-473] vendored omniroute-broker not found at ${BROKER}; the mutation suite has no subject.`,
     ).toBe(true);
-    if (!brokerPresent) {
-      console.warn(
-        `[TOG-473] omniroute-broker not found at ${BROKER} — mapping-guard mutation suite SKIPPED. ` +
-          `This is not evidence the guard is calibrated.`,
-      );
-    }
   });
 });
