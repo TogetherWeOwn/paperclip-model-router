@@ -36,6 +36,37 @@ version is not present here.
 
 ### Added
 
+- **`npm run check:pin` — the version an operator is handed is now checked by a
+  script, not by a run that re-improvises it (TOG-227).** Nothing in `verify`
+  or `verify:host` looks at the *published release asset*, which is the only
+  artifact an operator actually installs. Three separate cards reached the
+  owner's queue carrying a pin that did not hold: `v0.1.1` named a tag with no
+  tarball behind it, `v0.2.3` named a version the runbook itself had already
+  marked unsafe, and `v0.2.4` was four `src/` commits stale by the time it was
+  read. All three are mechanical comparisons.
+
+  `scripts/release-pin-check.mjs` runs seven gates against a tag: it resolves;
+  `package.json` and `CHANGELOG.md` **at that tag** agree with it; a published
+  non-draft release exists with exactly one `.tgz`; the asset downloads and
+  matches `--expect-sha256`; the asset's `dist/*.js` are **byte-identical to a
+  fresh build of the working tree**; and `git diff <tag>..HEAD -- src` is empty.
+
+  Gate 6 is the one no human does by hand, and it is what collapses "the tests
+  passed on `main`" and "the operator installs the tarball" into one claim.
+  Gate 7 is permitted to fail; when it does the answer is to cut a new tag
+  rather than reword the runbook, and the failure says so.
+
+  The GitHub token comes from the repo's own git credential helper, so there is
+  nothing to configure. Network gates **fail** rather than skip when they cannot
+  run — a pin that could not be checked is precisely the case this exists to
+  catch. `--for-card` prints a paste-ready block and refuses to print it if any
+  gate failed *or skipped*; `--offline` is rejected alongside it.
+
+  Deliberately not part of `npm run verify`: at commit time the release for the
+  version under development does not exist, so folding it in would fail every
+  build and train everyone to ignore it. See `docs/PROCESS.md`, "Handing a
+  version to an operator".
+
 - **`scripts/gitleaks-selftest.sh` — a test for the secret scanner itself
   (TOG-227).** `gitleaks dir .` proves the repository is clean under the current
   config and says nothing about whether that config still detects anything. A

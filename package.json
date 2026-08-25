@@ -30,6 +30,7 @@
     "verify": "npm run typecheck && npm run test && npm run build && npm run verify:host && npm run rehearse",
     "verify:host": "node scripts/verify-against-host.mjs",
     "rehearse": "node scripts/acceptance-rehearsal.mjs",
+    "check:pin": "node scripts/release-pin-check.mjs",
     "preflight:tog178": "node scripts/tog178-catalogue-revalidate.mjs"
   },
   "dependencies": {
