@@ -74,11 +74,11 @@ release by `.github/workflows/release.yml`.
 
 ```bash
 # Pinned to a known-good version. Note that there is currently nothing safe to
-# roll back TO: the floor is v0.2.6, which is also the newest release. See below.
-gh release download v0.2.6 \
+# roll back TO: the floor is v0.2.6; v0.2.7 is the newest release. See below.
+gh release download v0.2.7 \
   --repo TogetherWeOwn/paperclip-model-router --pattern '*.tgz' --dir /tmp
 mkdir -p /opt/paperclip-plugins/model-router
-tar -xzf /tmp/togetherweown-paperclip-model-router-0.2.6.tgz \
+tar -xzf /tmp/togetherweown-paperclip-model-router-0.2.7.tgz \
   -C /opt/paperclip-plugins/model-router --strip-components=1
 
 # The tarball ships dist/ but not node_modules, and the plugin SDK is
@@ -98,7 +98,7 @@ paperclipai plugin inspect togetherweown.paperclip-model-router
 ```
 
 If the instance gains a private npm registry, publish there and
-`paperclipai plugin install @togetherweown/paperclip-model-router --version 0.2.6`
+`paperclipai plugin install @togetherweown/paperclip-model-router --version 0.2.7`
 becomes the preferred form — the install record is then reproducible by any
 operator without a checkout.
 

@@ -10,6 +10,8 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-08-25
+
 ### Changed
 
 - **The Claude provider allowlist now includes `cliproxy` by owner-approved policy
@@ -721,6 +723,7 @@ First release. Installs globally, configures per company.
 - Budget pressure is supplied by the caller as `budgetSpentFraction`. The plugin
   does not read company spend itself; it holds no `costs.read` capability.
 
-[Unreleased]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.2.6...v0.2.7
 [0.1.1]: https://github.com/TogetherWeOwn/paperclip-model-router/releases/tag/v0.1.1
 [0.1.0]: https://github.com/TogetherWeOwn/paperclip-model-router/releases/tag/v0.1.0

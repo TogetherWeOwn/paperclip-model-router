@@ -27,12 +27,12 @@ paperclipai plugin target
 #    Read the API base URL and version. If it is not the instance you mean, stop.
 
 # 2. Install the version-pinned tarball from the GitHub release.
-#    v0.2.6 is BOTH the floor and the newest release, so there is nothing older
+#    v0.2.6 is the floor and v0.2.7 is the newest release, so there is nothing older
 #    that is safe to choose. See Rollback below.
-gh release download v0.2.6 \
+gh release download v0.2.7 \
   --repo TogetherWeOwn/paperclip-model-router --pattern '*.tgz' --dir /tmp
 mkdir -p /opt/paperclip-plugins/model-router
-tar -xzf /tmp/togetherweown-paperclip-model-router-0.2.6.tgz \
+tar -xzf /tmp/togetherweown-paperclip-model-router-0.2.7.tgz \
   -C /opt/paperclip-plugins/model-router --strip-components=1
 
 #    The tarball ships dist/ but not node_modules. The plugin SDK is

@@ -10,7 +10,7 @@
 export const PLUGIN_ID = "togetherweown.paperclip-model-router";
 
 /** Kept in sync with package.json by `npm run verify` (see tests/manifest.spec.ts). */
-export const PLUGIN_VERSION = "0.2.6";
+export const PLUGIN_VERSION = "0.2.7";
 
 /** Host plugin API generation this manifest targets. */
 export const PLUGIN_API_VERSION = 1 as const;
