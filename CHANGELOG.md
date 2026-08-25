@@ -91,6 +91,38 @@ version is not present here.
 
 ### Security
 
+- **A failed gitleaks *download* was being reported as a failed *secret scan*,
+  and nothing verified the binary (TOG-488).** The install was
+  `curl -sSfL … | tar -xz`. When curl failed, tar read an empty stream, printed
+  `Error is not recoverable` and the step exited 2 — which GitHub renders as a
+  red check named `secret scan`, the identical signal to a committed credential.
+  It happened on `501c5b7` (PR #22): the job died 5s in, where a green run of the
+  same job needs 8s to check out, install and run both scans; re-pushing the same
+  tree with one unrelated commit turned it green with no change to any scanned
+  content. The cost was never the red check — it was that the only available
+  response to it was "re-run and see", which is the one habit a secret scanner
+  must never teach. Separately, CI was piping an unverified executable off the
+  network into `/usr/local/bin` and running it across the whole repository, in
+  the one job whose entire value is being trustworthy about credentials.
+
+  The install now downloads to a file with retries, checks it against the
+  published SHA256 before extracting, stages it in `RUNNER_TEMP` rather than the
+  tree the next step scans, and gives each failure its own `::error::` naming
+  what actually went wrong. All three paths were exercised against the real
+  release: happy installs 8.21.2 and exits 0; a 404 URL exits 1 with
+  "this is a DOWNLOAD failure, not a secret scan finding"; a wrong digest exits 1
+  with "Refusing to run an unverified scanner" and extracts nothing.
+
+  The same patch **wires in `scripts/gitleaks-selftest.sh`**, which has been
+  asserting nothing since it shipped — see the entry below.
+
+  > **Applied by an operator, not by this PR.** No agent in this company can push
+  > `.github/workflows/`, and that is deliberate — see
+  > [`docs/decisions/0008`](docs/decisions/0008-workflow-files-are-operator-applied.md).
+  > The change is checked in as `docs/operator/tog-488-ci-secret-scan.patch` and
+  > `npm run check:workflows` is red until a human applies it. Until then, treat
+  > the `secret scan` job's green as unverified and its red as unexplained.
+
 - **The secret scanner was printing the credential it caught into the CI log
   (TOG-227).** Both custom rules in `.gitleaks.toml` put their capture group on
   the *key name* rather than the value. gitleaks treats capture group 1 as "the
@@ -126,6 +158,39 @@ version is not present here.
   escaped, all 52 planned TOG-178 mappings still permitted. A harness failure
   exits 2, never 0 and never 1, so a broken checker cannot read as a clean
   guard.
+
+- **`npm run check:workflows` — the handoff gate for changes no agent can push
+  (TOG-488).** Three gates: every queued `docs/operator/*.patch` still applies to
+  the current tree; every pinned scanner digest still matches the publisher's own
+  checksums file; and every script in `scripts/` is reachable from something that
+  runs it — `package.json`, a workflow, or another script.
+
+  The third gate is the one that earns the script. A test that runs nowhere and a
+  test that passes are indistinguishable from outside, which is how
+  `gitleaks-selftest.sh` shipped and then asserted nothing. It reports a script
+  wired up *only* inside an unapplied patch as a failure rather than a pass,
+  because queued is not running. Mutation-tested: drifting `ci.yml` under the
+  patch fails gate 1, corrupting the pinned digest fails gate 2, and the gate 3
+  case is live right now.
+
+  Its first draft got gate 3 wrong in the most instructive way — it credited any
+  textual mention, so its own comments naming `gitleaks-selftest.sh` marked that
+  script reachable, and the gate reported PASS on the exact defect it was written
+  to catch. Comments are now stripped before a caller counts, and the file
+  excludes itself as a caller.
+
+  Gate 3 grades what git *tracks*, not what is sitting in `scripts/`. Agents
+  share a checkout, so that directory routinely holds a neighbour's work in
+  progress — an uncommitted script from another issue turned this gate red on a
+  branch that had never heard of it. A gate whose colour depends on who else is
+  working is not a gate. Untracked scripts are listed as a note and graded the
+  moment they land. If the tracked listing comes back empty while `scripts/` is
+  not, the run exits **2** rather than reporting a gate with no rows, because an
+  empty gate and a passing one print the same thing.
+
+  Deliberately not part of `npm run verify`: it is legitimately red while a patch
+  is pending, and a check that is normally red teaches everyone to ignore it.
+  Like `check:pin`, it is run at the handoff.
 
 - **`npm run check:pin` — the version an operator is handed is now checked by a
   script, not by a run that re-improvises it (TOG-227).** Nothing in `verify`
@@ -165,13 +230,21 @@ version is not present here.
   also what a broken scanner looks like — which is how both defects above
   survived.
 
-  > **Not yet wired into CI.** It belongs as a step in the `secret-scan` job,
-  > ahead of the two scans, reusing the gitleaks binary that job already
-  > installs. The push was rejected: `refusing to allow a GitHub App to create
-  > or update workflow .github/workflows/ci.yml without workflows permission`.
-  > Until the App installation gets that scope, run it by hand —
+  > **Not yet wired into CI**, and therefore asserting nothing — this header's
+  > original claim that it was "run in the same CI job as the scan" was never
+  > true. It belongs as a step in the `secret-scan` job, ahead of the two scans,
+  > reusing the gitleaks binary that job already installs. The push was
+  > rejected: `refusing to allow a GitHub App to create or update workflow
+  > .github/workflows/ci.yml without workflows permission`.
+  >
+  > "Tracked separately" resolved to **TOG-488**, and the answer is that the
+  > scope is *not* coming: the boundary is deliberate and stays
+  > ([`docs/decisions/0008`](docs/decisions/0008-workflow-files-are-operator-applied.md)).
+  > The wiring is queued instead as `docs/operator/tog-488-ci-secret-scan.patch`
+  > for a human to apply. Until they do, run it by hand —
   > `scripts/gitleaks-selftest.sh "$(command -v gitleaks)"` — and treat the
-  > secret-scan job's green as unverified. Tracked separately.
+  > secret-scan job's green as unverified. `npm run check:workflows` now fails
+  > for exactly this reason rather than leaving it to a note in a changelog.
 
   Ten assertions: each rule fires on a realistic key; each allowlist entry
   exempts its fixture and *not* that fixture with a suffix appended; and
