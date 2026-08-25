@@ -36,6 +36,18 @@ version is not present here.
 
 ### Added
 
+- **`npm run preflight:tog473` — the broker's mapping guard is now graded
+  against the live catalogue instead of hand-written strings (TOG-473).**
+  `mappings.create` is the only broker verb that moves traffic, and its safety
+  argument rests on one empirical claim: the family regex blocks every
+  Claude-bearing id OmniRoute serves. The broker's own unit tests assert that
+  against literals — the same blind spot that let TOG-237 ship. The script
+  imports the guard from the broker (so a copied regex cannot certify itself)
+  and runs it over the real corpus: 350/350 Claude-bearing ids blocked, 0
+  escaped, all 52 planned TOG-178 mappings still permitted. A harness failure
+  exits 2, never 0 and never 1, so a broken checker cannot read as a clean
+  guard.
+
 - **`npm run check:pin` — the version an operator is handed is now checked by a
   script, not by a run that re-improvises it (TOG-227).** Nothing in `verify`
   or `verify:host` looks at the *published release asset*, which is the only
