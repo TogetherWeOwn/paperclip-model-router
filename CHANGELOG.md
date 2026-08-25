@@ -10,6 +10,10 @@ version is not present here.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.6] - 2026-08-24
+
 ### Fixed
 
 - **`verify:host` stopped claiming an install it had only half-checked
@@ -57,10 +61,6 @@ version is not present here.
 - **Skipped checks are part of the verdict.** The summary line now reports them
   next to the failure count, because "all host-side checks passed" while three
   of them never ran is the sentence this script exists to make unwritable.
-
-## [0.2.6] - 2026-08-24
-
-### Fixed
 
 - **The fallback stopped being judged by gates that never ran (TOG-248, owner
   rule 1).** Found by the post-merge review of TOG-237/PR #6, which asked for a
