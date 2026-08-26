@@ -1,5 +1,8 @@
 # 0009 — Same wire, different multiplexer: CLIProxy carries Claude
 
+> **Superseded by compatible-upstream v1 (TOG-530/TOG-532).** This record is retained as historical context only; its deployment-specific policy is not active product behavior.
+
+
 Status: proposed — owner ruling required (TOG-359 is an owner gate)
 Date: 2026-08-24
 Extends [0008](0008-reach-precedes-selection.md), which parked Plano and named

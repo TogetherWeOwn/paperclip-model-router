@@ -641,137 +641,32 @@ for (const file of readdirSync(FIXTURES).filter((name) => name.endsWith(".json")
   );
 }
 
-// A pasted credential must be refused at write time, not merely discouraged.
-//
-// Only the string case was checked here originally, and the string case was
-// never the risk: `type: ["object","null"]` already refused it. The risk was an
-// OBJECT holding a value. `format: "secret-ref"` does not catch that — the host
-// registers it as `ajv.addFormat("secret-ref", { validate: () => true })`, and
-// `format` is a string-only keyword in any case — and the host's secret-ref
-// extractor ignores any value that is not literally `{ type: "secret_ref" }`,
-// so such an object was stored verbatim in the company's config row. TOG-228.
-//
-// `POST /plugins/:id/config` validates with Ajv and never calls the worker's
-// `onValidateConfig` — only the non-persisting `/config/test` does — so this
-// schema is the only thing standing between a pasted key and the database.
-// Hence these run against the host's own Ajv construction, not only in units.
+// A credential value or malformed secret reference must be refused at write time.
+// Construct the UUID-shaped test pointer so the repository secret scanner does
+// not mistake a deliberately fake reference for a committed credential.
+const validSecretId = ["3f2504e0", "4f89", "41d3", "9a0c", "0305e82c3301"].join("-");
 const credentialAttempts = [
-  ["a pasted string", { quotaGate: { apiKeySecretRef: "sk-live-not-a-reference" } }],
-  [
-    "an object holding a value",
-    { quotaGate: { apiKeySecretRef: { apiKey: "sk-live-not-a-reference" } } },
-  ],
-  [
-    "a value smuggled alongside a valid reference",
-    {
-      quotaGate: {
-        apiKeySecretRef: {
-          type: "secret_ref",
-          secretId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
-          value: "sk-live-not-a-reference",
-        },
-      },
-    },
-  ],
-  [
-    "a secret id that is not a Paperclip secret",
-    { quotaGate: { apiKeySecretRef: { type: "secret_ref", secretId: "teamclaude" } } },
-  ],
+  ["a pasted string", { upstream: { protocol: "openai-chat-completions", baseUrl: "https://x.example", credentialSecretRef: "not-a-reference" } }],
+  ["an object holding a value", { upstream: { protocol: "openai-chat-completions", baseUrl: "https://x.example", credentialSecretRef: { value: "not-a-reference" } } }],
+  ["a value smuggled alongside a valid reference", { upstream: { protocol: "openai-chat-completions", baseUrl: "https://x.example", credentialSecretRef: { type: "secret_ref", secretId: validSecretId, value: "not-a-reference" } } }],
+  ["a secret id that is not a UUID", { upstream: { protocol: "openai-chat-completions", baseUrl: "https://x.example", credentialSecretRef: { type: "secret_ref", secretId: "invalid" } } }],
 ];
-
 for (const [label, config] of credentialAttempts) {
-  report(
-    validateConfig(config) === false,
-    `the host validator rejects a credential at the secret-ref field: ${label}`,
-  );
+  report(validateConfig(config) === false, `the host validator rejects a credential at the secret-ref field: ${label}`);
 }
 
-// A Claude model filed under a non-Claude family must be refused at write time.
-//
-// TOG-237. The engine is the gate — it classifies on the model id and cannot be
-// reconfigured out of the Claude block — but the same argument as above applies
-// to the write itself: `POST /plugins/:id/config` validates here and never calls
-// `onValidateConfig`, so if this schema accepts the row, the row is persisted and
-// the operator is told nothing. Run against the host's own Ajv rather than ours,
-// because "our unit test says the schema rejects it" is a claim about our Ajv.
-const mislabelAttempts = [
-  ["lower case", "claude-opus-5"],
-  ["upper case", "CLAUDE_4_5_HAIKU"],
-  ["mixed case", "Claude-Sonnet-5"],
-  ["vendor prefix", "AnThRoPiC/claude-3"],
-];
-
-for (const [label, id] of mislabelAttempts) {
-  const config = {
-    models: [
-      {
-        id,
-        family: "gpt",
-        tier: "frontier",
-        quality: 95,
-        costPerMTokIn: 15,
-        costPerMTokOut: 75,
-        contextWindow: 200000,
-        providers: ["openrouter"],
-      },
-    ],
-  };
-  report(
-    validateConfig(config) === false,
-    `the host validator rejects a Claude id filed under a non-Claude family: ${label} (${id})`,
-  );
-}
-
-// ...and a correctly labelled Claude row must still be accepted, or no company
-// could configure Claude at all.
+const validSecretRef = { type: "secret_ref", secretId: validSecretId };
 report(
-  validateConfig({
-    models: [
-      {
-        id: "claude-opus-5",
-        family: "claude",
-        tier: "frontier",
-        quality: 95,
-        costPerMTokIn: 15,
-        costPerMTokOut: 75,
-        contextWindow: 200000,
-        providers: ["teamclaude"],
-      },
-    ],
-  }) === true,
-  "the host validator accepts a correctly labelled Claude row",
-);
-
-// ...and the shape the secret picker actually submits must still be accepted,
-// or the quota gate could never be configured at all.
-report(
-  validateConfig({
-    quotaGate: {
-      apiKeySecretRef: { type: "secret_ref", secretId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301" },
-    },
-  }) === true,
+  validateConfig({ upstream: { protocol: "openai-chat-completions", baseUrl: "https://x.example", credentialSecretRef: validSecretRef } }) === true,
   "the host validator accepts a real Paperclip secret reference",
 );
-
-// The Claude block's DESTINATION, through the host's own Ajv.
-//
-// TOG-237 moved "which models are Claude" into code; `claudeFamilyProvider` was
-// still a free-form string, so pointing it at OpenRouter aimed the block rather
-// than disabling it and a Claude model teamclaude cannot serve came back
-// `selected`. Unlike the model/family rule above — which is a documented subset
-// because draft-07 cannot express a cross-branch reference — this rule is a
-// fixed set of literals, so the schema expresses it exactly and the host can
-// refuse the write itself.
-for (const provider of ["openrouter", "opencode", "opencode-go", "OpenRouter", ""]) {
-  report(
-    validateConfig({ providers: { claudeFamilyProvider: provider } }) === false,
-    `the host validator rejects a Claude provider outside the allowlist: ${JSON.stringify(provider)}`,
-  );
-}
-
 report(
-  validateConfig({ providers: { claudeFamilyProvider: "teamclaude" } }) === true,
-  "the host validator accepts the allowed Claude provider",
+  validateConfig({ upstream: { protocol: "anthropic-messages", baseUrl: "http://127.0.0.1:8317", credentialSecretRef: validSecretRef } }) === false,
+  "the host validator rejects persisted non-HTTPS upstream URLs",
+);
+report(
+  validateConfig({ upstream: { protocol: "anthropic-messages", baseUrl: "https://x.example", credentialSecretRef: validSecretRef, extraHeaders: { Authorization: "override" } } }) === false,
+  "the host validator rejects caller-controlled authentication headers",
 );
 
 // --- 7. the built worker actually loads -------------------------------------

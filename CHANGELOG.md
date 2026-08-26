@@ -10,6 +10,44 @@ version is not present here.
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the selection-only, deployment-specific product with the accepted
+  compatible-upstream v1 contract (TOG-530/TOG-532). The plugin now exposes one
+  `select -> invoke -> normalize -> record` operation through the agent tool,
+  action, and two scoped routes.
+- Added exact OpenAI Chat Completions-compatible and Anthropic Messages-compatible
+  request encoders, response normalizers, stable error classification, one-attempt
+  transport behavior, caller-visible timeout, redirect refusal, and buffered
+  response-size enforcement through the published `ctx.http.fetch` boundary.
+- Added per-company protocol/base URL/secret reference/transport configuration,
+  host-context tenant authorization, `multiCompanyConfig: true`, company-scoped
+  audit state, aggregate-only metrics, and call-time Paperclip secret resolution.
+
+### Removed
+
+- Removed all router-owned provider policy, provider-bearing model facts, combo
+  arming, pay-as-you-go controls, and pooled-subscription quota behavior from the
+  active schema, engine, worker, fixtures, and tests. Deployment routing now belongs
+  entirely to the configured compatible upstream.
+
+### Security
+
+- Closed native invocation fields and secret-reference objects; callers cannot
+  override model, protocol, base URL, auth headers, or streaming. Credentials and
+  upstream bodies are excluded from logs, state, errors, metrics, fixtures, and
+  returned data.
+- Added source and built-artifact checks requiring inference networking to use only
+  Paperclip's host-managed HTTP boundary with redirects disabled and
+  `Accept-Encoding: identity`.
+
+### Compatibility
+
+- This is a breaking configuration and invocation-surface replacement. Existing
+  selection-only configs must be replaced with the compatible-upstream schema.
+  TOG-532 does not authorize a public release or live installation.
+
+
 ## [0.2.7] - 2026-08-25
 
 ### Changed

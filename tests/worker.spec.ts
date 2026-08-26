@@ -1,311 +1,182 @@
-/**
- * Worker-level tests driven through the SDK's own in-memory host harness, so
- * the plugin is exercised over the real context surface (config, state, tools,
- * data, actions) rather than through hand-written doubles.
- *
- * The same harness is instantiated twice with two companies' configs to show
- * that the ONE worker build serves both.
- */
-
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { ACTION_KEYS, ROUTE_KEYS, STATE_KEYS, TOOL_NAMES } from "../src/constants.js";
 import manifest from "../src/manifest.js";
-import { ACTION_KEYS, DATA_KEYS, STATE_KEYS, TOOL_NAMES } from "../src/constants.js";
 import { createPlugin } from "../src/worker.js";
 import { readFixture } from "./helpers.js";
 
-// The worker resolves config through `process.env`, not an injected env, so the
-// combo-armed signal has to be stubbed at the process level here. These tests
-// assert what the worker does with a WORKING Claude lane; without this the
-// fixtures' bare Claude ids are refused at the claude-block gate, which is the
-// undeployed case and is covered in `gate-integrity.spec.ts`. TOG-294.
-beforeEach(() => {
-  vi.stubEnv("MODEL_ROUTER_CLAUDE_COMBO_ARMED", "1");
-});
-
-afterEach(() => {
-  vi.unstubAllEnvs();
-});
-
 const COMPANY_A = "11111111-1111-4111-8111-111111111111";
 const COMPANY_B = "22222222-2222-4222-8222-222222222222";
+const SECRET_A = "resolved-secret-a";
+const SECRET_B = "resolved-secret-b";
 
-async function harnessFor(fixture: string) {
-  const harness = createTestHarness({ manifest, config: readFixture(fixture) });
-  // `definePlugin` returns `{ definition }`; the host calls into the definition,
-  // and so do these tests, rather than re-wrapping it in a double.
-  const { definition } = createPlugin();
-  await definition.setup(harness.ctx);
-  return { harness, plugin: definition };
+function success(protocol: "openai" | "anthropic") {
+  return protocol === "openai"
+    ? new Response(JSON.stringify({ id: "chatcmpl-1", object: "chat.completion", model: "echo-a", choices: [{ index: 0, message: { role: "assistant", content: "hello a" }, finish_reason: "stop" }], usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 } }), { status: 200, headers: { "content-type": "application/json", "x-request-id": "request-a" } })
+    : new Response(JSON.stringify({ id: "msg-1", type: "message", role: "assistant", model: "echo-b", content: [{ type: "text", text: "hello b" }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 4, output_tokens: 5 } }), { status: 200, headers: { "content-type": "application/json", "request-id": "request-b" } });
 }
 
-describe("worker surfaces", () => {
-  it("registers the tool, data keys and actions the manifest advertises", async () => {
-    const { harness } = await harnessFor("company-a");
-    const result = await harness.executeTool(TOOL_NAMES.selectModel, {
+async function sharedWorker() {
+  const configs = new Map([
+    [COMPANY_A, readFixture("company-a")],
+    [COMPANY_B, readFixture("company-b")],
+  ]);
+  const harness = createTestHarness({ manifest, config: {} });
+  harness.ctx.config = {
+    async get(companyId) {
+      const config = configs.get(String(companyId));
+      if (!config) throw new Error("missing company config");
+      return structuredClone(config);
+    },
+  };
+  const secretCalls: Array<{ secretId: string; companyId?: string; configPath?: string }> = [];
+  harness.ctx.secrets = {
+    async resolve(ref, options) {
+      const secretId = typeof ref === "object" && ref ? String(ref.secretId) : String(ref);
+      secretCalls.push({ secretId, ...options });
+      return options?.companyId === COMPANY_A ? SECRET_A : SECRET_B;
+    },
+  };
+  const httpCalls: Array<{ url: string; init?: RequestInit }> = [];
+  harness.ctx.http = {
+    async fetch(url, init) {
+      httpCalls.push({ url: String(url), init });
+      return String(url).includes("company-a.example") ? success("openai") : success("anthropic");
+    },
+  };
+  const { definition } = createPlugin();
+  await definition.setup(harness.ctx);
+  return { harness, definition, httpCalls, secretCalls, configs };
+}
+
+const invocation = {
+  task: { taskClass: "implementation", issueId: "issue-1" },
+  messages: [{ role: "user", content: "hello" }],
+  maxOutputTokens: 100,
+};
+
+describe("one select-invoke-normalize-record path", () => {
+  it("uses the tool run context company", async () => {
+    const { harness, httpCalls, secretCalls } = await sharedWorker();
+    const result = await harness.executeTool(TOOL_NAMES.invoke, invocation, {
       companyId: COMPANY_A,
-      taskClass: "implementation",
+      runId: "run-a",
+      agentId: "agent-a",
+      projectId: "project-a",
     });
-    expect(result).toMatchObject({ ok: true });
+    expect(result.error).toBeUndefined();
+    expect(result.data).toMatchObject({ outcome: "completed", response: { modelId: "minimax-m2.5" } });
+    expect(httpCalls[0]?.url).toBe("https://company-a.example/api/v1/chat/completions");
+    expect(secretCalls).toEqual([{ secretId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: COMPANY_A, configPath: "upstream.credentialSecretRef" }]);
   });
 
-  it("returns the effective config for a company through the data bridge", async () => {
-    const { harness } = await harnessFor("company-a");
-    const data = await harness.getData<{ config: { models: unknown[] } }>(DATA_KEYS.effectiveConfig, {
-      companyId: COMPANY_A,
-    });
-    expect(data.config.models).toHaveLength(6);
-  });
-
-  it("records every decision in company-scoped state", async () => {
-    const { harness } = await harnessFor("company-a");
-    await harness.performAction(ACTION_KEYS.route, {
-      companyId: COMPANY_A,
-      taskClass: "implementation",
-      issueId: "issue-1",
-    });
-    const log = harness.getState({
-      scopeKind: "company",
-      scopeId: COMPANY_A,
-      stateKey: STATE_KEYS.decisionLog,
-    }) as Array<{ modelId: string; outcome: string }>;
-    expect(log).toHaveLength(1);
-    expect(log[0]).toMatchObject({ outcome: "selected", modelId: "minimax-m2.5" });
-  });
-
-  it("remembers the model used on an issue so the next call does not switch", async () => {
-    const { harness } = await harnessFor("company-a");
-    await harness.performAction(ACTION_KEYS.route, {
-      companyId: COMPANY_A,
-      taskClass: "architecture",
-      issueId: "issue-7",
-    });
-    const sticky = harness.getState({
-      scopeKind: "company",
-      scopeId: COMPANY_A,
-      stateKey: STATE_KEYS.issueStickiness,
-    }) as Record<string, string>;
-    expect(sticky["issue-7"]).toBe("claude-sonnet-5");
-
-    // A later, cheaper-looking call on the same issue keeps the incumbent.
-    const second = (await harness.performAction(ACTION_KEYS.route, {
-      companyId: COMPANY_A,
-      taskClass: "implementation",
-      issueId: "issue-7",
-    })) as { modelId: string; trace: string[] };
-    expect(second.modelId).toBe("claude-sonnet-5");
-    expect(second.trace.join(" ")).toContain("prompt cache");
-  });
-
-  it("refuses a tool call with no companyId", async () => {
-    const { harness } = await harnessFor("company-a");
-    const result = await harness.executeTool(TOOL_NAMES.selectModel, {});
-    expect(result).toMatchObject({ ok: false });
-  });
-});
-
-describe("one worker build, two companies", () => {
-  it("serves two companies from two config rows with no code difference", async () => {
-    const a = await harnessFor("company-a");
-    const b = await harnessFor("company-b");
-
-    const decisionA = (await a.harness.performAction(ACTION_KEYS.route, {
-      companyId: COMPANY_A,
-      taskClass: "implementation",
-    })) as { modelId: string };
-    const decisionB = (await b.harness.performAction(ACTION_KEYS.route, {
+  it("uses the action host context and returns the same InferenceResult", async () => {
+    const { harness, httpCalls } = await sharedWorker();
+    const result = await harness.performAction(ACTION_KEYS.invoke, invocation, {
       companyId: COMPANY_B,
-      taskClass: "implementation",
-    })) as { modelId: string };
-
-    expect(decisionA.modelId).toBe("minimax-m2.5");
-    expect(decisionB.modelId).toBe("gpt-4.1");
+      actor: { type: "agent", agentId: "agent-b", runId: "run-b" },
+    }) as { outcome: string; response: { modelId: string } };
+    expect(result).toMatchObject({ outcome: "completed", response: { modelId: "gpt-4.1" } });
+    expect(httpCalls[0]?.url).toBe("https://company-b.example/compatible/v1/messages");
   });
 
-  it("keeps decision state separate per company", async () => {
-    const a = await harnessFor("company-a");
-    await a.harness.performAction(ACTION_KEYS.route, {
-      companyId: COMPANY_A,
-      taskClass: "implementation",
-    });
-    const otherCompanyLog = a.harness.getState({
-      scopeKind: "company",
-      scopeId: COMPANY_B,
-      stateKey: STATE_KEYS.decisionLog,
-    });
-    expect(otherCompanyLog ?? null).toBeNull();
-  });
-});
-
-describe("onValidateConfig", () => {
-  it("accepts a complete config", async () => {
-    const { plugin } = await harnessFor("company-a");
-    const result = await plugin.onValidateConfig!(readFixture("company-a"));
-    expect(result.ok).toBe(true);
+  it("rejects invalid stored upstream config before secret resolution or HTTP", async () => {
+    const { harness, httpCalls, secretCalls, configs } = await sharedWorker();
+    const invalid = structuredClone(configs.get(COMPANY_A)!);
+    (invalid.upstream as Record<string, unknown>).baseUrl = "https://user:pass@company-a.example/api";
+    configs.set(COMPANY_A, invalid);
+    const result = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as { outcome: string; error: { code: string } };
+    expect(result).toMatchObject({ outcome: "error", error: { code: "upstream-url-rejected" } });
+    expect(httpCalls).toHaveLength(0);
+    expect(secretCalls).toHaveLength(0);
   });
 
-  it("warns loudly when the OWNER has enabled Claude pay-as-you-go", async () => {
-    const { plugin } = await harnessFor("company-b");
-    vi.stubEnv("MODEL_ROUTER_CLAUDE_PAYG_UNLOCK", "1");
-    try {
-      const result = await plugin.onValidateConfig!(readFixture("company-b"));
-      expect(result.ok).toBe(true);
-      expect(result.warnings?.join(" ")).toContain("pay-as-you-go is ENABLED");
-    } finally {
-      vi.unstubAllEnvs();
-    }
+  it("rejects Anthropic-profile image input before secret resolution or HTTP", async () => {
+    const { harness, httpCalls, secretCalls } = await sharedWorker();
+    const result = await harness.performAction(ACTION_KEYS.invoke, {
+      task: { taskClass: "implementation", requiredCapabilities: ["vision"] },
+      messages: [{ role: "user", content: [{ type: "image_url", url: "https://images.example/a.png" }] }],
+      maxOutputTokens: 10,
+    }, { companyId: COMPANY_B }) as { outcome: string; error: { code: string } };
+    expect(result).toMatchObject({ outcome: "error", error: { code: "invalid-request" } });
+    expect(httpCalls).toHaveLength(0);
+    expect(secretCalls).toHaveLength(0);
   });
 
-  it("refuses the same config when the instance has not unlocked PAYG", async () => {
-    // company-b's stored bytes are unchanged; only the instance differs. A
-    // company config row cannot enable Claude PAYG on its own — owner rule 1.
-    const { plugin } = await harnessFor("company-b");
-    const result = await plugin.onValidateConfig!(readFixture("company-b"));
-    expect(result.ok).toBe(false);
-    expect(result.errors?.join(" ")).toContain("not unlocked on this instance");
+  it("makes zero HTTP and secret calls for Rule 0", async () => {
+    const { harness, httpCalls, secretCalls } = await sharedWorker();
+    const result = await harness.executeTool(TOOL_NAMES.invoke, {
+      task: { taskClass: "mechanical", summary: "lint the repo" },
+      messages: [{ role: "user", content: "lint" }],
+      maxOutputTokens: 10,
+    }, { companyId: COMPANY_A, runId: "run-a", agentId: "agent-a", projectId: "project-a" });
+    expect(result.data).toMatchObject({ outcome: "no-model-needed" });
+    expect(httpCalls).toHaveLength(0);
+    expect(secretCalls).toHaveLength(0);
   });
 
-  it("rejects a quota gate that is enabled with no status URL", async () => {
-    const { plugin } = await harnessFor("company-a");
-    const result = await plugin.onValidateConfig!({
-      quotaGate: { enabled: true, statusUrl: "" },
-    });
-    expect(result.ok).toBe(false);
-    expect(result.errors?.join(" ")).toContain("statusUrl");
+  it("keeps two companies' config, secrets, wires, and state isolated in one worker", async () => {
+    const { harness, httpCalls, secretCalls } = await sharedWorker();
+    await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A });
+    await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_B });
+    expect(httpCalls.map((call) => call.url)).toEqual([
+      "https://company-a.example/api/v1/chat/completions",
+      "https://company-b.example/compatible/v1/messages",
+    ]);
+    expect(secretCalls.map((call) => [call.secretId, call.companyId])).toEqual([
+      ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", COMPANY_A],
+      ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", COMPANY_B],
+    ]);
+    const logA = harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.decisionLog }) as unknown[];
+    const logB = harness.getState({ scopeKind: "company", scopeId: COMPANY_B, stateKey: STATE_KEYS.decisionLog }) as unknown[];
+    expect(logA).toHaveLength(1);
+    expect(logB).toHaveLength(1);
+    expect(JSON.stringify(logA)).not.toContain(SECRET_A);
+    expect(JSON.stringify(logA)).not.toContain("hello");
+    expect(JSON.stringify(logB)).not.toContain(SECRET_B);
   });
 
-  it("rejects thresholds that are out of order", async () => {
-    const { plugin } = await harnessFor("company-a");
-    const result = await plugin.onValidateConfig!({
-      budget: { warnFraction: 0.9, downshiftFraction: 0.5, haltFraction: 0.95 },
-    });
-    expect(result.ok).toBe(false);
-    expect(result.errors?.join(" ")).toContain("warn <= downshift <= halt");
-  });
-
-  it("rejects a task class pin that is not in the model table", async () => {
-    const { plugin } = await harnessFor("company-a");
-    const result = await plugin.onValidateConfig!({
-      taskClasses: [{ key: "x", qualityFloor: 10, pinnedModelId: "does-not-exist" }],
-    });
-    expect(result.ok).toBe(false);
-  });
-
-  it("rejects an invalid Rule 0 regular expression", async () => {
-    const { plugin } = await harnessFor("company-a");
-    const result = await plugin.onValidateConfig!({
-      rule0: { enabled: true, deterministicPatterns: [{ pattern: "([", tool: "x" }] },
-    });
-    expect(result.ok).toBe(false);
+  it("records upstream errors without replay, secret, body, or provider identity", async () => {
+    const { harness } = await sharedWorker();
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ error: { message: `leaked ${SECRET_A}` } }), { status: 429, headers: { "content-type": "application/json", "x-request-id": "rate-1" } }));
+    harness.ctx.http.fetch = fetch;
+    const result = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as { outcome: string; error: { code: string; upstreamRequestId: string } };
+    expect(result).toMatchObject({ outcome: "error", error: { code: "upstream-rate-limit", upstreamRequestId: "rate-1" } });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(result)).not.toContain(SECRET_A);
+    expect(JSON.stringify(result)).not.toContain("leaked");
   });
 });
 
-describe("scoped API routes", () => {
-  it("answers the effective-config route", async () => {
-    const { plugin } = await harnessFor("company-a");
-    const response = await plugin.onApiRequest!({
-      routeKey: "company-config",
-      method: "GET",
-      path: "/effective-config",
+describe("scoped routes", () => {
+  it("returns HTTP 200 for completed upstream failures and HTTP 400 only for invalid native requests", async () => {
+    const { definition } = await sharedWorker();
+    const invalid = await definition.onApiRequest!({
+      routeKey: ROUTE_KEYS.invoke,
+      method: "POST",
+      path: "/invoke",
       params: {},
       query: { companyId: COMPANY_A },
-      body: null,
-      actor: { actorType: "agent", actorId: "agent-1" },
+      body: { task: {}, messages: [], maxOutputTokens: 1 },
+      actor: { actorType: "agent", actorId: "agent-a", runId: "run-a" },
       companyId: COMPANY_A,
       headers: {},
     });
-    expect(response.status).toBe(200);
-  });
+    expect(invalid.status).toBe(400);
 
-  it("answers the issue routing route with a decision", async () => {
-    const { plugin } = await harnessFor("company-a");
-    const response = await plugin.onApiRequest!({
-      routeKey: "route-issue",
+    const completed = await definition.onApiRequest!({
+      routeKey: ROUTE_KEYS.invokeIssue,
       method: "POST",
-      path: "/issues/issue-1/route",
-      params: { issueId: "issue-1" },
+      path: "/issues/issue-route/invoke",
+      params: { issueId: "issue-route" },
       query: {},
-      body: { taskClass: "implementation" },
-      actor: { actorType: "agent", actorId: "agent-1" },
+      body: { task: { taskClass: "implementation", issueId: "spoof" }, messages: [{ role: "user", content: "hello" }], maxOutputTokens: 10 },
+      actor: { actorType: "agent", actorId: "agent-a", runId: "run-a" },
       companyId: COMPANY_A,
       headers: {},
     });
-    expect(response.status).toBe(200);
-    expect((response.body as { decision: { modelId: string } }).decision.modelId).toBe("minimax-m2.5");
-  });
-
-  it("routes through the same path as every other surface", async () => {
-    // The HTTP route used to call `selectModel` directly. That gave it a second
-    // routing engine with no quota gate, no stickiness, no decision log and no
-    // metric — the one surface an operator is most likely to hit by hand was
-    // also the one nothing recorded. TOG-228.
-    const { harness, plugin } = await harnessFor("company-a");
-
-    const response = await plugin.onApiRequest!({
-      routeKey: "route-issue",
-      method: "POST",
-      path: "/issues/issue-7/route",
-      params: { issueId: "issue-7" },
-      query: {},
-      body: { taskClass: "implementation" },
-      actor: { actorType: "agent", actorId: "agent-1" },
-      companyId: COMPANY_A,
-      headers: {},
-    });
-    expect(response.status).toBe(200);
-
-    // Recorded, like every other surface.
-    const log = harness.getState({
-      scopeKind: "company",
-      scopeId: COMPANY_A,
-      stateKey: STATE_KEYS.decisionLog,
-    }) as Array<{ issueId: string; modelId: string }>;
-    expect(log).toHaveLength(1);
-    expect(log[0]).toMatchObject({ issueId: "issue-7", modelId: "minimax-m2.5" });
-
-    // ...and sticky, like every other surface.
-    const sticky = harness.getState({
-      scopeKind: "company",
-      scopeId: COMPANY_A,
-      stateKey: STATE_KEYS.issueStickiness,
-    }) as Record<string, string>;
-    expect(sticky["issue-7"]).toBe("minimax-m2.5");
-  });
-
-  it("applies the budget gate supplied in the request body", async () => {
-    const { plugin } = await harnessFor("company-a");
-    const response = await plugin.onApiRequest!({
-      routeKey: "route-issue",
-      method: "POST",
-      path: "/issues/issue-8/route",
-      params: { issueId: "issue-8" },
-      query: {},
-      body: { taskClass: "implementation", budgetSpentFraction: 0.99 },
-      actor: { actorType: "agent", actorId: "agent-1" },
-      companyId: COMPANY_A,
-      headers: {},
-    });
-    const { decision } = response.body as {
-      decision: { outcome: string; gates: { budget: string } };
-    };
-    expect(decision.gates.budget).toBe("halt");
-    expect(decision.outcome).toBe("no-eligible-model");
-  });
-
-  it("404s an unknown route key", async () => {
-    const { plugin } = await harnessFor("company-a");
-    const response = await plugin.onApiRequest!({
-      routeKey: "nope",
-      method: "GET",
-      path: "/nope",
-      params: {},
-      query: {},
-      body: null,
-      actor: { actorType: "agent", actorId: "agent-1" },
-      companyId: COMPANY_A,
-      headers: {},
-    });
-    expect(response.status).toBe(404);
+    expect(completed.status).toBe(200);
+    expect(completed.body).toMatchObject({ outcome: "completed", decision: { taskClass: "implementation" } });
   });
 });

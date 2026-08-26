@@ -1,43 +1,43 @@
-/**
- * Plugin worker.
- *
- * Everything company-specific arrives through `ctx.config.get(companyId)`.
- * The worker holds no company constants and branches on no company id; if it
- * ever needs to, that thing belongs in `src/config/schema.ts` instead.
- */
+import { randomUUID } from "node:crypto";
 
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import type { PluginContext } from "@paperclipai/plugin-sdk";
+import type { PluginContext, ToolResult } from "@paperclipai/plugin-sdk";
 
 import { resolveConfig } from "./config/resolve.js";
 import { validateSecretRefShape } from "./config/secret-ref.js";
 import type { RouterConfig } from "./config/types.js";
 import {
   ACTION_KEYS,
-  CLAUDE_ID_PATTERN_SOURCE,
-  CLAUDE_PAYG_UNLOCK_ENV,
-  CLAUDE_PROVIDER_ALLOWLIST,
-  DATA_KEYS,
   DECISION_LOG_LIMIT,
-  idNamesClaude,
-  isClaudeProviderAllowed,
   PLUGIN_VERSION,
   ROUTE_KEYS,
   STATE_KEYS,
   TOOL_NAMES,
 } from "./constants.js";
 import { selectModel } from "./engine/select.js";
-import type { RoutingDecision, TaskDescriptor } from "./engine/types.js";
-import { readQuotaSnapshot, type QuotaHttpClient, type QuotaSnapshot } from "./quota/teamclaude.js";
+import type { RoutingDecision } from "./engine/types.js";
+import { validateUpstreamConfig } from "./inference/adapters.js";
+import { invokeCompatibleUpstream } from "./inference/transport.js";
+import type { InferenceResult, InvokeRequest } from "./inference/types.js";
+import { InvocationValidationError, parseInvokeRequest } from "./inference/validate.js";
 
 interface DecisionRecord {
   at: string;
-  companyId: string;
+  requestId: string;
+  runId: string | null;
   issueId: string | null;
   taskClass: string | null;
-  outcome: RoutingDecision["outcome"];
+  selectionOutcome: RoutingDecision["outcome"] | null;
   modelId: string | null;
-  trace: string[];
+  fallbackUsed: boolean;
+  upstreamProtocol: RouterConfig["upstream"]["protocol"] | null;
+  outcome: InferenceResult["outcome"];
+  errorCode: string | null;
+  upstreamStatus: number | null;
+  latencyMs: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  upstreamRequestId: string | null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -46,73 +46,23 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function descriptorFrom(params: Record<string, unknown>): TaskDescriptor {
-  const descriptor: TaskDescriptor = {};
-  if (typeof params.taskClass === "string") descriptor.taskClass = params.taskClass;
-  if (typeof params.summary === "string") descriptor.summary = params.summary;
-  if (typeof params.issueId === "string") descriptor.issueId = params.issueId;
-  if (typeof params.pinnedModelId === "string") descriptor.pinnedModelId = params.pinnedModelId;
-  if (typeof params.pinReason === "string") descriptor.pinReason = params.pinReason;
-  if (typeof params.requiredContextTokens === "number") {
-    descriptor.requiredContextTokens = params.requiredContextTokens;
+function summary(result: InferenceResult): string {
+  if (result.outcome === "completed") {
+    return `Model ${result.response.modelId} completed with stop reason ${result.response.stopReason}.`;
   }
-  if (typeof params.estimatedInputTokens === "number") {
-    descriptor.estimatedInputTokens = params.estimatedInputTokens;
-  }
-  if (typeof params.estimatedOutputTokens === "number") {
-    descriptor.estimatedOutputTokens = params.estimatedOutputTokens;
-  }
-  if (Array.isArray(params.requiredCapabilities)) {
-    descriptor.requiredCapabilities = params.requiredCapabilities.filter(
-      (entry): entry is TaskDescriptor["requiredCapabilities"] extends undefined
-        ? never
-        : NonNullable<TaskDescriptor["requiredCapabilities"]>[number] => typeof entry === "string",
-    );
-  }
-  const signals = asRecord(params.signals);
-  const numericSignals: Record<string, number> = {};
-  for (const [key, value] of Object.entries(signals)) {
-    if (typeof value === "number" && Number.isFinite(value)) numericSignals[key] = value;
-  }
-  if (Object.keys(numericSignals).length > 0) descriptor.signals = numericSignals;
-  return descriptor;
+  if (result.outcome === "error") return `Model Router invocation failed: ${result.error.code}.`;
+  if (result.outcome === "no-model-needed") return "Rule 0 matched; no model request was made.";
+  if (result.outcome === "disabled") return "Model Router is disabled for this company.";
+  return "No eligible model was available for this invocation.";
 }
-
-/** Adapts `ctx.http.fetch` to the quota reader's minimal client. */
-function quotaHttp(ctx: PluginContext): QuotaHttpClient {
-  return {
-    async request({ url, method, headers }) {
-      const response = await ctx.http.fetch(url, { method, headers });
-      let body: unknown = null;
-      try {
-        body = await response.json();
-      } catch {
-        body = null;
-      }
-      return { status: response.status, body };
-    },
-  };
-}
-
-/** Signature of the single routing entry point every surface calls. */
-type Decide = (
-  companyId: string,
-  descriptor: TaskDescriptor,
-  options?: { budgetSpentFraction?: number },
-) => Promise<{ decision: RoutingDecision; quota: QuotaSnapshot | null }>;
 
 export function createPlugin() {
-  // `onApiRequest` is a top-level worker hook and receives no context, so setup
-  // parks the context here for it. One worker process serves every company; the
-  // context is company-agnostic and every read is explicitly company-scoped.
   let context: PluginContext | null = null;
-  // ...and parks `decide` here too. `onApiRequest` used to call `selectModel`
-  // directly, which quietly gave the HTTP route its own routing engine: no quota
-  // gate, no stickiness, and no entry in the decision log. Two surfaces, two
-  // answers, one of them unaudited. There is now exactly one path.
-  let decide: Decide | null = null;
+  let invoke: ((companyId: string, raw: unknown, runId?: string | null) => Promise<InferenceResult>) | null = null;
 
   return definePlugin({
+    multiCompanyConfig: true,
+
     async setup(ctx) {
       context = ctx;
       const companyConfig = async (companyId: string): Promise<RouterConfig> =>
@@ -124,14 +74,10 @@ export function createPlugin() {
         stateKey: STATE_KEYS.issueStickiness,
       });
 
-      const readStickyModel = async (
-        companyId: string,
-        issueId: string | undefined,
-      ): Promise<string | undefined> => {
+      const readStickyModel = async (companyId: string, issueId: string | undefined) => {
         if (!issueId) return undefined;
         const map = asRecord(await ctx.state.get(stickyKey(companyId)));
-        const value = map[issueId];
-        return typeof value === "string" ? value : undefined;
+        return typeof map[issueId] === "string" ? (map[issueId] as string) : undefined;
       };
 
       const writeStickyModel = async (
@@ -146,162 +92,204 @@ export function createPlugin() {
         await ctx.state.set(stickyKey(companyId), map);
       };
 
-      const readQuota = async (
+      const record = async (
         companyId: string,
-        config: RouterConfig,
-      ): Promise<QuotaSnapshot | null> => {
-        if (!config.quotaGate.enabled) return null;
-        let apiKey: string | null = null;
-        if (config.quotaGate.apiKeySecretRef) {
-          try {
-            apiKey = await ctx.secrets.resolve(config.quotaGate.apiKeySecretRef as never, {
-              companyId,
-              configPath: "quotaGate.apiKeySecretRef",
-            });
-          } catch (error) {
-            ctx.logger.warn("quota gate: could not resolve the teamclaude key", {
-              companyId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-        const snapshot = await readQuotaSnapshot({
-          config: config.quotaGate,
-          http: quotaHttp(ctx),
-          apiKey,
-          now: () => new Date().toISOString(),
-        });
-        await ctx.state.set(
-          { scopeKind: "company", scopeId: companyId, stateKey: STATE_KEYS.quotaSnapshot },
-          snapshot as unknown as Record<string, unknown>,
-        );
-        return snapshot;
-      };
-
-      const recordDecision = async (
-        companyId: string,
-        descriptor: TaskDescriptor,
-        decision: RoutingDecision,
-      ): Promise<void> => {
+        runId: string | null,
+        request: InvokeRequest | null,
+        result: InferenceResult,
+        latencyMs: number,
+      ) => {
+        const decision = result.decision;
         const key = {
           scopeKind: "company" as const,
           scopeId: companyId,
           stateKey: STATE_KEYS.decisionLog,
         };
-        const existing = await ctx.state.get(key);
-        const log: DecisionRecord[] = Array.isArray(existing) ? (existing as DecisionRecord[]) : [];
+        const current = await ctx.state.get(key);
+        const log: DecisionRecord[] = Array.isArray(current) ? (current as DecisionRecord[]) : [];
+        const response = result.outcome === "completed" ? result.response : null;
+        const failure = result.outcome === "error" ? result.error : null;
         log.unshift({
           at: new Date().toISOString(),
-          companyId,
-          issueId: descriptor.issueId ?? null,
-          taskClass: decision.taskClass,
-          outcome: decision.outcome,
-          modelId: decision.modelId,
-          trace: decision.trace,
+          requestId: result.requestId,
+          runId,
+          issueId: request?.task.issueId ?? null,
+          taskClass: decision?.taskClass ?? null,
+          selectionOutcome: decision?.outcome ?? null,
+          modelId: decision?.modelId ?? null,
+          fallbackUsed: decision?.fallbackUsed ?? false,
+          upstreamProtocol: response?.upstream.protocol ?? (decision?.outcome === "selected" ? (await companyConfig(companyId)).upstream.protocol : null),
+          outcome: result.outcome,
+          errorCode: failure?.code ?? null,
+          upstreamStatus: failure?.upstreamStatus ?? null,
+          latencyMs: Math.max(0, Math.min(Math.round(latencyMs), 60_000)),
+          inputTokens: response?.usage.inputTokens ?? null,
+          outputTokens: response?.usage.outputTokens ?? null,
+          upstreamRequestId: response?.upstream.requestId ?? failure?.upstreamRequestId ?? null,
         });
         await ctx.state.set(key, log.slice(0, DECISION_LOG_LIMIT));
-
-        await ctx.metrics.write(`model_router.decision.${decision.outcome}`, 1, {
-          companyId,
-          model: decision.modelId ?? "none",
-        });
+        await ctx.metrics.write(`model_router.invoke.${result.outcome}`, 1);
       };
 
-      /** The one path every surface goes through. */
-      const decideFor: Decide = async (
+      const invokeFor = async (
         companyId: string,
-        descriptor: TaskDescriptor,
-        options?: { budgetSpentFraction?: number },
-      ): Promise<{ decision: RoutingDecision; quota: QuotaSnapshot | null }> => {
+        raw: unknown,
+        runId: string | null = null,
+      ): Promise<InferenceResult> => {
+        const requestId = randomUUID();
+        const startedAt = Date.now();
+        let request: InvokeRequest | null = null;
+        let result: InferenceResult;
         const config = await companyConfig(companyId);
-        const quota = await readQuota(companyId, config);
+        const upstreamErrors = validateUpstreamConfig(config.upstream);
+        const secretRefError = validateSecretRefShape(
+          config.upstream.credentialSecretRef,
+          "upstream.credentialSecretRef",
+        );
+        if (upstreamErrors.length > 0 || secretRefError) {
+          result = {
+            outcome: "error",
+            requestId,
+            decision: null,
+            response: null,
+            error: {
+              code: upstreamErrors.length > 0 ? "upstream-url-rejected" : "secret-unavailable",
+              message: upstreamErrors.length > 0
+                ? "The configured compatible upstream is invalid."
+                : "The compatible upstream credential reference is invalid.",
+              retryable: false,
+              upstreamStatus: null,
+              upstreamRequestId: null,
+            },
+          };
+          await record(companyId, runId, request, result, Date.now() - startedAt);
+          return result;
+        }
+        try {
+          request = parseInvokeRequest(
+            raw,
+            config.routing.maxOutputTokens,
+            config.upstream.protocol,
+          );
+        } catch (failure) {
+          result = {
+            outcome: "error",
+            requestId,
+            decision: null,
+            response: null,
+            error: {
+              code: "invalid-request",
+              message: failure instanceof InvocationValidationError
+                ? failure.message.slice(0, 512)
+                : "The invocation request is invalid.",
+              retryable: false,
+              upstreamStatus: null,
+              upstreamRequestId: null,
+            },
+          };
+          await record(companyId, runId, request, result, Date.now() - startedAt);
+          return result;
+        }
+
         const decision = selectModel({
-          descriptor,
+          descriptor: request.task,
           config,
           signals: {
-            budgetSpentFraction: options?.budgetSpentFraction,
-            claudeQuotaUtilization: quota?.maxUtilization ?? undefined,
-            // An enabled gate that could not read its number must say so in the
-            // trace; an open gate is not the same fact as a healthy one.
-            claudeQuotaError: quota?.error ?? undefined,
+            budgetSpentFraction: request.task.signals?.budgetSpentFraction,
             stickyModelId: config.routing.stickyModelWithinIssue
-              ? await readStickyModel(companyId, descriptor.issueId)
+              ? await readStickyModel(companyId, request.task.issueId)
               : undefined,
           },
         });
-        await recordDecision(companyId, descriptor, decision);
-        if (decision.outcome === "selected") {
-          await writeStickyModel(companyId, descriptor.issueId, decision.modelId);
-        }
-        return { decision, quota };
-      };
-      decide = decideFor;
 
-      // ---- agent tool ------------------------------------------------------
+        if (decision.outcome !== "selected" || !decision.modelId) {
+          const outcome = decision.outcome === "selected" ? "no-eligible-model" : decision.outcome;
+          result = {
+            outcome,
+            requestId,
+            decision,
+            response: null,
+            error: null,
+          };
+          await record(companyId, runId, request, result, Date.now() - startedAt);
+          return result;
+        }
+
+        await writeStickyModel(companyId, request.task.issueId, decision.modelId);
+        if (!config.upstream.credentialSecretRef) {
+          result = {
+            outcome: "error",
+            requestId,
+            decision,
+            response: null,
+            error: {
+              code: "secret-unavailable",
+              message: "The compatible upstream credential is not configured.",
+              retryable: false,
+              upstreamStatus: null,
+              upstreamRequestId: null,
+            },
+          };
+          await record(companyId, runId, request, result, Date.now() - startedAt);
+          return result;
+        }
+
+        let credential: string;
+        try {
+          credential = await ctx.secrets.resolve(config.upstream.credentialSecretRef as never, {
+            companyId,
+            configPath: "upstream.credentialSecretRef",
+          });
+        } catch {
+          result = {
+            outcome: "error",
+            requestId,
+            decision,
+            response: null,
+            error: {
+              code: "secret-unavailable",
+              message: "The compatible upstream credential could not be resolved.",
+              retryable: false,
+              upstreamStatus: null,
+              upstreamRequestId: null,
+            },
+          };
+          await record(companyId, runId, request, result, Date.now() - startedAt);
+          return result;
+        }
+
+        const transport = await invokeCompatibleUpstream({
+          http: ctx.http,
+          config: config.upstream,
+          credential,
+          request,
+          modelId: decision.modelId,
+        });
+        result = transport.error
+          ? { outcome: "error", requestId, decision, response: null, error: transport.error }
+          : { outcome: "completed", requestId, decision, response: transport.response, error: null };
+        await record(companyId, runId, request, result, Date.now() - startedAt);
+        return result;
+      };
+      invoke = invokeFor;
+
       ctx.tools.register(
-        TOOL_NAMES.selectModel,
+        TOOL_NAMES.invoke,
         {
-          displayName: "Select a model",
-          description:
-            "Return the cheapest model that clears this company's quality floor and constraints, with the full reasoning trace.",
-          parametersSchema: { type: "object", required: ["companyId"] },
+          displayName: "Invoke a routed model",
+          description: "Select, invoke once, normalize, and audit using the host-authorized company scope.",
+          parametersSchema: { type: "object" },
         },
-        async (params) => {
-          const input = asRecord(params);
-          const companyId = typeof input.companyId === "string" ? input.companyId : "";
-          if (!companyId) {
-            return { ok: false, error: "companyId is required" } as never;
-          }
-          const { decision } = await decideFor(companyId, descriptorFrom(input));
-          return { ok: true, data: decision } as never;
+        async (params, runCtx): Promise<ToolResult> => {
+          const result = await invokeFor(runCtx.companyId, params, runCtx.runId);
+          return { content: summary(result), data: result };
         },
       );
 
-      // ---- UI / bridge data ------------------------------------------------
-      ctx.data.register(DATA_KEYS.effectiveConfig, async ({ companyId }) => {
-        const id = String(companyId ?? "");
-        return { version: PLUGIN_VERSION, config: await companyConfig(id) };
-      });
-
-      ctx.data.register(DATA_KEYS.decisions, async ({ companyId }) => {
-        const value = await ctx.state.get({
-          scopeKind: "company",
-          scopeId: String(companyId ?? ""),
-          stateKey: STATE_KEYS.decisionLog,
-        });
-        return { decisions: Array.isArray(value) ? value : [] };
-      });
-
-      ctx.data.register(DATA_KEYS.quota, async ({ companyId }) => {
-        const id = String(companyId ?? "");
-        const config = await companyConfig(id);
-        const stored = await ctx.state.get({
-          scopeKind: "company",
-          scopeId: id,
-          stateKey: STATE_KEYS.quotaSnapshot,
-        });
-        return { enabled: config.quotaGate.enabled, snapshot: stored ?? null };
-      });
-
-      // ---- actions ---------------------------------------------------------
-      ctx.actions.register(ACTION_KEYS.route, async (params) => {
-        const input = asRecord(params);
-        const companyId = String(input.companyId ?? "");
-        if (!companyId) throw new Error("companyId is required");
-        const budget =
-          typeof input.budgetSpentFraction === "number" ? input.budgetSpentFraction : undefined;
-        const { decision } = await decideFor(companyId, descriptorFrom(input), {
-          budgetSpentFraction: budget,
-        });
-        return decision as unknown as Record<string, unknown>;
-      });
-
-      ctx.actions.register(ACTION_KEYS.refreshQuota, async (params) => {
-        const companyId = String(asRecord(params).companyId ?? "");
-        if (!companyId) throw new Error("companyId is required");
-        const config = await companyConfig(companyId);
-        const snapshot = await readQuota(companyId, config);
-        return { snapshot } as unknown as Record<string, unknown>;
+      ctx.actions.register(ACTION_KEYS.invoke, async (params, actionCtx) => {
+        if (!actionCtx.companyId) throw new Error("host-authorized company context is required");
+        const { companyId: _hostInjectedCompanyId, ...request } = params;
+        return invokeFor(actionCtx.companyId, request, actionCtx.actor.runId);
       });
 
       ctx.logger.info("Model Router worker ready", { version: PLUGIN_VERSION });
@@ -311,172 +299,58 @@ export function createPlugin() {
       return { status: "ok", message: `Model Router ${PLUGIN_VERSION}` };
     },
 
-    /**
-     * Config is per company, so validation is too.
-     *
-     * Note what this is NOT: the persisting write, `POST /plugins/:id/config`,
-     * validates against `instanceConfigSchema` with Ajv and never calls this
-     * hook. Only `POST /plugins/:id/config/test` — a dry run that stores
-     * nothing — reaches it. So this is an operator-facing check, not a gate:
-     * anything that must actually be refused at write time has to be expressible
-     * in `src/config/schema.ts`. The two overlap on purpose.
-     */
-    async onValidateConfig(config: Record<string, unknown>) {
-      const resolved = resolveConfig(config);
-      const errors: string[] = [];
+    async onValidateConfig(raw: Record<string, unknown>) {
+      const config = resolveConfig(raw);
+      const errors = validateUpstreamConfig(config.upstream);
       const warnings: string[] = [];
-
-      if (resolved.routing.enabled && resolved.models.length === 0) {
-        warnings.push("routing is enabled but no models are configured — every decision will be `no-eligible-model`");
+      if (config.routing.enabled && config.models.length === 0) {
+        warnings.push("routing is enabled but no models are configured");
       }
-      if (resolved.routing.enabled && resolved.providers.permitted.length === 0) {
-        warnings.push("no permitted providers — every model will be rejected as provider-not-permitted");
+      if (!config.upstream.credentialSecretRef) {
+        errors.push("upstream.credentialSecretRef is required");
       }
-      // `resolveConfig` has already forced this to false unless the instance
-      // unlock is present, so read the RAW value to tell the two cases apart:
-      // an owner who unlocked PAYG deliberately gets the warning, and a company
-      // that set the flag on its own gets a refusal.
-      const rawPaygRequested =
-        (config.providers as Record<string, unknown> | undefined)?.claudePaygEnabled === true;
-      if (resolved.providers.claudePaygEnabled) {
-        warnings.push("Claude pay-as-you-go is ENABLED for this company — Claude may be served by providers other than teamclaude");
-      } else if (rawPaygRequested) {
-        errors.push(
-          `providers.claudePaygEnabled is true, but Claude PAYG is not unlocked on this instance. ` +
-            `Owner rule 1 keeps Claude PAYG disabled until the OWNER enables it, and a company config row is not the owner. ` +
-            `The flag is ignored by the engine regardless; set ${CLAUDE_PAYG_UNLOCK_ENV}=1 in the instance environment if the owner has authorised it.`,
-        );
-      }
-      // The Claude block's destination, which used to be a free-form string:
-      // `claudeFamilyProvider: "openrouter"` did not disable the block, it aimed
-      // it, and a Claude model teamclaude cannot serve came back `selected`.
-      if (!isClaudeProviderAllowed(resolved.providers.claudeFamilyProvider)) {
-        errors.push(
-          `providers.claudeFamilyProvider is "${resolved.providers.claudeFamilyProvider}", which is not a provider owner rule 1 allows for Claude ` +
-            `(allowed: ${CLAUDE_PROVIDER_ALLOWLIST.join(", ")}). This field may narrow that list, not extend it. ` +
-            `The engine blocks every Claude model while this is set, so routing is failing closed rather than leaking — but fix the config rather than leaving it.`,
-        );
-      }
-
-      const ids = new Set<string>();
-      const claudeFamilies = new Set(
-        resolved.providers.claudeFamilies.map((entry) => entry.toLowerCase()),
+      const secretRefError = validateSecretRefShape(
+        asRecord(raw.upstream).credentialSecretRef,
+        "upstream.credentialSecretRef",
       );
-      for (const model of resolved.models) {
+      if (secretRefError) errors.push(secretRefError);
+      const ids = new Set<string>();
+      for (const model of config.models) {
         if (ids.has(model.id)) errors.push(`duplicate model id: ${model.id}`);
         ids.add(model.id);
-
-        // The TOG-237 mislabel, in both directions.
-        //
-        // An ERROR when the id names Claude and the declared family does not.
-        // The engine no longer *routes* on this — `idNamesClaude` governs the
-        // Claude block regardless — so this config is no longer a bypass. It is
-        // still refused rather than warned, because a model table that
-        // contradicts itself about which rows are Claude is a table nobody
-        // should be reasoning about owner rule 1 from, and the operator should
-        // find out at write time rather than by reading a trace during an
-        // incident.
-        const declaredClaude = claudeFamilies.has(model.family.toLowerCase());
-        if (idNamesClaude(model.id) && !declaredClaude) {
-          errors.push(
-            // Say WHICH rule matched. "has a Claude/Anthropic id" was accurate
-            // when the pattern was `claude|anthropic`; TOG-149 widened it to the
-            // family names, and an operator reading that sentence about
-            // `aug/opus4.7` — an id containing neither word — has been told
-            // something visibly untrue about their own config. TOG-248.
-            `model ${model.id} has an id the Claude block classifies as Claude (it matches /${CLAUDE_ID_PATTERN_SOURCE}/i) but declares family "${model.family}", which is not in providers.claudeFamilies (${resolved.providers.claudeFamilies.join(", ") || "empty"}). ` +
-              "Before TOG-237 this silently exempted the model from the Claude block; it no longer does, but the table must not disagree with itself. " +
-              "Set the family to a configured Claude family, or add this family to providers.claudeFamilies.",
-          );
-        }
-        // A WARNING the other way. This one only ever *widens* the Claude block,
-        // so it cannot leak — but it is usually a typo, and it silently confines
-        // a non-Anthropic model to `claudeFamilyProvider`, which looks like an
-        // outage rather than a misconfiguration.
-        if (declaredClaude && !idNamesClaude(model.id)) {
-          warnings.push(
-            `model ${model.id} declares Claude family "${model.family}" but its id does not name Claude or Anthropic — it will be confined to ${resolved.providers.claudeFamilyProvider} by the Claude block. Intended?`,
-          );
-        }
       }
-      const classKeys = new Set<string>();
-      for (const entry of resolved.taskClasses) {
-        if (classKeys.has(entry.key)) errors.push(`duplicate task class key: ${entry.key}`);
-        classKeys.add(entry.key);
+      for (const entry of config.taskClasses) {
         if (entry.pinnedModelId && !ids.has(entry.pinnedModelId)) {
           errors.push(`task class ${entry.key} pins ${entry.pinnedModelId}, which is not in the model table`);
         }
       }
-      // An error, not a warning. A fallback id that is not in the table has been
-      // seen by no gate at all — the Claude block included — so the engine
-      // refuses it at routing time. Refusing it at write time instead means the
-      // operator finds out now rather than during an incident.
-      if (resolved.routing.fallbackModelId && !ids.has(resolved.routing.fallbackModelId)) {
-        errors.push(
-          `routing.fallbackModelId ${resolved.routing.fallbackModelId} is not in the model table, so no gate can vet it`,
-        );
+      if (config.routing.fallbackModelId && !ids.has(config.routing.fallbackModelId)) {
+        errors.push(`routing.fallbackModelId ${config.routing.fallbackModelId} is not in the model table`);
       }
-      for (const entry of resolved.rule0.deterministicPatterns) {
-        try {
-          new RegExp(entry.pattern, "i");
-        } catch (error) {
-          errors.push(
-            `rule0 pattern ${entry.pattern} is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
+      for (const entry of config.rule0.deterministicPatterns) {
+        try { new RegExp(entry.pattern, "i"); } catch { errors.push(`rule0 pattern ${entry.pattern} is not a valid regular expression`); }
       }
-      const gate = resolved.quotaGate;
-      if (gate.enabled && !gate.statusUrl) {
-        errors.push("quotaGate.enabled is true but quotaGate.statusUrl is empty");
-      }
-      if (gate.enabled && !gate.apiKeySecretRef) {
-        warnings.push("quota gate has no apiKeySecretRef — the status endpoint will likely answer 401");
-      }
-      // The host cannot do this for us. `format: "secret-ref"` is registered
-      // host-side as `ajv.addFormat("secret-ref", { validate: () => true })` — a
-      // UI hint with no validation behind it — and the field is typed
-      // `["object","null"]`, so `{"apiKey":"sk-ant-..."}` is accepted verbatim
-      // and stored in the company's config row. The claim that a credential
-      // cannot be stored in a config is only true if this plugin makes it true.
-      const secretRefError = validateSecretRefShape(
-        asRecord(config.quotaGate)["apiKeySecretRef"],
-        "quotaGate.apiKeySecretRef",
-      );
-      if (secretRefError) errors.push(secretRefError);
-      if (!(gate.warnUtilization <= gate.downshiftUtilization && gate.downshiftUtilization <= gate.pauseUtilization)) {
-        errors.push("quotaGate thresholds must satisfy warn <= downshift <= pause");
-      }
-      const budget = resolved.budget;
-      if (!(budget.warnFraction <= budget.downshiftFraction && budget.downshiftFraction <= budget.haltFraction)) {
+      if (!(config.budget.warnFraction <= config.budget.downshiftFraction && config.budget.downshiftFraction <= config.budget.haltFraction)) {
         errors.push("budget fractions must satisfy warn <= downshift <= halt");
       }
-
       return { ok: errors.length === 0, errors, warnings };
     },
 
     async onApiRequest(input) {
-      if (!context || !decide) return { status: 503, body: { error: "worker is not initialised" } };
-
-      if (input.routeKey === ROUTE_KEYS.companyConfig) {
-        const config = resolveConfig(await context.config.get(input.companyId));
-        return { status: 200, body: { version: PLUGIN_VERSION, config } };
+      if (!context || !invoke) return { status: 503, body: { error: "worker is not initialised" } };
+      if (input.routeKey !== ROUTE_KEYS.invoke && input.routeKey !== ROUTE_KEYS.invokeIssue) {
+        return { status: 404, body: { error: `unknown route ${input.routeKey}` } };
       }
-      if (input.routeKey === ROUTE_KEYS.routeIssue) {
-        const body = asRecord(input.body);
-        const descriptor = descriptorFrom({ ...body, issueId: input.params.issueId });
-        const { decision } = await decide(input.companyId, descriptor, {
-          budgetSpentFraction:
-            typeof body.budgetSpentFraction === "number" ? body.budgetSpentFraction : undefined,
-        });
-        return { status: 200, body: { decision } };
-      }
-      return { status: 404, body: { error: `unknown route ${input.routeKey}` } };
+      const body = asRecord(input.body);
+      const request = input.routeKey === ROUTE_KEYS.invokeIssue
+        ? { ...body, task: { ...asRecord(body.task), issueId: input.params.issueId } }
+        : body;
+      const result = await invoke(input.companyId, request, input.actor.runId ?? null);
+      return { status: result.outcome === "error" && result.error.code === "invalid-request" ? 400 : 200, body: result };
     },
   });
 }
 
 const plugin = createPlugin();
-
 export default plugin;
-
 runWorker(plugin, import.meta.url);

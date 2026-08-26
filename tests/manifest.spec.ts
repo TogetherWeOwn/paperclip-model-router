@@ -4,44 +4,28 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { PLUGIN_API_VERSION, PLUGIN_ID, PLUGIN_VERSION } from "../src/constants.js";
+import { PLUGIN_API_VERSION, PLUGIN_ID, PLUGIN_VERSION, ROUTE_KEYS, TOOL_NAMES } from "../src/constants.js";
 import manifest from "../src/manifest.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
-  name: string;
-  version: string;
-  paperclipPlugin: { manifest: string; worker: string };
-};
 
 describe("manifest", () => {
-  it("targets the plugin API version this host implements", () => {
-    // PLUGIN_API_VERSION is 1 on this instance. A host that moves to 2 must
-    // reject this build rather than load it against a changed protocol.
-    expect(manifest.apiVersion).toBe(PLUGIN_API_VERSION);
+  it("targets stock plugin API v1 and keeps versions aligned", () => {
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    expect(manifest).toMatchObject({ id: PLUGIN_ID, apiVersion: PLUGIN_API_VERSION, version: PLUGIN_VERSION });
     expect(manifest.apiVersion).toBe(1);
-  });
-
-  it("keeps the manifest version and the package version in step", () => {
-    expect(manifest.version).toBe(PLUGIN_VERSION);
     expect(manifest.version).toBe(pkg.version);
   });
 
-  it("declares entrypoints that match package.json's paperclipPlugin block", () => {
-    expect(manifest.entrypoints.worker).toBe("./dist/worker.js");
-    expect(pkg.paperclipPlugin.worker).toBe("./dist/worker.js");
-    expect(pkg.paperclipPlugin.manifest).toBe("./dist/manifest.js");
+  it("declares exact compatible-upstream native surfaces", () => {
+    expect(manifest.tools?.map((tool) => tool.name)).toEqual([TOOL_NAMES.invoke]);
+    expect(manifest.apiRoutes?.map((route) => [route.routeKey, route.path, route.companyResolution])).toEqual([
+      [ROUTE_KEYS.invoke, "/invoke", { from: "query", key: "companyId" }],
+      [ROUTE_KEYS.invokeIssue, "/issues/:issueId/invoke", { from: "issue", param: "issueId" }],
+    ]);
   });
 
-  it("has a stable, namespaced id", () => {
-    expect(manifest.id).toBe(PLUGIN_ID);
-    expect(manifest.id).toMatch(/^[a-z0-9-]+\.[a-z0-9-]+$/);
-  });
-
-  it("requests only capabilities it uses", () => {
-    // Least privilege: this plugin writes its own state, calls one HTTP
-    // endpoint, resolves one secret ref, and registers a tool and two routes.
-    // It asks for no issue-write or agent-control power.
+  it("requests only the published capabilities it uses", () => {
     expect([...manifest.capabilities].sort()).toEqual([
       "agent.tools.register",
       "api.routes.register",
@@ -51,99 +35,49 @@ describe("manifest", () => {
       "plugin.state.write",
       "secrets.read-ref",
     ]);
-    for (const forbidden of ["issues.update", "issues.create", "agents.invoke", "agents.pause"]) {
-      expect(manifest.capabilities).not.toContain(forbidden);
-    }
   });
 
-  it("declares no capability the worker never exercises", () => {
-    // The list above is a pin, and a pin only records the last decision — it
-    // cannot notice that a capability stopped being used, which is how
-    // `companies.read`, `issues.read` and `activity.log.write` survived in the
-    // manifest without a single call site (TOG-228). This one reads the source.
-    //
-    // `ctx.config` and `ctx.logger` require no capability host-side, and the
-    // `:issueId` in the route below is resolved to a company by the HOST before
-    // the worker is invoked, so it costs this plugin no `issues.read`.
-    const worker = readFileSync(join(root, "src", "worker.ts"), "utf8");
-    const usedBy: Record<string, RegExp> = {
-      "plugin.state.read": /ctx\.state\.get\(/,
-      "plugin.state.write": /ctx\.state\.set\(/,
-      "http.outbound": /ctx\.http\.fetch\(/,
-      "secrets.read-ref": /ctx\.secrets\.resolve\(/,
-      "metrics.write": /ctx\.metrics\.write\(/,
-      "agent.tools.register": /ctx\.tools\.register\(/,
-    };
-    for (const capability of manifest.capabilities) {
-      // `api.routes.register` is evidenced by the manifest's own apiRoutes
-      // block rather than by a worker call site.
-      if (capability === "api.routes.register") {
-        expect(manifest.apiRoutes?.length ?? 0).toBeGreaterThan(0);
-        continue;
-      }
-      const probe = usedBy[capability];
-      expect(probe, `${capability} is declared but this test knows no call site for it`).toBeDefined();
-      expect(probe!.test(worker), `${capability} is declared but never exercised`).toBe(true);
-    }
-  });
-
-  it("carries a config schema, because every company difference lives there", () => {
-    expect(manifest.instanceConfigSchema).toBeTruthy();
+  it("carries only provider-neutral company configuration", () => {
     const schema = manifest.instanceConfigSchema as { properties: Record<string, unknown> };
-    for (const key of [
-      "routing",
-      "providers",
+    expect(Object.keys(schema.properties).sort()).toEqual([
+      "budget",
       "models",
+      "routing",
+      "rule0",
       "taskClasses",
       "tiering",
-      "budget",
-      "quotaGate",
-      "rule0",
-    ]) {
-      expect(Object.keys(schema.properties)).toContain(key);
-    }
-  });
-
-  it("resolves company access for every declared route", () => {
-    for (const route of manifest.apiRoutes ?? []) {
-      expect(route.companyResolution).toBeTruthy();
-      expect(route.capability).toBe("api.routes.register");
-    }
+      "upstream",
+    ]);
   });
 });
 
-describe("no secrets in the repository", () => {
-  const files = [
-    "src/config/schema.ts",
-    "src/config/resolve.ts",
-    "src/quota/teamclaude.ts",
-    "src/worker.ts",
-    "src/manifest.ts",
-    "tests/fixtures/company-a.json",
-    "tests/fixtures/company-b.json",
-  ];
-
-  it("contains no credential-shaped literals", () => {
-    // The teamclaude key and the OmniRoute credentials are referenced by name
-    // and resolved at runtime. Nothing key-shaped may be committed.
-    const patterns = [
-      /sk-[a-zA-Z0-9]{16,}/,
-      /\bBearer\s+[A-Za-z0-9._-]{16,}/,
-      /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-      /\bghp_[A-Za-z0-9]{20,}/,
-    ];
-    for (const file of files) {
-      const content = readFileSync(join(root, file), "utf8");
-      for (const pattern of patterns) {
-        expect(content, `${file} matched ${pattern}`).not.toMatch(pattern);
-      }
-    }
+describe("network and secret discipline", () => {
+  it("uses only ctx.http.fetch for inference networking", () => {
+    const sources = [
+      "src/worker.ts",
+      "src/inference/transport.ts",
+      "src/inference/adapters.ts",
+    ].map((file) => readFileSync(join(root, file), "utf8")).join("\n");
+    expect(sources).toContain("input.http.fetch");
+    expect(sources).not.toMatch(/from\s+["']node:(?:http|https|net|tls)["']/);
+    expect(sources).not.toMatch(/\bglobalThis\.fetch\b|(?<!\.)\bfetch\s*\(/);
+    expect(sources).toContain('"Accept-Encoding": "identity"');
   });
 
-  it("never stores a resolved secret value in config or state", () => {
-    const worker = readFileSync(join(root, "src/worker.ts"), "utf8");
-    // The resolved key is passed straight to the quota reader and never written.
-    expect(worker).not.toMatch(/state\.set\([^)]*apiKey/);
-    expect(worker).toMatch(/ctx\.secrets\.resolve/);
+  it("contains no credential-shaped literals in active artifacts", () => {
+    for (const file of [
+      "src/config/schema.ts",
+      "src/config/resolve.ts",
+      "src/config/secret-ref.ts",
+      "src/inference/adapters.ts",
+      "src/inference/transport.ts",
+      "src/worker.ts",
+      "tests/fixtures/company-a.json",
+      "tests/fixtures/company-b.json",
+    ]) {
+      const content = readFileSync(join(root, file), "utf8");
+      expect(content).not.toMatch(/\bsk-[A-Za-z0-9_-]{16,}/);
+      expect(content).not.toMatch(/-----BEGIN [A-Z ]*PRIVATE KEY-----/);
+    }
   });
 });

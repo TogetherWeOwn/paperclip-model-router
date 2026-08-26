@@ -1,5 +1,8 @@
 # 0006 — The fallback crosses estimates, not constraints
 
+> **Superseded by compatible-upstream v1 (TOG-530/TOG-532).** This record is retained as historical context only; its deployment-specific policy is not active product behavior.
+
+
 Status: accepted
 Date: 2026-08-23
 Supersedes nothing. Amends the ungated-fallback position recorded in the
