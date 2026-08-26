@@ -104,6 +104,21 @@ describe("one select-invoke-normalize-record path", () => {
     expect(secretCalls).toHaveLength(0);
   });
 
+  it("derives vision from OpenAI-profile image input before selecting a model", async () => {
+    const { harness, httpCalls } = await sharedWorker();
+    const result = await harness.performAction(ACTION_KEYS.invoke, {
+      task: { taskClass: "implementation" },
+      messages: [{ role: "user", content: [{ type: "image_url", url: "https://images.example/a.png" }] }],
+      maxOutputTokens: 10,
+    }, { companyId: COMPANY_A }) as { outcome: string; decision: { modelId: string }; response: { modelId: string } };
+    expect(result).toMatchObject({
+      outcome: "completed",
+      decision: { modelId: "claude-sonnet-5" },
+      response: { modelId: "claude-sonnet-5" },
+    });
+    expect(httpCalls).toHaveLength(1);
+  });
+
   it("makes zero HTTP and secret calls for Rule 0", async () => {
     const { harness, httpCalls, secretCalls } = await sharedWorker();
     const result = await harness.executeTool(TOOL_NAMES.invoke, {

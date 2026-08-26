@@ -163,6 +163,15 @@ describe("runtime request validation", () => {
     expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "user", content: [{ type: "tool_call", id: "x", name: "lookup", arguments: {} }] }], maxOutputTokens: 10 }, 100)).toThrow("assistant role");
     expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "assistant", content: [{ type: "tool_result", toolCallId: "x", content: "done" }] }], maxOutputTokens: 10 }, 100)).toThrow("tool_result");
   });
+
+  it("derives the vision capability gate from OpenAI-profile image content", () => {
+    const parsed = parseInvokeRequest({
+      task: { requiredCapabilities: ["tools"] },
+      messages: [{ role: "user", content: [{ type: "image_url", url: "https://images.example/a.png" }] }],
+      maxOutputTokens: 10,
+    }, 100, "openai-chat-completions");
+    expect(parsed.task.requiredCapabilities).toEqual(["tools", "vision"]);
+  });
 });
 
 describe("single-attempt transport", () => {

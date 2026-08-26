@@ -195,9 +195,19 @@ export function parseInvokeRequest(
     throw new InvocationValidationError(`maxOutputTokens exceeds the configured company maximum of ${configuredMaxOutputTokens}`);
   }
 
+  const messages = raw.messages.map(parseMessage);
+  const task = parseTask(raw.task);
+  const hasImage = messages.some(
+    (message) =>
+      Array.isArray(message.content) &&
+      message.content.some((block) => block.type === "image_url"),
+  );
+  if (hasImage && !task.requiredCapabilities?.includes("vision")) {
+    task.requiredCapabilities = [...(task.requiredCapabilities ?? []), "vision"];
+  }
   const request: InvokeRequest = {
-    task: parseTask(raw.task),
-    messages: raw.messages.map(parseMessage),
+    task,
+    messages,
     maxOutputTokens: raw.maxOutputTokens as number,
   };
   const system = optionalString(raw.system, "system");
@@ -234,11 +244,6 @@ export function parseInvokeRequest(
     }
   }
   if (protocol === "anthropic-messages") {
-    const hasImage = request.messages.some(
-      (message) =>
-        Array.isArray(message.content) &&
-        message.content.some((block) => block.type === "image_url"),
-    );
     if (hasImage) {
       throw new InvocationValidationError(
         "image_url is not supported by the Anthropic-compatible v1 profile",
