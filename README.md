@@ -1,469 +1,118 @@
-# paperclip-model-router
+# Paperclip Model Router
 
-A Paperclip plugin that chooses the **cheapest model that clears a hard quality floor**
-and every capability, provider, budget and quota constraint. Paperclip names a
-model; OmniRoute resolves the provider.
+A stock Paperclip plugin that performs one audited operation:
 
-The objective function is not "use the cheapest model". It is:
+1. select an opaque model ID under company capability, quality, cost, and budget rules;
+2. invoke the company's configured compatible upstream exactly once;
+3. normalize the response into one protocol-neutral result;
+4. record a bounded company-scoped audit row.
 
-> minimize expected cost, **subject to** a hard quality floor and hard
-> capability / privacy / provider constraints.
+The normative contract is [`docs/contracts/compatible-upstream-v1.md`](docs/contracts/compatible-upstream-v1.md).
 
-Cost never buys its way past quality. The gates are filters applied in a fixed
-order, not weights in a score.
+## Native surfaces
 
----
+- agent tool: `togetherweown.paperclip-model-router:model_router_invoke`
+- action: `invoke`
+- `POST /api/plugins/togetherweown.paperclip-model-router/api/invoke?companyId=<uuid>`
+- `POST /api/plugins/togetherweown.paperclip-model-router/api/issues/:issueId/invoke`
 
-## What the plugin does
+Every surface calls the same internal implementation. Company identity comes from the Paperclip host context, not caller input.
 
-For a described task it returns a decision: a model id, or an explicit refusal,
-with the full reasoning trace and every rejected model and why.
+## Company configuration
 
-| # | Gate | What it does |
-|---|------|--------------|
-| 1 | **Rule 0** | Does this need a model at all? A summary matching a configured pattern returns `no-model-needed` and names the deterministic tool that should answer instead. The cheapest call is the one never made. |
-| 2 | **Hard capability gates** | Context window, tool calling, structured output, modality. Anything that cannot do the job is rejected before cost is considered. |
-| 3 | **The Claude block** | While Claude pay-as-you-go is off, a Claude-family model may resolve to exactly one provider (`teamclaude` by default) and nothing else. A pin cannot cross this. |
-| 4 | **Quality floor** | Reject anything below the floor for this task class. This is the one comparison cost may never win. |
-| 5 | **Cheapest survivor wins** | Ranked by expected USD for this task, then by provider preference, then by quality. |
-
-Budget and Claude-quota pressure lower the tier **ceiling** and can refuse work
-outright. Neither ever lowers the quality floor: if the ceiling would eliminate
-every model that clears the floor, the ceiling lifts and the trace says so.
-
-Two behaviours worth calling out:
-
-- **Pins are respected but bounded.** A pinned model skips the tier ceiling — an
-  estimate and a cost control — but not one hard gate. A refused pin is recorded
-  with the reason it was refused.
-- **Model stickiness within an issue.** Switching model mid-task destroys the
-  prompt cache, which can cost more than the model difference saves. The
-  incumbent is kept while it still clears the hard gates. Real budget or quota
-  pressure still moves it.
-
-## Surfaces
-
-| Surface | Key | Use |
-|---|---|---|
-| Agent tool | `model_router_select` | An agent asks for a model for a task it is about to do. |
-| Action | `route` | The same decision through the plugin bridge. |
-| Action | `refresh-quota` | Re-read the teamclaude quota snapshot for a company. |
-| Data | `effective-config` | The company's config with every default filled in. |
-| Data | `decisions` | The recent decision log for a company (last 200). |
-| Data | `quota` | The last quota snapshot and whether the gate is on. |
-| API route | `POST /api/plugins/togetherweown.paperclip-model-router/api/issues/:issueId/route` | Route one issue. Company is resolved from the issue. |
-| API route | `GET /api/plugins/togetherweown.paperclip-model-router/api/effective-config?companyId=…` | Read effective config. |
-
----
-
-## Installing it into a company
-
-**Paperclip plugin installation is global, not per-company.** There is no
-per-company install table and no per-company enable switch
-(`PLUGIN_SPEC.md` §8). One operator installs the plugin once per instance; every
-company then gets its own row in `plugin_configs`, keyed by `(pluginId, companyId)`.
-
-That is exactly what makes this reusable: **installing it for a second company is
-a config write, not a deploy.**
-
-### 1. Install once, per instance (operator)
-
-The repository is private and the package is not published to public npm, so the
-deployable artifact is the **version-pinned tarball** attached to each GitHub
-release by `.github/workflows/release.yml`.
-
-```bash
-# Pinned to a known-good version. Note that there is currently nothing safe to
-# roll back TO: the floor is v0.2.6; v0.2.7 is the newest release. See below.
-gh release download v0.2.7 \
-  --repo TogetherWeOwn/paperclip-model-router --pattern '*.tgz' --dir /tmp
-mkdir -p /opt/paperclip-plugins/model-router
-tar -xzf /tmp/togetherweown-paperclip-model-router-0.2.7.tgz \
-  -C /opt/paperclip-plugins/model-router --strip-components=1
-
-# The tarball ships dist/ but not node_modules, and the plugin SDK is
-# deliberately left out of the bundle. Resolve it before installing, or the
-# worker fails at start with ERR_MODULE_NOT_FOUND.
-cd /opt/paperclip-plugins/model-router
-npm install --omit=dev --ignore-scripts
-
-paperclipai plugin install /opt/paperclip-plugins/model-router
-
-# or, for development, from a checkout on the host
-git clone git@github.com:TogetherWeOwn/paperclip-model-router.git
-cd paperclip-model-router && npm ci && npm run build
-paperclipai plugin install "$PWD"
-
-paperclipai plugin inspect togetherweown.paperclip-model-router
+```json
+{
+  "routing": {
+    "enabled": true,
+    "mode": "enforce",
+    "fallbackModelId": null,
+    "stickyModelWithinIssue": true,
+    "maxOutputTokens": 16384
+  },
+  "upstream": {
+    "protocol": "openai-chat-completions",
+    "baseUrl": "https://compatible.example",
+    "credentialSecretRef": {
+      "type": "secret_ref",
+      "secretId": "00000000-0000-4000-8000-000000000000"
+    },
+    "requestTimeoutMs": 25000,
+    "maxResponseBytes": 8388608,
+    "extraHeaders": {}
+  },
+  "models": [
+    {
+      "id": "model-id",
+      "tier": "standard",
+      "quality": 75,
+      "costPerMTokIn": 1,
+      "costPerMTokOut": 5,
+      "contextWindow": 200000,
+      "capabilities": ["tools", "structured-output"],
+      "enabled": true
+    }
+  ],
+  "taskClasses": [{ "key": "implementation", "qualityFloor": 70 }],
+  "tiering": {
+    "signalWeights": {},
+    "thresholds": { "small": 0, "standard": 30, "strong": 60, "frontier": 85 },
+    "defaultTier": "standard"
+  },
+  "budget": {
+    "monthlyCapUsd": 100,
+    "warnFraction": 0.6,
+    "downshiftFraction": 0.8,
+    "haltFraction": 0.95
+  },
+  "rule0": { "enabled": true, "deterministicPatterns": [] }
+}
 ```
 
-If the instance gains a private npm registry, publish there and
-`paperclipai plugin install @togetherweown/paperclip-model-router --version 0.2.7`
-becomes the preferred form — the install record is then reproducible by any
-operator without a checkout.
+`upstream.protocol` supports `openai-chat-completions` and `anthropic-messages`. The adapter appends `/v1/chat/completions` or `/v1/messages` and normalizes a duplicate terminal path to one copy.
 
-> **`v0.2.6` is a floor.** Every version below it ships a routing rule the
-> installee can edit or reason its way around:
->
-> | below | what it lets through | closed in |
-> |---|---|---|
-> | `v0.1.1` and earlier | the budget and quota gates can be bypassed (TOG-228) | `v0.2.0` |
-> | `v0.2.1` and earlier | a Claude model whose `family` the config mislabels is served (TOG-237) | `v0.2.2` |
-> | `v0.2.2` | `providers.claudeFamilyProvider` / `providers.claudePaygEnabled` aim or disable the Claude block from a company's own config row | `v0.2.3` |
-> | `v0.2.3` | `models[].providers` outranks the id's routing prefix, and a Claude model named by family alone is not recognised (TOG-149) | `v0.2.4` |
-> | `v0.2.4` | a **bare** Claude id is trusted to mean "teamclaude" when nothing in the catalogue resolves it that way (TOG-294) | `v0.2.5` |
-> | `v0.2.5` | the fallback is judged by gates that never ran (TOG-248) | `v0.2.6` |
->
-> Every release since `v0.2.3` closed another way around owner rule 1, so the
-> floor has tracked the newest tag rather than lagging it. The practical
-> consequence: **rollback is not currently an available remedy.** If a
-> regression forces you below the floor, disable the plugin rather than pin
-> under it, and say so on the issue. Phase 4 exists to install this into
-> companies whose config the owner never reviews, so pin forward, not back.
->
-> The versions in the commands above are checked against `package.json` by
-> [`tests/docs-install-version.spec.ts`](tests/docs-install-version.spec.ts).
-> That check is what keeps this section from going stale silently; the floor
-> table is prose and is **not** checked, so it must be updated by hand whenever
-> a release closes another bypass.
+Credentials are resolved at invocation time through `ctx.secrets.resolve` using the host-authorized company ID and config path. They are never placed in config, logs, state, errors, metrics, fixtures, or returned data.
 
-Confirm the target instance before installing — `paperclipai plugin target`
-prints the API base URL and server version it will act against.
+## Invocation
 
-### 2. Configure each company (instance admin)
-
-```bash
-curl -X POST "$PAPERCLIP_API_URL/api/plugins/togetherweown.paperclip-model-router/config" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d "{\"companyId\":\"$COMPANY_ID\",\"configJson\":$(cat my-company.json)}"
+```json
+{
+  "task": {
+    "taskClass": "implementation",
+    "summary": "Implement the requested change",
+    "requiredCapabilities": ["tools"],
+    "estimatedInputTokens": 8000,
+    "estimatedOutputTokens": 2000
+  },
+  "system": "Optional system instruction",
+  "messages": [{ "role": "user", "content": "Do the work." }],
+  "maxOutputTokens": 4096,
+  "toolChoice": "auto"
+}
 ```
 
-The host validates `configJson` against the plugin's `instanceConfigSchema`
-before storing it, and the worker's `onValidateConfig` adds cross-field checks
-(duplicate model ids, a pin that is not in the table, thresholds out of order,
-an invalid Rule 0 regular expression, a quota gate with no URL). A bad table is
-rejected at write time, not at routing time.
+The request cannot override the selected model, compatible protocol, base URL, credential, headers, or streaming behavior. Streaming is not part of v1.
 
-Start from [`tests/fixtures/company-a.json`](tests/fixtures/company-a.json) or
-[`tests/fixtures/company-b.json`](tests/fixtures/company-b.json). Both are real,
-schema-valid configs; the two deliberately differ in every company-specific
-dimension, and [`tests/two-company.spec.ts`](tests/two-company.spec.ts) asserts
-that the same code produces the right different answers for each.
+## Transport guarantees
 
-### 3. Verify
-
-```bash
-curl "$PAPERCLIP_API_URL/api/plugins/togetherweown.paperclip-model-router/api/effective-config?companyId=$COMPANY_ID" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Nothing about step 1 changes when you add a company. If something ever has to
-change in code to onboard a company, that thing is a bug in this plugin — it
-belongs in the config schema.
-
-Before onboarding a company, rehearse it offline against the built worker and
-the config you are about to POST — it takes a second and tells you what the live
-answers should be:
-
-```bash
-COMPANY_A_ID=<existing company> COMPANY_B_ID=<new company> \
-FIXTURE_A=<its config.json> FIXTURE_B=<the new config.json> \
-  npm run rehearse
-```
-
----
-
-## Configuration reference
-
-Every key below is per company. Everything is optional; defaults are listed and
-are deliberately the safe end of each switch.
-
-### `routing`
-
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `enabled` | boolean | `true` | Master switch. `false` returns `disabled` for every decision and the caller keeps its own model. |
-| `mode` | `"advise"` \| `"enforce"` | `"advise"` | `advise` records and returns a decision. `enforce` additionally applies it where the host permits. |
-| `fallbackModelId` | string \| null | `null` | Model used when nothing survives the gates. `null` means refuse rather than silently downgrade. Must be in this company's model table — an id no gate has vetted is a config error. It may cross the tier ceiling, the quality floor and the capability checks; it may **not** cross the Claude block, the permitted-provider list or the quota pause ([ADR 0006](docs/decisions/0006-the-fallback-crosses-estimates-not-constraints.md)). When it is used, the decision carries `fallbackUsed: true`. |
-| `stickyModelWithinIssue` | boolean | `true` | Keep the model already used on an issue while it still clears the hard gates, to preserve the prompt cache. |
-
-### `providers`
-
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `permitted` | string[] | `[]` | Providers this company may be served by. **Fails closed**: an empty list rejects every model. |
-| `preferenceOrder` | string[] | `[]` | Tie-break order among permitted providers. Earlier is preferred. |
-| `claudePaygEnabled` | boolean | `false` | Claude pay-as-you-go. While `false`, Claude-family models may only use `claudeFamilyProvider`. **Setting this `true` is not sufficient** — it takes effect only when the instance sets `MODEL_ROUTER_CLAUDE_PAYG_UNLOCK=1`. Without the unlock the config write is refused and the value is forced to `false`. |
-| `claudeFamilyProvider` | string | `"teamclaude"` | The single provider Claude may use while PAYG is off. Restricted by `enum` to the providers owner rule 1 allows: this field **narrows** that list, it cannot extend it. |
-| `claudeFamilies` | string[] | `["claude"]` | Which **additional** `models[].family` values the Claude block governs, case-insensitively. This list can only ever **widen** the block. A model whose `id` matches `/claude|anthropic/i` is governed whatever its family says, and no config can opt it out — see below. |
-
-> **The Claude block is not configurable off.** Membership is
-> `id matches /claude|anthropic/i` **OR** `family is in claudeFamilies`. Until
-> v0.2.2 it was the family alone, so `{"id": "claude-opus-5", "family": "gpt"}`
-> exempted a Claude model from the block entirely and OpenRouter served it with
-> no error, no warning and no trace line (TOG-237). Owner rule 1 is
-> non-negotiable, so it no longer rests on the model table being labelled
-> correctly. A table that disagrees with itself is refused at write time and
-> reported in the trace, but it is not a bypass.
->
-> **Nor is it configurable elsewhere.** v0.2.2 fixed *which models* the block
-> governs and left the two questions either side of it in the config row. Both
-> decided the same outcome: `claudeFamilyProvider: "openrouter"` did not turn
-> the block off, it **aimed** it, and `claudePaygEnabled: true` skipped it for
-> the cost of a warning. As of v0.2.3 the permitted providers are
-> `CLAUDE_PROVIDER_ALLOWLIST` in code — config narrows that list and cannot
-> extend it — and PAYG additionally requires the instance-level
-> `MODEL_ROUTER_CLAUDE_PAYG_UNLOCK=1`, because a company's config row is not the
-> owner. That distinction is the point of this plugin installing into other
-> companies at all: a rule the installee can edit is not a rule.
->
-> Enabling Claude PAYG for real is an **edit to an OmniRoute combo** — adding a
-> second leg to the teamclaude combo — not a change here. The unlock moves the
-> flag out of company hands; it is not a Claude PAYG route.
-
-#### Arming the Claude lane — `MODEL_ROUTER_CLAUDE_COMBO_ARMED`
-
-Everything above governs which *provider name* may serve Claude. It says nothing
-about what OmniRoute does with an id that names **no** provider — and a bare
-`claude-sonnet-5` is exactly the provider-agnostic form owner rule 3 asks
-Paperclip to emit.
-
-Through v0.2.4 the plugin permitted a bare Claude id unconditionally, on the
-stated ground that a bare id "is resolved by a combo". TOG-294 checked that
-ground against the live router and it did not hold:
-
-- `GET /api/v1/models` returns **1,438** ids, **zero** of them bare, and
-  **`teamclaude/*` is empty** — there is no teamclaude combo.
-- `POST /v1/messages` with `{"model": "claude-sonnet-5"}` still returned **200**,
-  echoing `"model": "anthropic/claude-sonnet-5"`, an id that is *also* not in the
-  catalogue. `claude-haiku-4-5-20251001` returned 400, so this is an alias table,
-  not a blanket passthrough.
-
-An unlisted bare Claude id does not fail closed at the router. It is silently
-rewritten onto a **non-teamclaude Anthropic route** and served — owner rule 1
-broken by the id form owner rule 3 mandates. Banning bare ids is therefore not
-the fix; the fix is refusing to emit one until the combo that gives it its
-rule-1 meaning exists.
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `MODEL_ROUTER_CLAUDE_COMBO_ARMED` | unset (**off**) | Declares that OmniRoute has teamclaude Claude combos. While off, a **bare** Claude id is refused at `claude-block` instead of being routed somewhere unverified. |
-
-Env-derived only. There is deliberately **no** `providers.*` field for it, and
-`additionalProperties: false` makes an attempt to add one a write-time error —
-the claim is about the *owner's* router, and Phase 4 installs this plugin into
-companies whose config the owner does not review.
-
-Before arming, run:
-
-```bash
-OMNIROUTE_API_KEY=... scripts/claude-lane-preflight.sh
-```
-
-One **read-only** `GET /api/v1/models`; exits non-zero while `teamclaude/*` is
-empty. It sends **no completion** — TOG-294 was found because a verify script
-sent three live Claude completions off-teamclaude while the owner had that lane
-disabled, and a preflight that checks whether a lane is safe must not use the
-lane to find out. A routing-scope key is enough, so the arming claim is
-auditable by anyone, not just whoever holds the management token.
-
-Preflight green confirms the **provider** is registered. It does not by itself
-prove a combo **mapping** sends bare `claude-*` to it — that lives behind the
-management token, so confirm it with the combo CLI before relying on it for
-rule 1.
-
-### `models` — the model tier table
-
-An array. Each row is one model this company may use, priced at what **this
-company** actually pays.
-
-| Key | Type | Required | Meaning |
-|---|---|---|---|
-| `id` | string | yes | Model id Paperclip names. OmniRoute resolves it to a provider. |
-| `family` | string | yes | Family grouping; a family in `claudeFamilies` is governed by the Claude block. It is a **label, not a permission** — an `id` naming Claude or Anthropic is governed regardless, and a row whose id names Claude while its family does not is **rejected** by both the config schema and `onValidateConfig`. |
-| `tier` | `small` \| `standard` \| `strong` \| `frontier` | yes | Tier for ceiling comparisons. |
-| `quality` | number 0–100 | yes | Quality on this company's scale, compared against task-class floors. |
-| `costPerMTokIn` | number | yes | USD per million input tokens. |
-| `costPerMTokOut` | number | yes | USD per million output tokens. |
-| `contextWindow` | integer | yes | Tokens. |
-| `capabilities` | string[] | no | Any of `tools`, `structured-output`, `vision`, `long-context`, `computer-use`. |
-| `providers` | string[] | no | Providers that may serve it. Intersected with `providers.permitted`. |
-| `enabled` | boolean | no (`true`) | Set `false` to retire a row without deleting it. |
-
-### `taskClasses`
-
-| Key | Type | Required | Meaning |
-|---|---|---|---|
-| `key` | string | yes | Class name callers pass as `taskClass`. |
-| `qualityFloor` | number 0–100 | yes | Hard floor. Never traded against cost. |
-| `maxTier` | tier | no | Cost ceiling for this class. |
-| `requiredCapabilities` | string[] | no | Added to whatever the caller requires. |
-| `pinnedModelId` | string | no | Class-level pin. Must exist in `models`. |
-
-Naming a task class this company has not configured is **refused**
-(`no-eligible-model`), not routed with a floor of `0`. Through `v0.1.1` it was
-permissive, which meant a one-character typo in a class key silently deleted the
-quality floor and handed the decision to the cheapest row in the table — cost
-beating quality, which this engine forbids. Sending no `taskClass` at all is
-unaffected: a caller that names no class is making no claim about quality.
-
-### `tiering`
-
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `signalWeights` | object of number | `{}` | Task score = Σ (signal value × weight). |
-| `thresholds` | `{small,standard,strong,frontier}` | `{0, 30, 60, 85}` | Lowest score reaching each tier; evaluated highest first. |
-| `defaultTier` | tier | `"standard"` | Tier for a task with no signals. |
-
-### `budget`
-
-Fractions of the company's own cap. Must satisfy `warn ≤ downshift ≤ halt`.
-
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `monthlyCapUsd` | number | `0` | This company's monthly ceiling. |
-| `warnFraction` | number 0–1 | `0.6` | Annotate the decision; change nothing. |
-| `downshiftFraction` | number 0–1 | `0.8` | Drop the tier ceiling one step. |
-| `haltFraction` | number 0–1 | `0.95` | Refuse non-pinned model work. |
-
-### `quotaGate` — pooled Claude quota
-
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `enabled` | boolean | `false` | Off unless the company has a pooled Claude subscription. |
-| `statusUrl` | string | `""` | Full teamclaude status URL **as reachable from the host**. Do not assume loopback: from a container the host is `host.containers.internal`, not `127.0.0.1`. |
-| `apiKeySecretRef` | secret ref \| null | `null` | Paperclip secret holding the teamclaude key. A **reference**, never a value — the schema rejects a pasted key. |
-| `windows` | string[] | `["unified5h","unified7d"]` | Status fields to read. |
-| `warnUtilization` | number 0–1 | `0.7` | Annotate only. |
-| `downshiftUtilization` | number 0–1 | `0.85` | Claude-family models drop a tier. |
-| `pauseUtilization` | number 0–1 | `0.95` | Claude-family models become unavailable. Non-Claude work is untouched. |
-
-Utilization values are **fractions in [0,1]**; `1.0` means the window is
-exhausted. Reading them as percentages is wrong by 100×. If the endpoint is
-unreachable the gate stays `ok` rather than pausing every company's Claude work.
-
-### `rule0`
-
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `enabled` | boolean | `true` | |
-| `deterministicPatterns` | `{pattern, tool}[]` | `[]` | Case-insensitive regular expression, and the tool that should answer instead. An invalid pattern is skipped, not fatal. |
-
----
-
-## OmniRoute is global; plugin state is per company
-
-**Get this wrong and one company's routing change silently breaks another's.**
-
-| | Scope | Who changes it | Blast radius |
-|---|---|---|---|
-| OmniRoute combos and model→combo mappings | **Global to the proxy**, shared by every company on the instance | Operator, through the constrained combo CLI | Every company, immediately |
-| This plugin's install | Global to the Paperclip instance | Operator, once | Every company, but inert without config |
-| This plugin's config | **Per company** (`plugin_configs` keyed by `pluginId + companyId`) | Instance admin, per company | That company only |
-| This plugin's state (decisions, stickiness, quota snapshot) | **Per company** (`plugin_state`, `scopeKind: "company"`) | The worker | That company only |
-
-The practical rule: **a model id is a per-company choice; what that model id
-resolves to is a global fact.** This plugin only ever picks a model id. It never
-picks a provider, never edits a combo, and holds no capability that would let it.
-Changing which provider serves a model is an OmniRoute operator action with
-instance-wide blast radius and is out of scope for this plugin by design.
-
-Two consequences for operators:
-
-1. Adding a model to one company's table is safe. Adding an OmniRoute combo so
-   that model resolves somewhere new is not — it affects everyone.
-2. If a company's table names a model id OmniRoute does not map, the decision
-   still succeeds here and fails downstream. Keep tables and combos reconciled;
-   `docs/OPERATIONS.md` has the checklist.
-
-## Secrets
-
-No credential is ever committed to this repository or stored in a company's
-config. The teamclaude key and the OmniRoute credentials are referenced by name
-and resolved at runtime:
-
-- `quotaGate.apiKeySecretRef` is a Paperclip secret reference resolved through
-  `ctx.secrets.resolve()` at call time and never cached, logged, or persisted.
-- The schema for that field rejects a raw string, so a pasted key cannot be
-  stored even by mistake. `tests/config.spec.ts` and `tests/manifest.spec.ts`
-  assert both properties, and CI runs a secret scan on every push.
+- inference networking uses only Paperclip's published `ctx.http.fetch` boundary;
+- redirects are not followed;
+- `Accept-Encoding: identity` is always sent;
+- exactly one upstream HTTP attempt is made;
+- transport failures never trigger a new model selection or automatic replay;
+- upstream status codes remain inside the normalized result rather than becoming the outer route status;
+- response bodies are measured after the stock host returns its buffered response;
+- caller-visible timeout is bounded by company configuration and does not start a replacement request.
 
 ## Development
 
-```bash
-npm ci
-npm run verify        # typecheck + tests + build + host-schema validation + rehearsal
-npm run verify:host   # validate the built artifact with the host's own validators
-npm run rehearse      # two-company acceptance rehearsal against the BUILT worker
-npm run dev           # esbuild --watch into dist/
+```sh
+npm run typecheck
+npm test
+npm run build
+npm run verify:host
+npm run rehearse
 ```
 
-`verify:host` walks the gates `plugin-loader.ts` applies before a plugin row is
-written, in order: `pluginManifestV1Schema` and the apiVersion gate (steps 3–4),
-`validateManifestCapabilities` (step 5), page-route collision (step 5b) and the
-minimum-host-version comparison (step 6). It also puts every shipped example
-config through the host's Ajv config validator, which is what
-`POST /api/plugins/:pluginId/config` runs.
+`npm run verify:host` runs the built manifest through Paperclip's install-time validators. `npm run rehearse` loads the built worker once and invokes two isolated company configurations through different compatible protocols.
 
-Two independent pointers into a Paperclip checkout, both optional:
-
-```bash
-PAPERCLIP_HOST=/app \
-PAPERCLIP_SHARED=/app/packages/shared/dist/validators/plugin.js \
-  npm run verify:host
-```
-
-`PAPERCLIP_SHARED` is a built module exporting the manifest schema.
-`PAPERCLIP_HOST` is the checkout **root**, and is what unlocks steps 5, 5b and 6
-against the host's compiled `server/dist` — the only way to run the real
-`FEATURE_CAPABILITIES` table rather than a copy of it. It is auto-detected at
-`/app`.
-
-Without a checkout — CI — those three steps run mirrored implementations and
-label every line `[MIRROR]`. Mirrors drift, so when a host *is* reachable the
-mirror is re-derived against it, entry by entry, and disagreement fails the run.
-A check that cannot run at all prints `SKIP` and is counted in the summary
-alongside the failures: this script's own history includes an apiVersion check
-that silently evaporated whenever `PAPERCLIP_SHARED` was aimed at a module
-carrying the schema but not the constant, so "no output" is never read as "fine"
-here (TOG-232).
-
-`rehearse` is the offline half of the acceptance criterion: one install must
-serve a second company with no code edits. Unlike the tests, it loads
-`dist/worker.js` rather than `src/`, and it runs a *single* `createPlugin()` and
-a *single* `setup(ctx)` for both companies — the production topology, where one
-worker process keeps companies apart through `ctx.config.get(companyId)` alone.
-Point it at real companies and configs before an install:
-
-```bash
-COMPANY_A_ID=<uuid> COMPANY_B_ID=<uuid> \
-FIXTURE_A=./company-a.json FIXTURE_B=./company-b.json \
-  npm run rehearse -- --json /tmp/rehearsal.json
-```
-
-It cannot prove the live install, the live config POST, or route reachability —
-those need an operator and are in `docs/OPERATIONS.md`. It proves everything
-downstream of them, so the live run becomes a diff against a known-good
-transcript.
-
-`npm run verify` is what CI runs. See [`docs/PROCESS.md`](docs/PROCESS.md) for
-the repository conventions and [`docs/decisions/`](docs/decisions/) for the
-architecture decision records.
-
-## Versioning and rollback
-
-Releases are tagged `vMAJOR.MINOR.PATCH` and a company can be pinned to a known
-version. See [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for the rollback
-procedure; the short form is that config is forward-compatible by construction
-(unknown keys are rejected at write, missing keys take defaults), so rolling the
-plugin back does not require rolling every company's config back with it.
-
-## Status
-
-`0.2.1` — the decision engine, the config contract, the quota reader, the agent
-tool and the scoped API routes are implemented and tested. Applying a decision
-to an issue's `assigneeAdapterOverrides` is **not** implemented: the plugin SDK
-exposes `assigneeAdapterOverrides` on issue *create* but not on issue *update*
-(`PluginIssuesClient.update`), so `mode: "enforce"` currently records and returns
-the decision exactly as `advise` does. See
-[`docs/decisions/0005-advise-before-enforce.md`](docs/decisions/0005-advise-before-enforce.md).
+This repository is private and unlicensed for public distribution. No install or release is performed by the build or test commands.

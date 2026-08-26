@@ -69,16 +69,30 @@ describe("documented install commands", () => {
     }
   }
 
-  it("the install commands are actually present, so the check cannot pass vacuously", () => {
+  it("does not document an install command before release authorization", () => {
     const readme = readFileSync(join(repo, "README.md"), "utf8");
     const operations = readFileSync(join(repo, "docs/OPERATIONS.md"), "utf8");
+    expect(readme).not.toMatch(/gh release download|paperclipai plugin install/);
+    expect(operations).not.toMatch(/gh release download|paperclipai plugin install/);
+  });
 
-    for (const [name, source] of [
-      ["README.md", readme],
-      ["docs/OPERATIONS.md", operations],
-    ] as const) {
-      const downloads = [...source.matchAll(/gh release download\s+v(\d+\.\d+\.\d+)/g)];
-      expect(downloads.length, `${name} no longer contains a download command`).toBeGreaterThan(0);
+  it("keeps executable install commands pinned if a future authorization adds them", () => {
+    for (const doc of DOCS) {
+      const source = readFileSync(join(repo, doc), "utf8");
+      for (const { pattern } of COMMANDS) {
+        for (const match of source.matchAll(new RegExp(pattern))) expect(match[1]).toBe(version);
+      }
     }
+  });
+
+  it("states the current no-install boundary", () => {
+    expect(readFileSync(join(repo, "docs/OPERATIONS.md"), "utf8")).toContain("not authorized for a public release or live installation");
+  });
+});
+
+// Retain `version` as a checked input even while no command is authorized.
+describe("package version", () => {
+  it("is a semantic version", () => {
+    expect(version).toMatch(/^\d+\.\d+\.\d+$/);
   });
 });

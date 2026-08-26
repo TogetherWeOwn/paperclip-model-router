@@ -9,33 +9,57 @@ import {
   TOOL_NAMES,
 } from "./constants.js";
 
-/**
- * One global install, one config row per company.
- *
- * Paperclip plugin installation is instance-level: there is no per-company
- * install table and no per-company enable switch (PLUGIN_SPEC.md §8). Company
- * differences live entirely in `instanceConfigSchema`, which the host stores per
- * (pluginId, companyId). That is what makes "install once, serve every company"
- * true, and it is why nothing company-specific may be hardcoded here.
- */
+const INVOKE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["task", "messages", "maxOutputTokens"],
+  properties: {
+    task: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        taskClass: { type: "string" },
+        summary: { type: "string" },
+        issueId: { type: "string" },
+        requiredCapabilities: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: ["tools", "structured-output", "vision", "long-context", "computer-use"],
+          },
+        },
+        requiredContextTokens: { type: "integer", minimum: 1 },
+        signals: { type: "object", additionalProperties: { type: "number" } },
+        pinnedModelId: { type: "string" },
+        pinReason: { type: "string" },
+        estimatedInputTokens: { type: "integer", minimum: 1 },
+        estimatedOutputTokens: { type: "integer", minimum: 1 },
+      },
+    },
+    messages: { type: "array", minItems: 1, items: { type: "object" } },
+    system: { type: "string" },
+    maxOutputTokens: { type: "integer", minimum: 1 },
+    stopSequences: { type: "array", items: { type: "string" } },
+    tools: { type: "array", items: { type: "object" } },
+    toolChoice: {
+      oneOf: [
+        { type: "string", enum: ["auto", "none", "required"] },
+        { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string" } } },
+      ],
+    },
+    metadata: { type: "object", additionalProperties: { type: "string" } },
+  },
+} as const;
+
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: PLUGIN_API_VERSION,
   version: PLUGIN_VERSION,
   displayName: "Model Router",
   description:
-    "Chooses the cheapest model that clears a hard quality floor and every capability, provider and quota constraint. Paperclip names a model; OmniRoute resolves the provider.",
+    "Selects an eligible model, invokes a company-configured OpenAI-compatible or Anthropic-compatible upstream, and returns one normalized result.",
   author: "TogetherWeOwn",
   categories: ["automation"],
-  // Exactly the host operations this worker performs, and nothing else.
-  //
-  // `companies.read`, `issues.read` and `activity.log.write` were declared and
-  // never used: the worker touches `ctx.config`, `ctx.state`, `ctx.secrets`,
-  // `ctx.http`, `ctx.metrics`, `ctx.tools`, `ctx.data`, `ctx.actions` and
-  // `ctx.logger`, and no other surface. The `:issueId` in the route below is
-  // resolved to a company by the HOST, before the worker is called, so it costs
-  // this plugin no `issues.read` either. Removed in TOG-228 — least privilege
-  // means the declared set has to be checked against the code, not just pinned.
   capabilities: [
     "plugin.state.read",
     "plugin.state.write",
@@ -45,63 +69,35 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.tools.register",
     "api.routes.register",
   ],
-  entrypoints: {
-    worker: "./dist/worker.js",
-  },
+  entrypoints: { worker: "./dist/worker.js" },
   instanceConfigSchema: ROUTER_CONFIG_SCHEMA as unknown as Record<string, unknown>,
   tools: [
     {
-      name: TOOL_NAMES.selectModel,
-      displayName: "Select a model",
+      name: TOOL_NAMES.invoke,
+      displayName: "Invoke a routed model",
       description:
-        "Return the cheapest model that clears this company's quality floor and constraints for a described task, with the full reasoning trace.",
-      parametersSchema: {
-        type: "object",
-        required: ["companyId"],
-        properties: {
-          companyId: { type: "string", description: "Company whose routing config applies" },
-          taskClass: { type: "string", description: "Task class key from this company's config" },
-          summary: { type: "string", description: "Short description, used for the Rule 0 check" },
-          issueId: { type: "string", description: "Issue this work belongs to" },
-          requiredCapabilities: {
-            type: "array",
-            items: { type: "string" },
-            description: "Capabilities the task genuinely requires. A hard gate, not a preference.",
-          },
-          requiredContextTokens: { type: "integer", minimum: 1 },
-          estimatedInputTokens: { type: "integer", minimum: 1 },
-          estimatedOutputTokens: { type: "integer", minimum: 1 },
-          signals: {
-            type: "object",
-            additionalProperties: { type: "number" },
-            description: "Task signals scored against this company's tiering weights",
-          },
-          pinnedModelId: { type: "string" },
-          pinReason: { type: "string" },
-        },
-      },
+        "Select a model under this company's routing policy, invoke its compatible upstream once, and return a normalized response.",
+      parametersSchema: INVOKE_SCHEMA as unknown as Record<string, unknown>,
     },
   ],
   apiRoutes: [
     {
-      routeKey: ROUTE_KEYS.routeIssue,
+      routeKey: ROUTE_KEYS.invoke,
       method: "POST",
-      path: "/issues/:issueId/route",
+      path: "/invoke",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      checkoutPolicy: "none",
+      companyResolution: { from: "query", key: "companyId" },
+    },
+    {
+      routeKey: ROUTE_KEYS.invokeIssue,
+      method: "POST",
+      path: "/issues/:issueId/invoke",
       auth: "board-or-agent",
       capability: "api.routes.register",
       checkoutPolicy: "none",
       companyResolution: { from: "issue", param: "issueId" },
-    },
-    {
-      routeKey: ROUTE_KEYS.companyConfig,
-      method: "GET",
-      path: "/effective-config",
-      auth: "board-or-agent",
-      capability: "api.routes.register",
-      checkoutPolicy: "none",
-      // The host only resolves company from a body key, a query key, or an
-      // issue param — not from a path param. Query it is.
-      companyResolution: { from: "query", key: "companyId" },
     },
   ],
 };

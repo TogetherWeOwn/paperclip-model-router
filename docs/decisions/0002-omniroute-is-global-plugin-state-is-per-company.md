@@ -1,5 +1,8 @@
 # 0002 — OmniRoute is global; plugin state is per company
 
+> **Superseded by compatible-upstream v1 (TOG-530/TOG-532).** This record is retained as historical context only; its deployment-specific policy is not active product behavior.
+
+
 - Status: accepted
 - Date: 2026-08-23
 

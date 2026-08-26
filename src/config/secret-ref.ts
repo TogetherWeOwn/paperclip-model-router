@@ -10,8 +10,8 @@
  * is not treated as a secret at all: it is stored in the company's config row
  * exactly as submitted.
  *
- * Net effect, before this file existed: `{"apiKey": "sk-ant-..."}` at
- * `quotaGate.apiKeySecretRef` was accepted and persisted. The repo's promise
+ * Net effect, before this file existed: an object carrying a raw credential at
+ * a secret-reference config path was accepted and persisted. The repo's promise
  * that a credential can be neither committed nor stored in a config was only
  * half enforced — gitleaks covered the commit half and nothing covered the
  * other. `onValidateConfig` runs on every config write, so this is the earliest
@@ -56,6 +56,13 @@ export function validateSecretRefShape(value: unknown, path: string): string | n
   }
   if (typeof value.secretId !== "string" || !UUID.test(value.secretId)) {
     return `${path}.secretId must be the UUID of a Paperclip secret`;
+  }
+  if (
+    value.projectionClass !== undefined &&
+    value.projectionClass !== "unclassified" &&
+    value.projectionClass !== "class_3_static_lease"
+  ) {
+    return `${path}.projectionClass must be "unclassified" or "class_3_static_lease"`;
   }
   if (
     value.version !== undefined &&

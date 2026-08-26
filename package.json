@@ -2,7 +2,7 @@
   "name": "@togetherweown/paperclip-model-router",
   "version": "0.2.7",
   "private": true,
-  "description": "Paperclip plugin: cost-efficient model routing. Picks the cheapest model that clears the quality floor; OmniRoute resolves the provider.",
+  "description": "Paperclip plugin: select a model, invoke a company-compatible upstream once, and return a normalized audited result.",
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
@@ -27,13 +27,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:broker": "node --test plugins/omniroute-broker/test/broker.test.mjs",
-    "verify": "npm run typecheck && npm run test && npm run test:broker && npm run build && npm run verify:host && npm run rehearse",
+    "verify": "npm run typecheck && npm run test && npm run build && npm run verify:host && npm run rehearse",
     "verify:host": "node scripts/verify-against-host.mjs",
     "rehearse": "node scripts/acceptance-rehearsal.mjs",
     "check:pin": "node scripts/release-pin-check.mjs",
-    "preflight:tog178": "node scripts/tog178-catalogue-revalidate.mjs",
-    "preflight:tog473": "node scripts/tog473-mapping-guard-calibration.mjs"
+    "preflight:tog178": "node scripts/tog178-catalogue-revalidate.mjs"
   },
   "dependencies": {
     "@paperclipai/plugin-sdk": "2026.817.0"

@@ -1,17 +1,7 @@
-/**
- * Turns whatever a company stored into a fully-populated `RouterConfig`.
- *
- * The host validates shape; this fills defaults. The two jobs are separate on
- * purpose: a company may store a partial config and still get deterministic
- * behaviour, and the defaults live in one place that the README documents.
- */
-
-import { claudeComboArmed, claudePaygUnlocked } from "../constants.js";
 import type { ModelEntry } from "../engine/types.js";
 import type {
   BudgetConfig,
-  ProvidersConfig,
-  QuotaGateConfig,
+  CompatibleUpstreamConfig,
   RouterConfig,
   RoutingConfig,
   Rule0Config,
@@ -24,19 +14,16 @@ export const DEFAULT_ROUTING: RoutingConfig = {
   mode: "advise",
   fallbackModelId: null,
   stickyModelWithinIssue: true,
+  maxOutputTokens: 16_384,
 };
 
-export const DEFAULT_PROVIDERS: ProvidersConfig = {
-  permitted: [],
-  preferenceOrder: [],
-  // Defaults are the safe end of every switch. A company that wants Claude PAYG
-  // has to say so; nothing turns it on implicitly.
-  claudePaygEnabled: false,
-  claudeFamilyProvider: "teamclaude",
-  claudeFamilies: ["claude"],
-  // Fail closed: an instance that has said nothing about its OmniRoute combos
-  // has not deployed them. TOG-294.
-  claudeComboArmed: false,
+export const DEFAULT_UPSTREAM: CompatibleUpstreamConfig = {
+  protocol: "openai-chat-completions",
+  baseUrl: "https://example.invalid",
+  credentialSecretRef: null,
+  requestTimeoutMs: 25_000,
+  maxResponseBytes: 8_388_608,
+  extraHeaders: {},
 };
 
 export const DEFAULT_TIERING: TieringConfig = {
@@ -50,16 +37,6 @@ export const DEFAULT_BUDGET: BudgetConfig = {
   warnFraction: 0.6,
   downshiftFraction: 0.8,
   haltFraction: 0.95,
-};
-
-export const DEFAULT_QUOTA_GATE: QuotaGateConfig = {
-  enabled: false,
-  statusUrl: "",
-  apiKeySecretRef: null,
-  windows: ["unified5h", "unified7d"],
-  warnUtilization: 0.7,
-  downshiftUtilization: 0.85,
-  pauseUtilization: 0.95,
 };
 
 export const DEFAULT_RULE0: Rule0Config = {
@@ -97,14 +74,12 @@ function resolveModels(value: unknown): ModelEntry[] {
     if (!id) continue;
     models.push({
       id,
-      family: pickString(raw.family, "unknown"),
-      tier: (pickString(raw.tier, "standard") as ModelEntry["tier"]),
+      tier: pickString(raw.tier, "standard") as ModelEntry["tier"],
       quality: pickNumber(raw.quality, 0),
       costPerMTokIn: pickNumber(raw.costPerMTokIn, 0),
       costPerMTokOut: pickNumber(raw.costPerMTokOut, 0),
       contextWindow: pickNumber(raw.contextWindow, 0),
       capabilities: pickStringArray(raw.capabilities, []) as ModelEntry["capabilities"],
-      providers: pickStringArray(raw.providers, []),
       enabled: pickBoolean(raw.enabled, true),
     });
   }
@@ -150,39 +125,25 @@ function resolveRule0(value: unknown): Rule0Config {
   };
 }
 
-/**
- * @param raw the company's stored `configJson`, or anything at all
- * @param env process environment, for the instance-level Claude PAYG unlock
- * @returns a config with every field populated
- */
-export function resolveConfig(
-  raw: unknown,
-  env: Record<string, string | undefined> = process.env,
-): RouterConfig {
+export function resolveConfig(raw: unknown): RouterConfig {
   const source = isRecord(raw) ? raw : {};
-  // Owner rule 1 keeps Claude PAYG off until the OWNER enables it. A company's
-  // config row is not the owner, so a stored `true` only survives when the
-  // instance environment carries the unlock. This is the last line before the
-  // engine, so a value that reached the row by any route — a direct DB write, a
-  // migration, an older schema — is neutralised here rather than trusted.
-  const paygUnlocked = claudePaygUnlocked(env);
-  // Whether an OmniRoute combo resolves a bare Claude id to teamclaude is a fact
-  // about the owner's router, so it is read from the instance environment and is
-  // deliberately absent from the config schema — there is no `providers.*` field
-  // a company can set to claim it. TOG-294.
-  const comboArmed = claudeComboArmed(env);
-
   const routingRaw = isRecord(source.routing) ? source.routing : {};
-  const providersRaw = isRecord(source.providers) ? source.providers : {};
+  const upstreamRaw = isRecord(source.upstream) ? source.upstream : {};
   const tieringRaw = isRecord(source.tiering) ? source.tiering : {};
   const thresholdsRaw = isRecord(tieringRaw.thresholds) ? tieringRaw.thresholds : {};
   const budgetRaw = isRecord(source.budget) ? source.budget : {};
-  const quotaRaw = isRecord(source.quotaGate) ? source.quotaGate : {};
 
   const signalWeights: Record<string, number> = {};
   if (isRecord(tieringRaw.signalWeights)) {
     for (const [key, weight] of Object.entries(tieringRaw.signalWeights)) {
       if (typeof weight === "number" && Number.isFinite(weight)) signalWeights[key] = weight;
+    }
+  }
+
+  const extraHeaders: Record<string, string> = {};
+  if (isRecord(upstreamRaw.extraHeaders)) {
+    for (const [name, value] of Object.entries(upstreamRaw.extraHeaders)) {
+      if (typeof value === "string") extraHeaders[name] = value;
     }
   }
 
@@ -198,25 +159,26 @@ export function resolveConfig(
         routingRaw.stickyModelWithinIssue,
         DEFAULT_ROUTING.stickyModelWithinIssue,
       ),
+      maxOutputTokens: pickNumber(routingRaw.maxOutputTokens, DEFAULT_ROUTING.maxOutputTokens),
     },
-    providers: {
-      permitted: pickStringArray(providersRaw.permitted, DEFAULT_PROVIDERS.permitted),
-      preferenceOrder: pickStringArray(
-        providersRaw.preferenceOrder,
-        DEFAULT_PROVIDERS.preferenceOrder,
+    upstream: {
+      protocol:
+        upstreamRaw.protocol === "anthropic-messages"
+          ? "anthropic-messages"
+          : "openai-chat-completions",
+      baseUrl: pickString(upstreamRaw.baseUrl, DEFAULT_UPSTREAM.baseUrl),
+      credentialSecretRef: isRecord(upstreamRaw.credentialSecretRef)
+        ? (upstreamRaw.credentialSecretRef as unknown as CompatibleUpstreamConfig["credentialSecretRef"])
+        : null,
+      requestTimeoutMs: pickNumber(
+        upstreamRaw.requestTimeoutMs,
+        DEFAULT_UPSTREAM.requestTimeoutMs,
       ),
-      claudePaygEnabled:
-        pickBoolean(providersRaw.claudePaygEnabled, DEFAULT_PROVIDERS.claudePaygEnabled) &&
-        paygUnlocked,
-      claudeFamilyProvider: pickString(
-        providersRaw.claudeFamilyProvider,
-        DEFAULT_PROVIDERS.claudeFamilyProvider,
+      maxResponseBytes: pickNumber(
+        upstreamRaw.maxResponseBytes,
+        DEFAULT_UPSTREAM.maxResponseBytes,
       ),
-      claudeFamilies: pickStringArray(
-        providersRaw.claudeFamilies,
-        DEFAULT_PROVIDERS.claudeFamilies,
-      ),
-      claudeComboArmed: comboArmed,
+      extraHeaders,
     },
     models: resolveModels(source.models),
     taskClasses: resolveTaskClasses(source.taskClasses),
@@ -228,30 +190,16 @@ export function resolveConfig(
         strong: pickNumber(thresholdsRaw.strong, DEFAULT_TIERING.thresholds.strong),
         frontier: pickNumber(thresholdsRaw.frontier, DEFAULT_TIERING.thresholds.frontier),
       },
-      defaultTier: (pickString(
+      defaultTier: pickString(
         tieringRaw.defaultTier,
         DEFAULT_TIERING.defaultTier,
-      ) as TieringConfig["defaultTier"]),
+      ) as TieringConfig["defaultTier"],
     },
     budget: {
       monthlyCapUsd: pickNumber(budgetRaw.monthlyCapUsd, DEFAULT_BUDGET.monthlyCapUsd),
       warnFraction: pickNumber(budgetRaw.warnFraction, DEFAULT_BUDGET.warnFraction),
       downshiftFraction: pickNumber(budgetRaw.downshiftFraction, DEFAULT_BUDGET.downshiftFraction),
       haltFraction: pickNumber(budgetRaw.haltFraction, DEFAULT_BUDGET.haltFraction),
-    },
-    quotaGate: {
-      enabled: pickBoolean(quotaRaw.enabled, DEFAULT_QUOTA_GATE.enabled),
-      statusUrl: pickString(quotaRaw.statusUrl, DEFAULT_QUOTA_GATE.statusUrl),
-      apiKeySecretRef: isRecord(quotaRaw.apiKeySecretRef)
-        ? (quotaRaw.apiKeySecretRef as unknown as QuotaGateConfig["apiKeySecretRef"])
-        : null,
-      windows: pickStringArray(quotaRaw.windows, DEFAULT_QUOTA_GATE.windows),
-      warnUtilization: pickNumber(quotaRaw.warnUtilization, DEFAULT_QUOTA_GATE.warnUtilization),
-      downshiftUtilization: pickNumber(
-        quotaRaw.downshiftUtilization,
-        DEFAULT_QUOTA_GATE.downshiftUtilization,
-      ),
-      pauseUtilization: pickNumber(quotaRaw.pauseUtilization, DEFAULT_QUOTA_GATE.pauseUtilization),
     },
     rule0: resolveRule0(source.rule0),
   };

@@ -3,13 +3,6 @@ dist/
 coverage/
 *.tsbuildinfo
 
-# ...but the vendored broker's dist/ is hand-written SOURCE, not build output: it has no
-# src/, and its package.json points paperclipPlugin.worker straight at it. The blanket
-# dist/ rule above silently swallowed it during the TOG-391 vendoring, and that still
-# looked fine locally because the untracked files were sitting right there on disk.
-# Un-ignore the directory itself — a bare !.../dist/** would NOT work, because git never
-# descends into an excluded directory to reach the files inside it.
-!plugins/omniroute-broker/dist/
 
 # Never commit anything that could hold a credential.
 .env

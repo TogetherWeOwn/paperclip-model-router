@@ -1,104 +1,61 @@
 {
   "routing": {
     "enabled": true,
-    "mode": "advise",
+    "mode": "enforce",
     "fallbackModelId": null,
-    "stickyModelWithinIssue": true
+    "stickyModelWithinIssue": true,
+    "maxOutputTokens": 16384
   },
-  "providers": {
-    "permitted": ["opencode-go", "openrouter", "teamclaude"],
-    "preferenceOrder": ["opencode-go", "openrouter"],
-    "claudePaygEnabled": false,
-    "claudeFamilyProvider": "teamclaude",
-    "claudeFamilies": ["claude"]
+  "upstream": {
+    "protocol": "openai-chat-completions",
+    "baseUrl": "https://company-a.example/api",
+    "credentialSecretRef": {
+      "type": "secret_ref",
+      "secretId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    },
+    "requestTimeoutMs": 25000,
+    "maxResponseBytes": 8388608,
+    "extraHeaders": { "X-Company-Lane": "a" }
   },
   "models": [
     {
       "id": "qwen3-coder",
-      "family": "qwen",
       "tier": "small",
       "quality": 45,
       "costPerMTokIn": 0.08,
       "costPerMTokOut": 0.32,
       "contextWindow": 262144,
       "capabilities": ["tools", "structured-output", "long-context"],
-      "providers": ["opencode-go", "openrouter"],
       "enabled": true
     },
     {
       "id": "minimax-m2.5",
-      "family": "minimax",
       "tier": "standard",
       "quality": 62,
       "costPerMTokIn": 0.25,
-      "costPerMTokOut": 1.0,
+      "costPerMTokOut": 1,
       "contextWindow": 200000,
       "capabilities": ["tools", "structured-output"],
-      "providers": ["opencode-go", "openrouter"],
-      "enabled": true
-    },
-    {
-      "id": "glm-4.6",
-      "family": "glm",
-      "tier": "strong",
-      "quality": 74,
-      "costPerMTokIn": 0.5,
-      "costPerMTokOut": 2.0,
-      "contextWindow": 200000,
-      "capabilities": ["tools", "structured-output", "long-context"],
-      "providers": ["opencode-go"],
-      "enabled": true
-    },
-    {
-      "id": "claude-haiku-4-5",
-      "family": "claude",
-      "tier": "standard",
-      "quality": 66,
-      "costPerMTokIn": 1.0,
-      "costPerMTokOut": 5.0,
-      "contextWindow": 200000,
-      "capabilities": ["tools", "structured-output", "vision"],
-      "providers": ["teamclaude", "openrouter"],
       "enabled": true
     },
     {
       "id": "claude-sonnet-5",
-      "family": "claude",
       "tier": "strong",
       "quality": 88,
-      "costPerMTokIn": 3.0,
-      "costPerMTokOut": 15.0,
-      "contextWindow": 200000,
+      "costPerMTokIn": 3,
+      "costPerMTokOut": 15,
+      "contextWindow": 1000000,
       "capabilities": ["tools", "structured-output", "vision", "long-context"],
-      "providers": ["teamclaude", "openrouter"],
-      "enabled": true
-    },
-    {
-      "id": "claude-opus-5",
-      "family": "claude",
-      "tier": "frontier",
-      "quality": 95,
-      "costPerMTokIn": 15.0,
-      "costPerMTokOut": 75.0,
-      "contextWindow": 200000,
-      "capabilities": ["tools", "structured-output", "vision", "long-context", "computer-use"],
-      "providers": ["teamclaude", "openrouter"],
       "enabled": true
     }
   ],
   "taskClasses": [
     { "key": "mechanical", "qualityFloor": 40, "maxTier": "small" },
     { "key": "implementation", "qualityFloor": 60 },
-    { "key": "review", "qualityFloor": 70, "requiredCapabilities": ["structured-output"] },
     { "key": "architecture", "qualityFloor": 85 }
   ],
   "tiering": {
-    "signalWeights": {
-      "filesTouched": 4,
-      "ambiguity": 20,
-      "blastRadius": 15,
-      "novelty": 10
-    },
+    "signalWeights": { "filesTouched": 4, "ambiguity": 20 },
     "thresholds": { "small": 0, "standard": 30, "strong": 60, "frontier": 85 },
     "defaultTier": "standard"
   },
@@ -108,21 +65,11 @@
     "downshiftFraction": 0.8,
     "haltFraction": 0.95
   },
-  "quotaGate": {
-    "enabled": true,
-    "statusUrl": "http://host.containers.internal:3456/teamclaude/status",
-    "apiKeySecretRef": null,
-    "windows": ["unified5h", "unified7d"],
-    "warnUtilization": 0.7,
-    "downshiftUtilization": 0.85,
-    "pauseUtilization": 0.95
-  },
   "rule0": {
     "enabled": true,
     "deterministicPatterns": [
       { "pattern": "^(run|re-?run) the (unit )?tests\\b", "tool": "the test runner" },
-      { "pattern": "\\b(lint|format|prettier|gofmt)\\b", "tool": "the linter/formatter" },
-      { "pattern": "\\bfind (all )?(usages|references) of\\b", "tool": "ripgrep" }
+      { "pattern": "\\b(lint|format|prettier|gofmt)\\b", "tool": "the linter/formatter" }
     ]
   }
 }
