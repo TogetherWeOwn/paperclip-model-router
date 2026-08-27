@@ -1,100 +1,9 @@
---- a/server/src/services/remote-http-endpoint-guard.ts
-+++ b/server/src/services/remote-http-endpoint-guard.ts
-@@ -93,7 +93,7 @@
-   }
- }
-
--function isPrivateOrReservedIp(address: string): boolean {
-+export function isPrivateOrReservedIp(address: string): boolean {
-   const lower = address.toLowerCase();
-   const mappedIpv4 = lower.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
-   if (mappedIpv4?.[1]) return isPrivateOrReservedIpv4(mappedIpv4[1]);
---- a/server/src/services/plugin-host-services.ts
-+++ b/server/src/services/plugin-host-services.ts
-@@ -84,6 +84,7 @@
-   SANDBOX_STARTUP_SPAN_ATTRS,
- } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
- import { recordProviderPluginSpan, type ParsedTraceparent } from "../instrumentation.js";
-+import { isPrivateOrReservedIp } from "./remote-http-endpoint-guard.js";
-
- // ---------------------------------------------------------------------------
- // SSRF protection for plugin HTTP fetch
-@@ -100,40 +101,6 @@
- const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
-
- /**
-- * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
-- * link-local, etc.) that plugins should never be able to reach.
-- *
-- * Handles IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1) which Node's
-- * dns.lookup may return depending on OS configuration.
-- */
--function isPrivateIP(ip: string): boolean {
--  const lower = ip.toLowerCase();
--
--  // Unwrap IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) and re-check as IPv4
--  const v4MappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
--  if (v4MappedMatch && v4MappedMatch[1]) return isPrivateIP(v4MappedMatch[1]);
--
--  // IPv4 patterns
--  if (ip.startsWith("10.")) return true;
--  if (ip.startsWith("172.")) {
--    const second = parseInt(ip.split(".")[1]!, 10);
--    if (second >= 16 && second <= 31) return true;
--  }
--  if (ip.startsWith("192.168.")) return true;
--  if (ip.startsWith("127.")) return true;                   // loopback
--  if (ip.startsWith("169.254.")) return true;               // link-local
--  if (ip === "0.0.0.0") return true;
--
--  // IPv6 patterns
--  if (lower === "::1") return true;                          // loopback
--  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
--  if (lower.startsWith("fe80")) return true;                 // link-local
--  if (lower === "::") return true;
--
--  return false;
--}
--
--/**
-  * Validate a URL for plugin fetch: protocol whitelist + private IP blocking.
-  *
-  * SSRF Prevention Strategy:
-@@ -193,17 +160,15 @@
-       throw new Error(`DNS resolution returned no results for ${originalHostname}`);
-     }
-
--    // Filter to only non-private IPs instead of rejecting the entire request
--    // when some IPs are private. This handles multi-homed hosts that resolve
--    // to both private and public addresses.
--    const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
--    if (safeResults.length === 0) {
-+    // Fail closed if any answer is private or reserved. Accepting a public answer
-+    // beside a forbidden one would let DNS ordering decide whether the guard holds.
-+    if (results.some((entry) => isPrivateOrReservedIp(entry.address))) {
-       throw new Error(
--        `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
-+        `Resolved IPs for ${originalHostname} include private/reserved ranges`,
-       );
-     }
-
--    const resolved = safeResults[0]!;
-+    const resolved = results[0]!;
-     return {
-       parsedUrl: parsed,
-       resolvedAddress: resolved.address,
-@@ -216,7 +181,7 @@
-   } catch (err) {
-     // Re-throw our own errors; wrap DNS failures
-     if (err instanceof Error && (
--      err.message.startsWith("All resolved IPs") ||
-+      err.message.startsWith("Resolved IPs") ||
-       err.message.startsWith("DNS resolution returned") ||
-       err.message.startsWith("DNS lookup timed out")
-     )) throw err;
---- a/server/src/__tests__/plugin-host-services-http-fetch.test.ts
+diff --git a/server/src/__tests__/plugin-host-services-http-fetch.test.ts b/server/src/__tests__/plugin-host-services-http-fetch.test.ts
+new file mode 100644
+index 0000000..c97edac
+--- /dev/null
 +++ b/server/src/__tests__/plugin-host-services-http-fetch.test.ts
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,181 @@
 +import { EventEmitter } from "node:events";
 +import { Readable } from "node:stream";
 +import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -163,19 +72,26 @@
 +}
 +
 +const FORBIDDEN_RESOLVED_ADDRESSES = [
++  ["IPv4 this-network", "0.1.2.3"],
 +  ["CGNAT", "100.64.0.1"],
 +  ["IPv4 protocol assignments", "192.0.0.8"],
-+  ["IPv4 documentation", "192.0.2.1"],
++  ["IPv4 TEST-NET-1", "192.0.2.1"],
++  ["IPv4 6to4 relay anycast", "192.88.99.1"],
 +  ["IPv4 benchmarking", "198.18.0.1"],
++  ["IPv4 TEST-NET-2", "198.51.100.1"],
++  ["IPv4 TEST-NET-3", "203.0.113.1"],
++  ["IPv4 multicast", "224.0.0.1"],
 +  ["IPv4 reserved", "240.0.0.1"],
-+  ["IPv4-mapped IPv6 dotted", "::ffff:127.0.0.1"],
++  ["IPv4-mapped IPv6 dotted", "::ffff:100.64.0.1"],
 +  ["IPv4-mapped IPv6 hexadecimal", "::ffff:7f00:1"],
++  ["IPv6 link-local outside fe80::/16", "fe90::1"],
 +  ["IPv6 discard-only", "100::1"],
++  ["IPv6 protocol assignments", "2001::1"],
 +  ["IPv6 benchmarking", "2001:2::1"],
 +  ["IPv6 ORCHID", "2001:20::1"],
 +  ["IPv6 documentation", "2001:db8::1"],
 +  ["IPv6 6to4", "2002::1"],
-+  ["IPv6 NAT64", "64:ff9b:1::1"],
++  ["IPv6 local-use NAT64", "64:ff9b:1::1"],
 +  ["IPv6 multicast", "ff02::1"],
 +] as const;
 +
@@ -269,3 +185,69 @@
 +    services.dispose();
 +  });
 +});
+diff --git a/server/src/services/plugin-host-services.ts b/server/src/services/plugin-host-services.ts
+index 1428f42..4aae461 100644
+--- a/server/src/services/plugin-host-services.ts
++++ b/server/src/services/plugin-host-services.ts
+@@ -86,0 +87 @@ import { recordProviderPluginSpan, type ParsedTraceparent } from "../instrumenta
++import { isPrivateOrReservedIp } from "./remote-http-endpoint-guard.js";
+@@ -102,34 +102,0 @@ const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
+-/**
+- * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
+- * link-local, etc.) that plugins should never be able to reach.
+- *
+- * Handles IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1) which Node's
+- * dns.lookup may return depending on OS configuration.
+- */
+-function isPrivateIP(ip: string): boolean {
+-  const lower = ip.toLowerCase();
+-
+-  // Unwrap IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) and re-check as IPv4
+-  const v4MappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+-  if (v4MappedMatch && v4MappedMatch[1]) return isPrivateIP(v4MappedMatch[1]);
+-
+-  // IPv4 patterns
+-  if (ip.startsWith("10.")) return true;
+-  if (ip.startsWith("172.")) {
+-    const second = parseInt(ip.split(".")[1]!, 10);
+-    if (second >= 16 && second <= 31) return true;
+-  }
+-  if (ip.startsWith("192.168.")) return true;
+-  if (ip.startsWith("127.")) return true;                   // loopback
+-  if (ip.startsWith("169.254.")) return true;               // link-local
+-  if (ip === "0.0.0.0") return true;
+-
+-  // IPv6 patterns
+-  if (lower === "::1") return true;                          // loopback
+-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
+-  if (lower.startsWith("fe80")) return true;                 // link-local
+-  if (lower === "::") return true;
+-
+-  return false;
+-}
+-
+@@ -196,5 +163,3 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
+-    // Filter to only non-private IPs instead of rejecting the entire request
+-    // when some IPs are private. This handles multi-homed hosts that resolve
+-    // to both private and public addresses.
+-    const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
+-    if (safeResults.length === 0) {
++    // Fail closed if any answer is private or reserved. Accepting a public answer
++    // beside a forbidden one would let DNS ordering decide whether the guard holds.
++    if (results.some((entry) => isPrivateOrReservedIp(entry.address))) {
+@@ -202 +167 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
+-        `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
++        `Resolved IPs for ${originalHostname} include private/reserved ranges`,
+@@ -206 +171 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
+-    const resolved = safeResults[0]!;
++    const resolved = results[0]!;
+@@ -219 +184 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
+-      err.message.startsWith("All resolved IPs") ||
++      err.message.startsWith("Resolved IPs") ||
+diff --git a/server/src/services/remote-http-endpoint-guard.ts b/server/src/services/remote-http-endpoint-guard.ts
+index 4ed1fdb..61f1e87 100644
+--- a/server/src/services/remote-http-endpoint-guard.ts
++++ b/server/src/services/remote-http-endpoint-guard.ts
+@@ -96 +96 @@ async function lookupWithTimeout(hostname: string, lookup: RemoteHttpEndpointLoo
+-function isPrivateOrReservedIp(address: string): boolean {
++export function isPrivateOrReservedIp(address: string): boolean {

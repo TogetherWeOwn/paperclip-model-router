@@ -1,6 +1,6 @@
 # TOG-549 — stock host plugin HTTP SSRF correction
 
-**Result:** the current stock host predicate is bypassable by reserved resolved addresses. The attached patch (sha256 `b468a6997681c98c95d33f513d06298f23d2045f3e3a32a959e1b0c932505917`) makes plugin HTTP use the host's canonical remote-endpoint IP predicate and fail closed when any DNS answer is forbidden.
+**Result:** the current stock host predicate is bypassable by reserved resolved addresses. The attached patch (sha256 `d86c63b881d25825c0638925f954df63d75c0946f739451e40c1771adabe3831`) makes plugin HTTP use the host's canonical remote-endpoint IP predicate and fail closed when any DNS answer is forbidden.
 
 This repository does not own the Paperclip host source under `/app`, so this is the smallest exact upstream patch and executable verification artifact. It has not been published to a third-party repository. The current `/app` source tree contains the patched files and passes the checks below; this verification does not prove that the long-running host process has restarted onto those sources.
 
@@ -8,19 +8,33 @@ This repository does not own the Paperclip host source under `/app`, so this is 
 
 The stock plugin path resolves once, connects directly to the chosen address, preserves the original HTTP `Host`/TLS server name, and does not implement redirect following. Those properties are retained.
 
-The omitted classes were derived from current source, not from the issue summary:
+The omitted classes were derived from current source, not from the issue summary. The stock plugin predicate rejected RFC 1918, IPv4 loopback, IPv4 link-local, exactly `0.0.0.0`, IPv6 loopback/unspecified, ULA, exactly the textual prefix `fe80`, and dotted IPv4-mapped IPv6. Against the canonical host predicate at `/app/server/src/services/remote-http-endpoint-guard.ts:96-160`, it missed:
 
-- `/app/server/src/services/plugin-host-services.ts:109-133` only rejected RFC 1918, loopback, link-local, unspecified, IPv6 ULA, and dotted IPv4-mapped IPv6.
-- `/app/server/src/services/remote-http-endpoint-guard.ts:96-160` is the host's comprehensive predicate. In addition it rejects CGNAT `100.64/10`; `0/8`; IPv4 protocol-assignment, documentation, 6to4-relay, benchmarking, multicast and reserved ranges; hexadecimal IPv4-mapped IPv6; and IPv6 discard-only, reserved `2001` space, documentation, benchmarking, ORCHID, 6to4, NAT64, and multicast space.
-- `/app/server/src/services/plugin-host-services.ts:196-206` filtered unsafe answers and continued when another public answer existed. The canonical guard rejects a hostname if any answer is forbidden at `/app/server/src/services/remote-http-endpoint-guard.ts:70-72`.
+- IPv4 `0.0.0.0/8` except the single all-zero address;
+- CGNAT `100.64.0.0/10`;
+- protocol assignments `192.0.0.0/24`;
+- TEST-NET-1 `192.0.2.0/24`;
+- 6to4 relay anycast `192.88.99.0/24`;
+- benchmarking `198.18.0.0/15`;
+- TEST-NET-2 `198.51.100.0/24` and TEST-NET-3 `203.0.113.0/24`;
+- IPv4 multicast/reserved `224.0.0.0/4` and `240.0.0.0/4`;
+- hexadecimal IPv4-mapped IPv6 such as `::ffff:7f00:1`, and mapped instances of every omitted IPv4 class;
+- the rest of IPv6 link-local `fe80::/10` because the stock textual check only matched `fe80...`;
+- the canonical predicate's textual `100::/16` block (broader than the nominal discard-only `100::/64` allocation);
+- protocol-assignment `2001:0000::/32`, benchmarking `2001:2::/48`, and the canonical predicate's ORCHID block spanning second hextets `0x20`–`0x2f`;
+- documentation `2001:db8::/32`, 6to4 `2002::/16`, the canonical predicate's textual `64:ff9b::/32` NAT64 block, and IPv6 multicast `ff00::/8`.
+
+The old plugin flow also filtered forbidden answers and continued if any public answer remained. The canonical guard fails closed when any answer is forbidden at `/app/server/src/services/remote-http-endpoint-guard.ts:70-72`.
 
 ## Artifact
 
 Apply [`TOG-549-stock-host-plugin-http-ssrf.patch`](./TOG-549-stock-host-plugin-http-ssrf.patch) at the Paperclip host repository root:
 
+The artifact is intentionally a zero-context patch so it contains no trailing context whitespace and passes this repository's `git diff --check`. Apply it with:
+
 ```bash
-git apply --check TOG-549-stock-host-plugin-http-ssrf.patch
-git apply TOG-549-stock-host-plugin-http-ssrf.patch
+git apply --unidiff-zero --check TOG-549-stock-host-plugin-http-ssrf.patch
+git apply --unidiff-zero TOG-549-stock-host-plugin-http-ssrf.patch
 ```
 
 The patch:
@@ -40,7 +54,7 @@ cd /app/server
   src/__tests__/plugin-host-services-http-fetch.test.ts
 ```
 
-Result: exit `1`; **15 failed, 1 passed**. The unmodified predicate accepted CGNAT, reserved/documentation/benchmark IPv4, hexadecimal IPv4-mapped IPv6, reserved IPv6, and a mixed public/forbidden DNS answer. The public pinned-transport/no-redirect case passed.
+Result: exit `1`; **22 failed, 1 passed**. The unmodified predicate accepted every enumerated omitted class and the mixed public/CGNAT answer. The public pinned-transport/no-redirect case passed. The failures are true executable mutations: the forbidden-address cases resolved with a synthetic HTTP `200` instead of rejecting, while the mixed-answer case attempted the pinned request.
 
 After applying the patch:
 
@@ -56,7 +70,7 @@ Result:
 
 ```text
 Test Files  2 passed (2)
-Tests      22 passed (22)
+Tests      29 passed (29)
 ```
 
 The TypeScript command exited `0` with no output.
@@ -72,7 +86,7 @@ A Paperclip host source owner should apply the patch in the company-owned host r
 Before commit, reverse the patch:
 
 ```bash
-git apply -R TOG-549-stock-host-plugin-http-ssrf.patch
+git apply --unidiff-zero -R TOG-549-stock-host-plugin-http-ssrf.patch
 ```
 
 After commit, use the host repository's normal `git revert <commit>` path. The rollback restores the prior incomplete range predicate and mixed-answer filtering, so it also restores the SSRF gap; use it only to recover from an independently demonstrated regression.
