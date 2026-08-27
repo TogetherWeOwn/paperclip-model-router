@@ -1,4 +1,12 @@
 import type { CompatibleUpstreamConfig } from "../config/types.js";
+import {
+  FORBIDDEN_EXTRA_HEADERS,
+  isReservedLiteralHost,
+  MAX_REQUEST_TIMEOUT_MS,
+  MAX_RESPONSE_BYTES,
+  MIN_REQUEST_TIMEOUT_MS,
+  MIN_RESPONSE_BYTES,
+} from "../config/upstream-constraints.js";
 import type {
   InferenceError,
   InvokeRequest,
@@ -6,18 +14,6 @@ import type {
   NormalizedResponse,
   NormalizedStopReason,
 } from "./types.js";
-
-const FORBIDDEN_HEADERS = new Set([
-  "authorization",
-  "proxy-authorization",
-  "x-api-key",
-  "content-length",
-  "host",
-  "connection",
-  "transfer-encoding",
-  "cookie",
-  "accept-encoding",
-]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -40,6 +36,9 @@ function boundedId(value: unknown): string | null {
 
 export function validateUpstreamConfig(config: CompatibleUpstreamConfig): string[] {
   const errors: string[] = [];
+  if (config.protocol !== "openai-chat-completions" && config.protocol !== "anthropic-messages") {
+    errors.push("upstream.protocol is not supported");
+  }
   let parsed: URL | null = null;
   try {
     parsed = new URL(config.baseUrl);
@@ -50,17 +49,35 @@ export function validateUpstreamConfig(config: CompatibleUpstreamConfig): string
     if (parsed.protocol !== "https:") errors.push("upstream.baseUrl must use https");
     if (parsed.username || parsed.password) errors.push("upstream.baseUrl must not contain credentials");
     if (parsed.search || parsed.hash) errors.push("upstream.baseUrl must not contain a query or fragment");
+    if (isReservedLiteralHost(parsed.hostname)) errors.push("upstream.baseUrl must not use a private or reserved literal address");
+  }
+  if (!Number.isInteger(config.requestTimeoutMs) ||
+      config.requestTimeoutMs < MIN_REQUEST_TIMEOUT_MS ||
+      config.requestTimeoutMs > MAX_REQUEST_TIMEOUT_MS) {
+    errors.push(`upstream.requestTimeoutMs must be an integer from ${MIN_REQUEST_TIMEOUT_MS} through ${MAX_REQUEST_TIMEOUT_MS}`);
+  }
+  if (!Number.isInteger(config.maxResponseBytes) ||
+      config.maxResponseBytes < MIN_RESPONSE_BYTES ||
+      config.maxResponseBytes > MAX_RESPONSE_BYTES) {
+    errors.push(`upstream.maxResponseBytes must be an integer from ${MIN_RESPONSE_BYTES} through ${MAX_RESPONSE_BYTES}`);
   }
   for (const [name, value] of Object.entries(config.extraHeaders)) {
-    if (FORBIDDEN_HEADERS.has(name.toLowerCase())) errors.push(`upstream.extraHeaders must not set ${name}`);
+    if (FORBIDDEN_EXTRA_HEADERS.has(name.toLowerCase())) errors.push(`upstream.extraHeaders must not set ${name}`);
     if (/\r|\n/.test(value)) errors.push(`upstream.extraHeaders.${name} must not contain CR or LF`);
   }
   return errors;
 }
 
+function supportedProtocol(config: CompatibleUpstreamConfig): "openai-chat-completions" | "anthropic-messages" {
+  if (config.protocol === "openai-chat-completions" || config.protocol === "anthropic-messages") {
+    return config.protocol;
+  }
+  throw new Error("unsupported compatible upstream protocol");
+}
+
 export function upstreamUrl(config: CompatibleUpstreamConfig): string {
   const parsed = new URL(config.baseUrl);
-  const suffix = config.protocol === "openai-chat-completions" ? "/v1/chat/completions" : "/v1/messages";
+  const suffix = supportedProtocol(config) === "openai-chat-completions" ? "/v1/chat/completions" : "/v1/messages";
   let path = parsed.pathname.replace(/\/+$/, "");
   if (path.endsWith(suffix)) path = path.slice(0, -suffix.length);
   parsed.pathname = `${path}${suffix}`.replace(/\/{2,}/g, "/");
@@ -205,7 +222,7 @@ export function buildAnthropicRequest(request: InvokeRequest, modelId: string): 
 export function requestHeaders(config: CompatibleUpstreamConfig, credential: string): Record<string, string> {
   return {
     ...config.extraHeaders,
-    ...(config.protocol === "openai-chat-completions"
+    ...(supportedProtocol(config) === "openai-chat-completions"
       ? { Authorization: `Bearer ${credential}` }
       : { "x-api-key": credential, "anthropic-version": "2023-06-01" }),
     "Content-Type": "application/json",

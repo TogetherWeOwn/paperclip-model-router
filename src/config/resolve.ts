@@ -163,9 +163,9 @@ export function resolveConfig(raw: unknown): RouterConfig {
     },
     upstream: {
       protocol:
-        upstreamRaw.protocol === "anthropic-messages"
-          ? "anthropic-messages"
-          : "openai-chat-completions",
+        upstreamRaw.protocol === "openai-chat-completions" || upstreamRaw.protocol === "anthropic-messages"
+          ? upstreamRaw.protocol
+          : null,
       baseUrl: pickString(upstreamRaw.baseUrl, DEFAULT_UPSTREAM.baseUrl),
       credentialSecretRef: isRecord(upstreamRaw.credentialSecretRef)
         ? (upstreamRaw.credentialSecretRef as unknown as CompatibleUpstreamConfig["credentialSecretRef"])

@@ -45,17 +45,54 @@ describe("compatible-upstream config", () => {
     expect(validateSecretRefShape({ type: "secret_ref", secretId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", projectionClass: "other" }, "upstream.credentialSecretRef")).toContain("projectionClass");
   });
 
-  it("validates HTTPS URLs and forbidden headers at runtime", () => {
+  it("validates HTTPS URLs, literal hosts, bounds, and fixed headers at runtime", () => {
     const config = resolveConfig(readFixture("company-a"));
     expect(validateUpstreamConfig(config.upstream)).toEqual([]);
-    config.upstream.baseUrl = "https://user:pass@example.com/path?secret=yes";
+    config.upstream.baseUrl = "https://user:pass@100.64.0.1/path?secret=yes";
+    config.upstream.requestTimeoutMs = 999;
+    config.upstream.maxResponseBytes = 16_777_217;
     config.upstream.extraHeaders.Authorization = "not-allowed";
+    config.upstream.extraHeaders["aNtHrOpIc-BeTa"] = "unsafe";
+    config.upstream.extraHeaders["content-TYPE"] = "text/plain";
+    config.upstream.extraHeaders.Accept = "text/event-stream";
     config.upstream.extraHeaders["Accept-Encoding"] = "gzip";
     const errors = validateUpstreamConfig(config.upstream).join(" ");
     expect(errors).toContain("credentials");
     expect(errors).toContain("query or fragment");
-    expect(errors).toContain("Authorization");
-    expect(errors).toContain("Accept-Encoding");
+    expect(errors).toContain("private or reserved literal");
+    expect(errors).toContain("requestTimeoutMs");
+    expect(errors).toContain("maxResponseBytes");
+    for (const header of ["Authorization", "aNtHrOpIc-BeTa", "content-TYPE", "Accept", "Accept-Encoding"]) {
+      expect(errors).toContain(header);
+    }
+  });
+
+  it.each([
+    "https://0.0.0.0",
+    "https://100.127.255.255",
+    "https://192.0.2.1",
+    "https://198.18.0.1",
+    "https://203.0.113.1",
+    "https://[::1]",
+    "https://[64:ff9b:1::1]",
+    "https://[2001:db8::1]",
+    "https://[3fff::1]",
+    "https://[::ffff:127.0.0.1]",
+  ])("rejects reserved literal upstream %s", (baseUrl) => {
+    const config = resolveConfig(readFixture("company-a"));
+    config.upstream.baseUrl = baseUrl;
+    expect(validateUpstreamConfig(config.upstream)).toContain("upstream.baseUrl must not use a private or reserved literal address");
+  });
+
+  it("fails closed for unknown persisted protocols", () => {
+    const config = resolveConfig({
+      upstream: {
+        protocol: "future-provider-wire",
+        baseUrl: "https://x.example",
+      },
+    });
+    expect(config.upstream.protocol).toBeNull();
+    expect(validateUpstreamConfig(config.upstream)).toContain("upstream.protocol is not supported");
   });
 
   it("fills bounded transport defaults", () => {

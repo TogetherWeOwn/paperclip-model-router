@@ -1,3 +1,4 @@
+import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -160,6 +161,8 @@ describe("runtime request validation", () => {
     expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "tool", content: "result" }], maxOutputTokens: 10 }, 100)).toThrow("toolCallId");
     expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "user", content: "hi" }], maxOutputTokens: 101 }, 100)).toThrow("company maximum");
     expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "user", content: [{ type: "image_url", url: "https://images.example/a.png" }] }], maxOutputTokens: 10 }, 100, "anthropic-messages")).toThrow("image_url");
+    expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "user", content: [{ type: "image_url", url: "data:image/png;base64,AAAA" }] }], maxOutputTokens: 10 }, 100, "openai-chat-completions")).toThrow("inline data");
+    expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "user", content: [{ type: "image_url", url: "images.example/a.png" }] }], maxOutputTokens: 10 }, 100, "openai-chat-completions")).toThrow("absolute http or https URL");
     expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "user", content: [{ type: "tool_call", id: "x", name: "lookup", arguments: {} }] }], maxOutputTokens: 10 }, 100)).toThrow("assistant role");
     expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "assistant", content: [{ type: "tool_result", toolCallId: "x", content: "done" }] }], maxOutputTokens: 10 }, 100)).toThrow("tool_result");
   });
@@ -209,12 +212,40 @@ describe("single-attempt transport", () => {
     expect(result.error?.code).toBe("upstream-response-too-large");
   });
 
-  it("maps host URL rejection and network failure separately", async () => {
+  it("maps stock SDK host URL rejection and network failure separately", async () => {
     const config = fixtureConfig("company-a").upstream;
-    const rejected = await invokeCompatibleUpstream({ http: { fetch: async () => { throw new TypeError("blocked"); } }, config, credential: "resolved-value", request, modelId: "m" });
-    expect(rejected.error?.code).toBe("upstream-url-rejected");
-    const unavailable = await invokeCompatibleUpstream({ http: { fetch: async () => { throw new Error("connect failed"); } }, config, credential: "resolved-value", request, modelId: "m" });
+    for (const cause of [
+      new TypeError("blocked"),
+      new JsonRpcCallError({ code: -32603, message: "All resolved IPs for private.example are in private/reserved ranges" }),
+      new JsonRpcCallError({ code: -32603, message: 'Disallowed protocol "file:" — only http: and https: are permitted' }),
+      new JsonRpcCallError({ code: -32603, message: "url resolves to a private, local, multicast, or reserved address" }),
+    ]) {
+      const rejected = await invokeCompatibleUpstream({ http: { fetch: async () => { throw cause; } }, config, credential: "resolved-value", request, modelId: "m" });
+      expect(rejected.error).toMatchObject({ code: "upstream-url-rejected", retryable: false });
+    }
+    const unavailable = await invokeCompatibleUpstream({ http: { fetch: async () => { throw new JsonRpcCallError({ code: -32603, message: "socket hang up" }); } }, config, credential: "resolved-value", request, modelId: "m" });
     expect(unavailable.error?.code).toBe("upstream-connect");
+  });
+
+  it("fails closed before HTTP when called with an unknown runtime protocol", async () => {
+    const config = fixtureConfig("company-a").upstream;
+    (config as { protocol: string | null }).protocol = "future-provider-wire";
+    const fetch = vi.fn();
+    const result = await invokeCompatibleUpstream({ http: { fetch }, config, credential: "resolved-value", request, modelId: "m" });
+    expect(result.error).toMatchObject({ code: "upstream-url-rejected", retryable: false });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([301, 302, 303, 307, 308])("classifies HTTP %s as redirect before media or body validation", async (status) => {
+    const config = fixtureConfig("company-a").upstream;
+    const result = await invokeCompatibleUpstream({
+      http: { fetch: async () => rawResponse("not-json", status, { "content-type": "text/html", "location": "https://redirect.example/elsewhere" }) },
+      config,
+      credential: "resolved-value",
+      request,
+      modelId: "m",
+    });
+    expect(result.error).toMatchObject({ code: "upstream-redirect", retryable: false, upstreamStatus: status });
   });
 
   it("returns caller-visible timeout without starting another request", async () => {
