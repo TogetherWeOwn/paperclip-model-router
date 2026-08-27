@@ -1,8 +1,8 @@
 # TOG-549 — stock host plugin HTTP SSRF correction
 
-**Result:** the current stock host predicate is bypassable by reserved resolved addresses. The attached patch (sha256 `d86c63b881d25825c0638925f954df63d75c0946f739451e40c1771adabe3831`) makes plugin HTTP use the host's canonical remote-endpoint IP predicate and fail closed when any DNS answer is forbidden.
+**Result:** the current stock host predicate is bypassable by reserved resolved addresses. The attached patch (sha256 `7906d6d76953ecb93d5aa3df26abe1214efb4b8942e7b4676203e95ea25b6878`) makes plugin HTTP use the host's canonical remote-endpoint IP predicate and fail closed when any DNS answer is forbidden.
 
-This repository does not own the Paperclip host source under `/app`, so this is the smallest exact upstream patch and executable verification artifact. It has not been published to a third-party repository. The current `/app` source tree contains the patched files and passes the checks below; this verification does not prove that the long-running host process has restarted onto those sources.
+This repository does not own the Paperclip host source under `/app`, so this is the smallest exact upstream patch and executable verification artifact. It has not been published to a third-party repository. Verification ran in an immutable copy of the current `/app` source tree with its existing dependency trees attached; it does not prove that the long-running host process has restarted onto patched sources.
 
 ## Re-derived finding
 
@@ -30,11 +30,11 @@ The old plugin flow also filtered forbidden answers and continued if any public 
 
 Apply [`TOG-549-stock-host-plugin-http-ssrf.patch`](./TOG-549-stock-host-plugin-http-ssrf.patch) at the Paperclip host repository root:
 
-The artifact is intentionally a zero-context patch so it contains no trailing context whitespace and passes this repository's `git diff --check`. Apply it with:
+The artifact is a standard Git unified diff, including `/dev/null` metadata for the new test file. Apply it with:
 
 ```bash
-git apply --unidiff-zero --check TOG-549-stock-host-plugin-http-ssrf.patch
-git apply --unidiff-zero TOG-549-stock-host-plugin-http-ssrf.patch
+git apply --check TOG-549-stock-host-plugin-http-ssrf.patch
+git apply TOG-549-stock-host-plugin-http-ssrf.patch
 ```
 
 The patch:
@@ -86,7 +86,7 @@ A Paperclip host source owner should apply the patch in the company-owned host r
 Before commit, reverse the patch:
 
 ```bash
-git apply --unidiff-zero -R TOG-549-stock-host-plugin-http-ssrf.patch
+git apply -R TOG-549-stock-host-plugin-http-ssrf.patch
 ```
 
 After commit, use the host repository's normal `git revert <commit>` path. The rollback restores the prior incomplete range predicate and mixed-answer filtering, so it also restores the SSRF gap; use it only to recover from an independently demonstrated regression.

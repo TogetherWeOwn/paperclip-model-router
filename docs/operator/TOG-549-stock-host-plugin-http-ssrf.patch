@@ -189,9 +189,18 @@ diff --git a/server/src/services/plugin-host-services.ts b/server/src/services/p
 index 1428f42..4aae461 100644
 --- a/server/src/services/plugin-host-services.ts
 +++ b/server/src/services/plugin-host-services.ts
-@@ -86,0 +87 @@ import { recordProviderPluginSpan, type ParsedTraceparent } from "../instrumenta
+@@ -84,6 +84,7 @@ import {
+   SANDBOX_STARTUP_SPAN_ATTRS,
+ } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+ import { recordProviderPluginSpan, type ParsedTraceparent } from "../instrumentation.js";
 +import { isPrivateOrReservedIp } from "./remote-http-endpoint-guard.js";
-@@ -102,34 +102,0 @@ const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
+ 
+ // ---------------------------------------------------------------------------
+ // SSRF protection for plugin HTTP fetch
+@@ -99,40 +100,6 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
+ const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
+ const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
+ 
 -/**
 - * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
 - * link-local, etc.) that plugins should never be able to reach.
@@ -226,7 +235,13 @@ index 1428f42..4aae461 100644
 -  return false;
 -}
 -
-@@ -196,5 +163,3 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
+ /**
+  * Validate a URL for plugin fetch: protocol whitelist + private IP blocking.
+  *
+@@ -193,17 +160,15 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
+       throw new Error(`DNS resolution returned no results for ${originalHostname}`);
+     }
+ 
 -    // Filter to only non-private IPs instead of rejecting the entire request
 -    // when some IPs are private. This handles multi-homed hosts that resolve
 -    // to both private and public addresses.
@@ -235,19 +250,36 @@ index 1428f42..4aae461 100644
 +    // Fail closed if any answer is private or reserved. Accepting a public answer
 +    // beside a forbidden one would let DNS ordering decide whether the guard holds.
 +    if (results.some((entry) => isPrivateOrReservedIp(entry.address))) {
-@@ -202 +167 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
+       throw new Error(
 -        `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
 +        `Resolved IPs for ${originalHostname} include private/reserved ranges`,
-@@ -206 +171 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
+       );
+     }
+ 
 -    const resolved = safeResults[0]!;
 +    const resolved = results[0]!;
-@@ -219 +184 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
+     return {
+       parsedUrl: parsed,
+       resolvedAddress: resolved.address,
+@@ -216,7 +181,7 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
+   } catch (err) {
+     // Re-throw our own errors; wrap DNS failures
+     if (err instanceof Error && (
 -      err.message.startsWith("All resolved IPs") ||
 +      err.message.startsWith("Resolved IPs") ||
+       err.message.startsWith("DNS resolution returned") ||
+       err.message.startsWith("DNS lookup timed out")
+     )) throw err;
 diff --git a/server/src/services/remote-http-endpoint-guard.ts b/server/src/services/remote-http-endpoint-guard.ts
 index 4ed1fdb..61f1e87 100644
 --- a/server/src/services/remote-http-endpoint-guard.ts
 +++ b/server/src/services/remote-http-endpoint-guard.ts
-@@ -96 +96 @@ async function lookupWithTimeout(hostname: string, lookup: RemoteHttpEndpointLoo
+@@ -93,7 +93,7 @@ async function lookupWithTimeout(hostname: string, lookup: RemoteHttpEndpointLoo
+   }
+ }
+ 
 -function isPrivateOrReservedIp(address: string): boolean {
 +export function isPrivateOrReservedIp(address: string): boolean {
+   const lower = address.toLowerCase();
+   const mappedIpv4 = lower.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+   if (mappedIpv4?.[1]) return isPrivateOrReservedIpv4(mappedIpv4[1]);
