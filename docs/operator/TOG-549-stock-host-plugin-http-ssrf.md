@@ -1,8 +1,8 @@
 # TOG-549 — stock host plugin HTTP SSRF correction
 
-**Result:** the current stock host predicate is bypassable by reserved resolved addresses. The attached patch makes plugin HTTP use the host's canonical remote-endpoint IP predicate and fail closed when any DNS answer is forbidden.
+**Result:** the current stock host predicate is bypassable by reserved resolved addresses. The attached patch (sha256 `b468a6997681c98c95d33f513d06298f23d2045f3e3a32a959e1b0c932505917`) makes plugin HTTP use the host's canonical remote-endpoint IP predicate and fail closed when any DNS answer is forbidden.
 
-This repository does not own the Paperclip host source under `/app`, so this is the smallest exact upstream patch and executable verification artifact. It has not been published to a third-party repository or installed into a running host.
+This repository does not own the Paperclip host source under `/app`, so this is the smallest exact upstream patch and executable verification artifact. It has not been published to a third-party repository. The current `/app` source tree contains the patched files and passes the checks below; this verification does not prove that the long-running host process has restarted onto those sources.
 
 ## Re-derived finding
 

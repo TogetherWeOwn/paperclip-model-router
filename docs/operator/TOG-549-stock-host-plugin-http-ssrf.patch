@@ -3,7 +3,7 @@
 @@ -93,7 +93,7 @@
    }
  }
- 
+
 -function isPrivateOrReservedIp(address: string): boolean {
 +export function isPrivateOrReservedIp(address: string): boolean {
    const lower = address.toLowerCase();
@@ -16,12 +16,12 @@
  } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
  import { recordProviderPluginSpan, type ParsedTraceparent } from "../instrumentation.js";
 +import { isPrivateOrReservedIp } from "./remote-http-endpoint-guard.js";
- 
+
  // ---------------------------------------------------------------------------
  // SSRF protection for plugin HTTP fetch
 @@ -100,40 +101,6 @@
  const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
- 
+
  /**
 - * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
 - * link-local, etc.) that plugins should never be able to reach.
@@ -63,7 +63,7 @@
 @@ -193,17 +160,15 @@
        throw new Error(`DNS resolution returned no results for ${originalHostname}`);
      }
- 
+
 -    // Filter to only non-private IPs instead of rejecting the entire request
 -    // when some IPs are private. This handles multi-homed hosts that resolve
 -    // to both private and public addresses.
@@ -77,7 +77,7 @@
 +        `Resolved IPs for ${originalHostname} include private/reserved ranges`,
        );
      }
- 
+
 -    const resolved = safeResults[0]!;
 +    const resolved = results[0]!;
      return {
