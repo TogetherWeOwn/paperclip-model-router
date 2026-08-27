@@ -1,6 +1,8 @@
-# TOG-550 — scoped private-origin access for plugin HTTP
+# TOG-550 — OmniRoute broker `JsonRpcCallError` diagnosis
 
-**Finding:** the installed OmniRoute broker is healthy through authentication, issue gating, configuration, and secret resolution. Its first management request fails in the Paperclip host's `http.fetch` JSON-RPC handler because `omniroute` resolves only to a private container address.
+> **Selected correction (2026-08-27):** use the existing public TLS management origin `https://router.infextion.net` in the installed broker configuration. **Do not deploy the proposed Paperclip host patch in this directory.** The owner applied the configuration change after confirming that the public origin reaches the correct OmniRoute management plane with the expected unauthenticated HTTP 401.
+
+**Finding:** the installed OmniRoute broker was healthy through authentication, issue gating, configuration, and secret resolution. Its first management request failed in the Paperclip host's `http.fetch` JSON-RPC handler because the original `omniroute` hostname resolved only to a private container address.
 
 ## Evidence
 
@@ -15,9 +17,19 @@
 
 This is not an OmniRoute credential or reachability failure. The host rejects the target before opening the authenticated HTTP request.
 
-## Minimal correction
+## Selected runtime correction
 
-Apply [`TOG-550-paperclip-plugin-private-origin.patch`](./TOG-550-paperclip-plugin-private-origin.patch) in the Paperclip host source tree.
+The installed broker configuration now uses:
+
+```text
+managementBaseUrl=https://router.infextion.net
+```
+
+This preserves the stock Paperclip host SSRF boundary and uses the existing public TLS route to the same management plane. After the configuration change, this run verified `whoami` returned HTTP 200 and matched the current company, agent, and run. The single instructed `providers.list` attempt could not exercise the management request because TOG-550 had already been reassigned; the broker correctly returned HTTP 403 `Issue is not assigned to the calling agent.` The current assignee owns the one remaining acceptance read.
+
+## Rejected alternative retained for diagnostic reference only
+
+[`TOG-550-paperclip-plugin-private-origin.patch`](./TOG-550-paperclip-plugin-private-origin.patch) was built and tested before the existing public TLS route was selected. It must not be deployed unless a future authorized decision explicitly reverses the selected correction.
 
 The patch adds a fail-closed instance environment variable:
 
@@ -52,21 +64,12 @@ Tests      26 passed (26)
 
 TypeScript exited 0 with no output. The tests retain all 23 stock SSRF/transport cases and add executable checks for exact plugin+origin access, wrong-port refusal, other-plugin refusal, and malformed-config refusal.
 
-## Host/operator-only deployment action
+## Remaining acceptance verification
 
-This agent can modify files inside the running container but cannot safely rebuild and restart the Paperclip container from inside itself. The host operator/source owner should:
+From the agent currently assigned to TOG-550, call `POST /api/plugins/omniroute-broker/api/issues/<issueId>/read` exactly once with body `{"verb":"providers.list"}`. Report only HTTP status, provider count, scrubbed top-level keys, and the record-key set; do not print provider records.
 
-1. Apply the patch to the company-owned Paperclip host source.
-2. Run the two commands above.
-3. Set exactly:
-   ```text
-   PAPERCLIP_PLUGIN_HTTP_PRIVATE_ORIGINS={"omniroute-broker":["http://omniroute:20128"]}
-   ```
-4. Build and restart Paperclip through the normal host deployment path.
-5. From an agent assigned to an active issue, verify `POST /api/plugins/omniroute-broker/api/issues/<issueId>/read` with body `{"verb":"providers.list"}` returns HTTP 200 and scrubbed records. Do not print full provider records; verify only status, count, and the closed output-key set.
-
-No OmniRoute provider, combo, mapping, credential, or configuration mutation is part of this correction.
+No OmniRoute provider, combo, mapping, or credential mutation is part of this correction. The only applied change was the installed broker's `managementBaseUrl`.
 
 ## Rollback
 
-Remove `PAPERCLIP_PLUGIN_HTTP_PRIVATE_ORIGINS`, reverse the patch, rebuild, and restart Paperclip. This restores the current default-deny behavior for every private destination, including OmniRoute.
+Restore the prior broker `managementBaseUrl` value if the public TLS route causes an independently demonstrated regression. Doing so also restores the original private-address rejection, so the broker's management reads will return HTTP 502 until another authorized path is selected.
