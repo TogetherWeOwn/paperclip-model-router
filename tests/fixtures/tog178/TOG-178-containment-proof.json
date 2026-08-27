@@ -1,0 +1,28 @@
+{
+  "members_tripping_cli_tripwire": [],
+  "members_in_claude_corpus": [],
+  "mapping_pattern_x_claude_matches": [],
+  "patterns_with_wildcards": [],
+  "patterns_tripping_cli_tripwire": [],
+  "patterns_hitting_reserved_forms": [],
+  "priority_unique": true,
+  "priority_all_nonzero": true,
+  "combo_names_outside_pc_prefix": [],
+  "strategies": [
+    "priority"
+  ],
+  "_overall": "PASS",
+  "_corpus": {
+    "catalogue_ids": 1757,
+    "claude_ids": 551,
+    "combo_leaf_ids": 89,
+    "combo_legs": 102,
+    "combos": 51,
+    "mappings": 51
+  },
+  "_regeneration": {
+    "date": "2026-08-27",
+    "removed_combo": "pc/ox-alpha-free",
+    "reason": "both approved legs are non-callable: opencode-go 401 unsupported, openrouter 404 retired"
+  }
+}
