@@ -1,0 +1,171 @@
+--- a/server/src/services/plugin-host-services.ts
++++ b/server/src/services/plugin-host-services.ts
+@@ -98,8 +98,50 @@
+ 
+ /** Only these protocols are allowed for plugin HTTP requests. */
+ const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
++const PLUGIN_HTTP_PRIVATE_ORIGINS_ENV = "PAPERCLIP_PLUGIN_HTTP_PRIVATE_ORIGINS";
+ const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
+ 
++function privateOriginAllowed(pluginKey: string, parsedUrl: URL): boolean {
++  const raw = process.env[PLUGIN_HTTP_PRIVATE_ORIGINS_ENV];
++  if (!raw) return false;
++
++  let config: unknown;
++  try {
++    config = JSON.parse(raw);
++  } catch {
++    throw new Error(`${PLUGIN_HTTP_PRIVATE_ORIGINS_ENV} must be valid JSON`);
++  }
++  if (typeof config !== "object" || config === null || Array.isArray(config)) {
++    throw new Error(`${PLUGIN_HTTP_PRIVATE_ORIGINS_ENV} must be an object keyed by plugin key`);
++  }
++
++  const origins = (config as Record<string, unknown>)[pluginKey];
++  if (origins === undefined) return false;
++  if (!Array.isArray(origins) || origins.some((origin) => typeof origin !== "string")) {
++    throw new Error(`${PLUGIN_HTTP_PRIVATE_ORIGINS_ENV}.${pluginKey} must be an array of origins`);
++  }
++
++  return origins.some((origin) => {
++    let allowed: URL;
++    try {
++      allowed = new URL(origin);
++    } catch {
++      throw new Error(`${PLUGIN_HTTP_PRIVATE_ORIGINS_ENV}.${pluginKey} contains an invalid URL`);
++    }
++    if (
++      !ALLOWED_PROTOCOLS.has(allowed.protocol)
++      || allowed.username
++      || allowed.password
++      || allowed.pathname !== "/"
++      || allowed.search
++      || allowed.hash
++    ) {
++      throw new Error(`${PLUGIN_HTTP_PRIVATE_ORIGINS_ENV}.${pluginKey} entries must be bare http(s) origins`);
++    }
++    return allowed.origin === parsedUrl.origin;
++  });
++}
++
+ /**
+  * Validate a URL for plugin fetch: protocol whitelist + private IP blocking.
+  *
+@@ -124,7 +166,10 @@
+   useTls: boolean;
+ }
+ 
+-async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
++async function validateAndResolveFetchUrl(
++  urlString: string,
++  options: { pluginKey: string },
++): Promise<ValidatedFetchTarget> {
+   let parsed: URL;
+   try {
+     parsed = new URL(urlString);
+@@ -160,9 +205,13 @@
+       throw new Error(`DNS resolution returned no results for ${originalHostname}`);
+     }
+ 
+-    // Fail closed if any answer is private or reserved. Accepting a public answer
+-    // beside a forbidden one would let DNS ordering decide whether the guard holds.
+-    if (results.some((entry) => isPrivateOrReservedIp(entry.address))) {
++    // Fail closed if any answer is private or reserved unless the exact origin is
++    // explicitly allowed for this plugin. The exception stays origin-scoped and
++    // DNS-pinned; it does not grant the plugin arbitrary private-network access.
++    if (
++      !privateOriginAllowed(options.pluginKey, parsed)
++      && results.some((entry) => isPrivateOrReservedIp(entry.address))
++    ) {
+       throw new Error(
+         `Resolved IPs for ${originalHostname} include private/reserved ranges`,
+       );
+@@ -1530,9 +1579,10 @@
+ 
+     http: {
+       async fetch(params) {
+-        // SSRF protection: validate protocol whitelist + block private IPs.
++        // SSRF protection: validate protocol whitelist + block private IPs unless
++        // this plugin and exact origin have an explicit instance allowlist entry.
+         // Resolve once, then connect directly to that IP to prevent DNS rebinding.
+-        const target = await validateAndResolveFetchUrl(params.url);
++        const target = await validateAndResolveFetchUrl(params.url, { pluginKey });
+ 
+         const controller = new AbortController();
+         const timeout = setTimeout(() => controller.abort(), PLUGIN_FETCH_TIMEOUT_MS);
+--- a/server/src/__tests__/plugin-host-services-http-fetch.test.ts
++++ b/server/src/__tests__/plugin-host-services-http-fetch.test.ts
+@@ -94,9 +94,11 @@
+     mocks.lookup.mockReset();
+     mocks.httpRequest.mockReset();
+     mocks.httpsRequest.mockReset();
++    delete process.env.PAPERCLIP_PLUGIN_HTTP_PRIVATE_ORIGINS;
+   });
+ 
+   afterEach(() => {
++    delete process.env.PAPERCLIP_PLUGIN_HTTP_PRIVATE_ORIGINS;
+     vi.clearAllTimers();
+   });
+ 
+@@ -136,6 +138,61 @@
+     services.dispose();
+   });
+ 
++  it("allows only an exact private origin explicitly scoped to the plugin key", async () => {
++    process.env.PAPERCLIP_PLUGIN_HTTP_PRIVATE_ORIGINS = JSON.stringify({
++      "test.plugin": ["http://omniroute:20128"],
++    });
++    const services = createServices();
++    mocks.lookup.mockResolvedValue([{ address: "10.89.0.20", family: 4 }]);
++    mockHttpResponse(200, "OK", { "content-type": "application/json" }, '{"providers":[]}');
++
++    const result = await services.http.fetch({
++      url: "http://omniroute:20128/api/providers",
++    });
++
++    expect(mocks.httpRequest).toHaveBeenCalledTimes(1);
++    expect(mocks.httpRequest.mock.calls[0]![0]).toMatchObject({
++      host: "10.89.0.20",
++      port: 20128,
++      path: "/api/providers",
++    });
++    expect(result.status).toBe(200);
++
++    mocks.httpRequest.mockClear();
++    await expect(services.http.fetch({
++      url: "http://omniroute:20129/api/providers",
++    })).rejects.toThrow("Resolved IPs for omniroute include private/reserved ranges");
++    expect(mocks.httpRequest).not.toHaveBeenCalled();
++    services.dispose();
++  });
++
++  it("does not apply a private-origin allowlist entry to another plugin", async () => {
++    process.env.PAPERCLIP_PLUGIN_HTTP_PRIVATE_ORIGINS = JSON.stringify({
++      "other.plugin": ["http://omniroute:20128"],
++    });
++    const services = createServices();
++    mocks.lookup.mockResolvedValue([{ address: "10.89.0.20", family: 4 }]);
++
++    await expect(services.http.fetch({
++      url: "http://omniroute:20128/api/providers",
++    })).rejects.toThrow("Resolved IPs for omniroute include private/reserved ranges");
++    expect(mocks.httpRequest).not.toHaveBeenCalled();
++    services.dispose();
++  });
++
++  it("fails closed on malformed private-origin configuration for a private target", async () => {
++    process.env.PAPERCLIP_PLUGIN_HTTP_PRIVATE_ORIGINS = "not-json";
++    const services = createServices();
++    mocks.lookup.mockResolvedValue([{ address: "10.89.0.20", family: 4 }]);
++
++    await expect(services.http.fetch({
++      url: "http://omniroute:20128/api/providers",
++    })).rejects.toThrow("PAPERCLIP_PLUGIN_HTTP_PRIVATE_ORIGINS must be valid JSON");
++    expect(mocks.lookup).toHaveBeenCalledTimes(1);
++    expect(mocks.httpRequest).not.toHaveBeenCalled();
++    services.dispose();
++  });
++
+   it("pins a public address, preserves Host, and returns redirects without following", async () => {
+     const services = createServices();
+     mocks.lookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
