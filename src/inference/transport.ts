@@ -29,6 +29,7 @@ function isHostUrlRejection(cause: unknown): boolean {
   return message.startsWith("invalid url:") ||
     message.startsWith("disallowed protocol ") ||
     message.startsWith("all resolved ips for ") ||
+    message.startsWith("resolved ips for ") ||
     message.startsWith("dns resolution returned no results for ") ||
     message.startsWith("dns lookup timed out after ") ||
     message.startsWith("dns resolution failed for ") ||

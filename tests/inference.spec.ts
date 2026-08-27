@@ -217,6 +217,7 @@ describe("single-attempt transport", () => {
     for (const cause of [
       new TypeError("blocked"),
       new JsonRpcCallError({ code: -32603, message: "All resolved IPs for private.example are in private/reserved ranges" }),
+      new JsonRpcCallError({ code: -32603, message: "Resolved IPs for private.example include private/reserved ranges" }),
       new JsonRpcCallError({ code: -32603, message: 'Disallowed protocol "file:" — only http: and https: are permitted' }),
       new JsonRpcCallError({ code: -32603, message: "url resolves to a private, local, multicast, or reserved address" }),
     ]) {
