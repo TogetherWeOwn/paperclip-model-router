@@ -1,0 +1,271 @@
+--- a/server/src/services/remote-http-endpoint-guard.ts
++++ b/server/src/services/remote-http-endpoint-guard.ts
+@@ -93,7 +93,7 @@
+   }
+ }
+ 
+-function isPrivateOrReservedIp(address: string): boolean {
++export function isPrivateOrReservedIp(address: string): boolean {
+   const lower = address.toLowerCase();
+   const mappedIpv4 = lower.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+   if (mappedIpv4?.[1]) return isPrivateOrReservedIpv4(mappedIpv4[1]);
+--- a/server/src/services/plugin-host-services.ts
++++ b/server/src/services/plugin-host-services.ts
+@@ -84,6 +84,7 @@
+   SANDBOX_STARTUP_SPAN_ATTRS,
+ } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+ import { recordProviderPluginSpan, type ParsedTraceparent } from "../instrumentation.js";
++import { isPrivateOrReservedIp } from "./remote-http-endpoint-guard.js";
+ 
+ // ---------------------------------------------------------------------------
+ // SSRF protection for plugin HTTP fetch
+@@ -100,40 +101,6 @@
+ const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
+ 
+ /**
+- * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
+- * link-local, etc.) that plugins should never be able to reach.
+- *
+- * Handles IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1) which Node's
+- * dns.lookup may return depending on OS configuration.
+- */
+-function isPrivateIP(ip: string): boolean {
+-  const lower = ip.toLowerCase();
+-
+-  // Unwrap IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) and re-check as IPv4
+-  const v4MappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+-  if (v4MappedMatch && v4MappedMatch[1]) return isPrivateIP(v4MappedMatch[1]);
+-
+-  // IPv4 patterns
+-  if (ip.startsWith("10.")) return true;
+-  if (ip.startsWith("172.")) {
+-    const second = parseInt(ip.split(".")[1]!, 10);
+-    if (second >= 16 && second <= 31) return true;
+-  }
+-  if (ip.startsWith("192.168.")) return true;
+-  if (ip.startsWith("127.")) return true;                   // loopback
+-  if (ip.startsWith("169.254.")) return true;               // link-local
+-  if (ip === "0.0.0.0") return true;
+-
+-  // IPv6 patterns
+-  if (lower === "::1") return true;                          // loopback
+-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
+-  if (lower.startsWith("fe80")) return true;                 // link-local
+-  if (lower === "::") return true;
+-
+-  return false;
+-}
+-
+-/**
+  * Validate a URL for plugin fetch: protocol whitelist + private IP blocking.
+  *
+  * SSRF Prevention Strategy:
+@@ -193,17 +160,15 @@
+       throw new Error(`DNS resolution returned no results for ${originalHostname}`);
+     }
+ 
+-    // Filter to only non-private IPs instead of rejecting the entire request
+-    // when some IPs are private. This handles multi-homed hosts that resolve
+-    // to both private and public addresses.
+-    const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
+-    if (safeResults.length === 0) {
++    // Fail closed if any answer is private or reserved. Accepting a public answer
++    // beside a forbidden one would let DNS ordering decide whether the guard holds.
++    if (results.some((entry) => isPrivateOrReservedIp(entry.address))) {
+       throw new Error(
+-        `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
++        `Resolved IPs for ${originalHostname} include private/reserved ranges`,
+       );
+     }
+ 
+-    const resolved = safeResults[0]!;
++    const resolved = results[0]!;
+     return {
+       parsedUrl: parsed,
+       resolvedAddress: resolved.address,
+@@ -216,7 +181,7 @@
+   } catch (err) {
+     // Re-throw our own errors; wrap DNS failures
+     if (err instanceof Error && (
+-      err.message.startsWith("All resolved IPs") ||
++      err.message.startsWith("Resolved IPs") ||
+       err.message.startsWith("DNS resolution returned") ||
+       err.message.startsWith("DNS lookup timed out")
+     )) throw err;
+--- a/server/src/__tests__/plugin-host-services-http-fetch.test.ts
++++ b/server/src/__tests__/plugin-host-services-http-fetch.test.ts
+@@ -0,0 +1,174 @@
++import { EventEmitter } from "node:events";
++import { Readable } from "node:stream";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { buildHostServices } from "../services/plugin-host-services.js";
++
++const mocks = vi.hoisted(() => ({
++  lookup: vi.fn(),
++  httpRequest: vi.fn(),
++  httpsRequest: vi.fn(),
++}));
++
++vi.mock("node:dns/promises", async (importOriginal) => {
++  const actual = await importOriginal<typeof import("node:dns/promises")>();
++  return { ...actual, lookup: mocks.lookup };
++});
++
++vi.mock("node:http", async (importOriginal) => {
++  const actual = await importOriginal<typeof import("node:http")>();
++  return { ...actual, request: mocks.httpRequest };
++});
++
++vi.mock("node:https", async (importOriginal) => {
++  const actual = await importOriginal<typeof import("node:https")>();
++  return { ...actual, request: mocks.httpsRequest };
++});
++
++function createEventBusStub() {
++  return {
++    forPlugin() {
++      return { emit: vi.fn(), subscribe: vi.fn(), clear: vi.fn() };
++    },
++  } as never;
++}
++
++function createServices() {
++  return buildHostServices({} as never, "plugin-record-id", "test.plugin", createEventBusStub());
++}
++
++function mockHttpResponse(
++  statusCode: number,
++  statusMessage: string,
++  headers: Record<string, string>,
++  body: string,
++) {
++  mocks.httpRequest.mockImplementation(
++    (_options: unknown, onResponse: (response: unknown) => void) => {
++      const request = new EventEmitter() as EventEmitter & {
++        write: ReturnType<typeof vi.fn>;
++        end: ReturnType<typeof vi.fn>;
++      };
++      request.write = vi.fn();
++      request.end = vi.fn(() => {
++        const response = Readable.from([body]) as Readable & {
++          statusCode: number;
++          statusMessage: string;
++          headers: Record<string, string>;
++        };
++        response.statusCode = statusCode;
++        response.statusMessage = statusMessage;
++        response.headers = headers;
++        onResponse(response);
++      });
++      return request;
++    },
++  );
++}
++
++const FORBIDDEN_RESOLVED_ADDRESSES = [
++  ["CGNAT", "100.64.0.1"],
++  ["IPv4 protocol assignments", "192.0.0.8"],
++  ["IPv4 documentation", "192.0.2.1"],
++  ["IPv4 benchmarking", "198.18.0.1"],
++  ["IPv4 reserved", "240.0.0.1"],
++  ["IPv4-mapped IPv6 dotted", "::ffff:127.0.0.1"],
++  ["IPv4-mapped IPv6 hexadecimal", "::ffff:7f00:1"],
++  ["IPv6 discard-only", "100::1"],
++  ["IPv6 benchmarking", "2001:2::1"],
++  ["IPv6 ORCHID", "2001:20::1"],
++  ["IPv6 documentation", "2001:db8::1"],
++  ["IPv6 6to4", "2002::1"],
++  ["IPv6 NAT64", "64:ff9b:1::1"],
++  ["IPv6 multicast", "ff02::1"],
++] as const;
++
++describe("stock plugin HostServices HTTP fetch", () => {
++  beforeEach(() => {
++    mocks.lookup.mockReset();
++    mocks.httpRequest.mockReset();
++    mocks.httpsRequest.mockReset();
++  });
++
++  afterEach(() => {
++    vi.clearAllTimers();
++  });
++
++  it.each(FORBIDDEN_RESOLVED_ADDRESSES)(
++    "rejects %s resolved address %s before making a request",
++    async (_range, address) => {
++      const services = createServices();
++      mocks.lookup.mockResolvedValue([{ address, family: address.includes(":") ? 6 : 4 }]);
++      // If the guard accepts the address, the transport returns a successful
++      // response so the rejection assertion fails as an executable mutation test.
++      mockHttpResponse(200, "OK", {}, "unexpected request");
++
++      await expect(services.http.fetch({
++        url: "http://api.example.test/resource",
++      })).rejects.toThrow("Resolved IPs for api.example.test include private/reserved ranges");
++
++      expect(mocks.lookup).toHaveBeenCalledWith("api.example.test", { all: true });
++      expect(mocks.httpRequest).not.toHaveBeenCalled();
++      expect(mocks.httpsRequest).not.toHaveBeenCalled();
++      services.dispose();
++    },
++  );
++
++  it("rejects a mixed public and forbidden DNS answer", async () => {
++    const services = createServices();
++    mocks.lookup.mockResolvedValue([
++      { address: "93.184.216.34", family: 4 },
++      { address: "100.64.0.1", family: 4 },
++    ]);
++
++    await expect(services.http.fetch({
++      url: "http://api.example.test/resource",
++    })).rejects.toThrow("Resolved IPs for api.example.test include private/reserved ranges");
++
++    expect(mocks.httpRequest).not.toHaveBeenCalled();
++    expect(mocks.httpsRequest).not.toHaveBeenCalled();
++    services.dispose();
++  });
++
++  it("pins a public address, preserves Host, and returns redirects without following", async () => {
++    const services = createServices();
++    mocks.lookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
++    mockHttpResponse(
++      302,
++      "Found",
++      { location: "https://redirect.example.test/final" },
++      "redirect body",
++    );
++
++    const result = await services.http.fetch({
++      url: "http://api.example.test:8080/start?x=1",
++    });
++
++    expect(mocks.lookup).toHaveBeenCalledTimes(1);
++    expect(mocks.httpRequest).toHaveBeenCalledTimes(1);
++    expect(mocks.httpsRequest).not.toHaveBeenCalled();
++
++    const options = mocks.httpRequest.mock.calls[0]![0] as {
++      protocol: string;
++      host: string;
++      port: number;
++      path: string;
++      method: string;
++      headers: HeadersInit;
++    };
++    expect(options).toMatchObject({
++      protocol: "http:",
++      host: "93.184.216.34",
++      port: 8080,
++      path: "/start?x=1",
++      method: "GET",
++    });
++    expect(new Headers(options.headers).get("host")).toBe("api.example.test:8080");
++    expect(result).toEqual({
++      status: 302,
++      statusText: "Found",
++      headers: { location: "https://redirect.example.test/final" },
++      body: "redirect body",
++    });
++    services.dispose();
++  });
++});
