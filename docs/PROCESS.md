@@ -50,6 +50,36 @@ configure, verify, roll back, and the blast-radius rules.
    version has no changelog entry and no matching `PLUGIN_VERSION`.
 5. **Architectural choices get a decision record**, added in the same PR that
    implements them.
+6. **You cannot push `.github/workflows/`. Nobody here can.** Read this before
+   you edit a workflow, not after the push is rejected — it has already cost two
+   pieces of finished work.
+
+   The App the agents authenticate as has no `workflows` permission, and the
+   token broker refuses to mint it (`403: Permission "workflows" is not in this
+   project's profile`). `GH_APP_SCOPE_STRICT=1` and broker-derived scope can only
+   be narrowed, so there is no way to widen it from a run and no fallback to try.
+   It is deliberate — [`docs/decisions/0008`](decisions/0008-workflow-files-are-operator-applied.md)
+   — and it is not going to be lifted for your change.
+
+   So hand it over instead. Generate the patch against the current tree, check it
+   in under `docs/operator/`, and describe it in the PR like any other change:
+
+   ```bash
+   git diff -- .github/workflows/ci.yml > docs/operator/tog-NNN-what-it-does.patch
+   git checkout -- .github/workflows/ci.yml   # you cannot push this file
+   npm run check:workflows                    # red while it is pending, by design
+   ```
+
+   `npm run check:workflows` is the gate: it fails if a queued patch no longer
+   applies, if a pinned scanner digest has drifted from the publisher, or if a
+   script is wired up *only* inside a patch nobody has applied. That last one is
+   how `scripts/gitleaks-selftest.sh` spent its first day asserting nothing while
+   the `secret scan` job reported green. **Verify the patch by applying it
+   locally and running the thing it changes** — the operator gets one attempt and
+   cannot debug it.
+
+   [`docs/OPERATIONS.md`](OPERATIONS.md) → "Applying an operator-only change" is
+   the other half, written for whoever applies it.
 
 ## Release
 

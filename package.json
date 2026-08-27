@@ -31,6 +31,7 @@
     "verify:host": "node scripts/verify-against-host.mjs",
     "rehearse": "node scripts/acceptance-rehearsal.mjs",
     "check:pin": "node scripts/release-pin-check.mjs",
+    "check:workflows": "node scripts/check-workflows.mjs",
     "preflight:tog178": "node scripts/tog178-catalogue-revalidate.mjs"
   },
   "dependencies": {
