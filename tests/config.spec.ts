@@ -74,14 +74,29 @@ describe("compatible-upstream config", () => {
     "https://198.18.0.1",
     "https://203.0.113.1",
     "https://[::1]",
+    "https://[64:ff9b::1]",
+    "https://[64:ff9b::ffff:ffff]",
     "https://[64:ff9b:1::1]",
     "https://[2001:db8::1]",
     "https://[3fff::1]",
+    "https://[3fff:fff::1]",
     "https://[::ffff:127.0.0.1]",
   ])("rejects reserved literal upstream %s", (baseUrl) => {
     const config = resolveConfig(readFixture("company-a"));
     config.upstream.baseUrl = baseUrl;
     expect(validateUpstreamConfig(config.upstream)).toContain("upstream.baseUrl must not use a private or reserved literal address");
+  });
+
+  it.each([
+    "https://[64:ff9a:ffff:ffff:ffff:ffff:ffff:ffff]",
+    "https://[64:ff9b:0:0:0:1::]",
+    "https://[3ffe:ffff:ffff:ffff:ffff:ffff:ffff:ffff]",
+    "https://[3fff:1000::1]",
+    "https://[4000::1]",
+  ])("allows global literal upstream boundary %s", (baseUrl) => {
+    const config = resolveConfig(readFixture("company-a"));
+    config.upstream.baseUrl = baseUrl;
+    expect(validateUpstreamConfig(config.upstream)).toEqual([]);
   });
 
   it("fails closed for unknown persisted protocols", () => {

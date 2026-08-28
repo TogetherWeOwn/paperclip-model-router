@@ -105,6 +105,7 @@ function isReservedIpv6(words: Ipv6): boolean {
     (words[0] & 0xfe00) === 0xfc00 ||
     (words[0] & 0xffc0) === 0xfe80 ||
     (words[0] & 0xff00) === 0xff00 ||
+    (words[0] === 0x0064 && words[1] === 0xff9b && words[2] === 0x0000 && words[3] === 0x0000 && words[4] === 0x0000 && words[5] === 0x0000) ||
     (words[0] === 0x0064 && words[1] === 0xff9b && words[2] === 0x0001) ||
     (words[0] === 0x0100 && words.slice(1, 4).every((word) => word === 0)) ||
     (words[0] === 0x2001 && words[1] === 0x0000) ||
@@ -113,7 +114,7 @@ function isReservedIpv6(words: Ipv6): boolean {
     (words[0] === 0x2001 && (words[1] & 0xfff0) === 0x0020) ||
     (words[0] === 0x2001 && words[1] === 0x0db8) ||
     words[0] === 0x2002 ||
-    (words[0] & 0xfff0) === 0x3ff0;
+    (words[0] === 0x3fff && (words[1] & 0xf000) === 0x0000);
 }
 
 export function isReservedLiteralHost(hostname: string): boolean {
