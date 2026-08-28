@@ -100,7 +100,8 @@ export async function invokeCompatibleUpstream(input: {
 
   try {
     if (response.status >= 300 && response.status < 400) {
-      return { response: null, error: classifyHttpError(response.status, null) };
+      const requestId = upstreamRequestId(response.headers, null);
+      return { response: null, error: classifyHttpError(response.status, requestId) };
     }
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
     const contentEncoding = response.headers.get("content-encoding")?.toLowerCase() ?? "identity";

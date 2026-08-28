@@ -247,13 +247,22 @@ describe("single-attempt transport", () => {
   it.each([301, 302, 303, 307, 308])("classifies HTTP %s as redirect before media or body validation", async (status) => {
     const config = fixtureConfig("company-a").upstream;
     const result = await invokeCompatibleUpstream({
-      http: { fetch: async () => rawResponse("not-json", status, { "content-type": "text/html", "location": "https://redirect.example/elsewhere" }) },
+      http: { fetch: async () => rawResponse("not-json", status, {
+        "content-type": "text/html",
+        "location": "https://redirect.example/elsewhere",
+        "x-request-id": `redirect-request-${status}`,
+      }) },
       config,
       credential: "resolved-value",
       request,
       modelId: "m",
     });
-    expect(result.error).toMatchObject({ code: "upstream-redirect", retryable: false, upstreamStatus: status });
+    expect(result.error).toMatchObject({
+      code: "upstream-redirect",
+      retryable: false,
+      upstreamStatus: status,
+      upstreamRequestId: `redirect-request-${status}`,
+    });
   });
 
   it("returns caller-visible timeout without starting another request", async () => {
