@@ -23,7 +23,7 @@ export interface RoutingConfig {
 }
 
 export interface CompatibleUpstreamConfig {
-  protocol: CompatibleUpstreamProtocol;
+  protocol: CompatibleUpstreamProtocol | null;
   baseUrl: string;
   credentialSecretRef: SecretRef | null;
   requestTimeoutMs: number;

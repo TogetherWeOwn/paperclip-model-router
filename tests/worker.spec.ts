@@ -71,6 +71,16 @@ describe("one select-invoke-normalize-record path", () => {
     expect(secretCalls).toEqual([{ secretId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: COMPANY_A, configPath: "upstream.credentialSecretRef" }]);
   });
 
+  it("resolves the secret again for every invocation without caching", async () => {
+    const { harness, secretCalls } = await sharedWorker();
+    await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A });
+    await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A });
+    expect(secretCalls).toEqual([
+      { secretId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: COMPANY_A, configPath: "upstream.credentialSecretRef" },
+      { secretId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: COMPANY_A, configPath: "upstream.credentialSecretRef" },
+    ]);
+  });
+
   it("uses the action host context and returns the same InferenceResult", async () => {
     const { harness, httpCalls } = await sharedWorker();
     const result = await harness.performAction(ACTION_KEYS.invoke, invocation, {
@@ -81,10 +91,30 @@ describe("one select-invoke-normalize-record path", () => {
     expect(httpCalls[0]?.url).toBe("https://company-b.example/compatible/v1/messages");
   });
 
-  it("rejects invalid stored upstream config before secret resolution or HTTP", async () => {
+  it.each([
+    ["invalid URL", { baseUrl: "https://user:pass@company-a.example/api" }],
+    ["unknown protocol", { protocol: "future-provider-wire" }],
+    ["timeout below runtime bound", { requestTimeoutMs: 999 }],
+    ["response ceiling above runtime bound", { maxResponseBytes: 16_777_217 }],
+  ])("rejects %s in stored upstream config before secret resolution or HTTP", async (_label, patch) => {
     const { harness, httpCalls, secretCalls, configs } = await sharedWorker();
     const invalid = structuredClone(configs.get(COMPANY_A)!);
-    (invalid.upstream as Record<string, unknown>).baseUrl = "https://user:pass@company-a.example/api";
+    Object.assign(invalid.upstream as Record<string, unknown>, patch);
+    configs.set(COMPANY_A, invalid);
+    const result = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as { outcome: string; error: { code: string } };
+    expect(result).toMatchObject({ outcome: "error", error: { code: "upstream-url-rejected" } });
+    expect(httpCalls).toHaveLength(0);
+    expect(secretCalls).toHaveLength(0);
+  });
+
+  it("rejects fixed semantic headers in stored config before secret resolution or HTTP", async () => {
+    const { harness, httpCalls, secretCalls, configs } = await sharedWorker();
+    const invalid = structuredClone(configs.get(COMPANY_A)!);
+    Object.assign((invalid.upstream as Record<string, unknown>).extraHeaders as Record<string, string>, {
+      "aNtHrOpIc-BeTa": "unsafe",
+      "content-TYPE": "text/plain",
+      Accept: "text/event-stream",
+    });
     configs.set(COMPANY_A, invalid);
     const result = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as { outcome: string; error: { code: string } };
     expect(result).toMatchObject({ outcome: "error", error: { code: "upstream-url-rejected" } });

@@ -27,10 +27,12 @@ harness.ctx.config = {
   },
 };
 const secretCalls = [];
+let secretSequence = 0;
 harness.ctx.secrets = {
   async resolve(ref, options) {
+    secretSequence += 1;
     secretCalls.push({ secretId: ref.secretId, companyId: options?.companyId, configPath: options?.configPath });
-    return options?.companyId === COMPANY_A ? "runtime-a" : "runtime-b";
+    return `runtime-${options?.companyId === COMPANY_A ? "a" : "b"}-${secretSequence}`;
   },
 };
 const httpCalls = [];
@@ -65,25 +67,27 @@ check("the built bundle contains no direct networking imports", !/node:(?:http|h
 check("the built bundle uses the stock host HTTP boundary", workerSource.includes(".http.fetch") || workerSource.includes("http: t.http"));
 
 const resultA = await harness.performAction("invoke", invocation, { companyId: COMPANY_A });
+const resultA2 = await harness.performAction("invoke", invocation, { companyId: COMPANY_A });
 const resultB = await harness.performAction("invoke", invocation, { companyId: COMPANY_B });
-check("company A completes through its OpenAI-compatible upstream", resultA.outcome === "completed" && resultA.response.upstream.protocol === "openai-chat-completions" && resultA.response.modelId === "minimax-m2.5");
+check("company A completes through its OpenAI-compatible upstream", resultA.outcome === "completed" && resultA2.outcome === "completed" && resultA.response.upstream.protocol === "openai-chat-completions" && resultA.response.modelId === "minimax-m2.5");
 check("company B completes through its Anthropic-compatible upstream", resultB.outcome === "completed" && resultB.response.upstream.protocol === "anthropic-messages" && resultB.response.modelId === "gpt-4.1");
 check("the same invocation selects differently only because company config differs", resultA.response.modelId !== resultB.response.modelId);
-check("each company uses its own base URL", httpCalls.map((call) => call.url).join("|") === "https://company-a.example/api/v1/chat/completions|https://company-b.example/compatible/v1/messages");
+check("each company uses its own base URL", httpCalls.map((call) => call.url).join("|") === "https://company-a.example/api/v1/chat/completions|https://company-a.example/api/v1/chat/completions|https://company-b.example/compatible/v1/messages");
 check("each call disables redirects", httpCalls.every((call) => call.redirect === "manual"));
 check("each call sends Accept-Encoding identity", httpCalls.every((call) => Object.entries(call.headers).some(([name, value]) => name.toLowerCase() === "accept-encoding" && value === "identity")));
-check("secret resolution is call-time and company-scoped", secretCalls.length === 2 && secretCalls[0].companyId === COMPANY_A && secretCalls[1].companyId === COMPANY_B && secretCalls.every((call) => call.configPath === "upstream.credentialSecretRef"));
+check("secret resolution is repeated at call time and company-scoped", secretCalls.length === 3 && secretCalls[0].companyId === COMPANY_A && secretCalls[1].companyId === COMPANY_A && secretCalls[2].companyId === COMPANY_B && secretCalls.every((call) => call.configPath === "upstream.credentialSecretRef"));
+check("repeated calls receive distinct secret resolutions rather than a cached credential", httpCalls[0].headers.Authorization !== httpCalls[1].headers.Authorization);
 
 const rule0 = await harness.performAction("invoke", {
   task: { taskClass: "mechanical", summary: "lint the repo" },
   messages: [{ role: "user", content: "lint" }],
   maxOutputTokens: 10,
 }, { companyId: COMPANY_A });
-check("Rule 0 makes no upstream or secret request", rule0.outcome === "no-model-needed" && httpCalls.length === 2 && secretCalls.length === 2);
+check("Rule 0 makes no upstream or secret request", rule0.outcome === "no-model-needed" && httpCalls.length === 3 && secretCalls.length === 3);
 
 const logA = harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: "decision-log" }) ?? [];
 const logB = harness.getState({ scopeKind: "company", scopeId: COMPANY_B, stateKey: "decision-log" }) ?? [];
-check("decision records are company-scoped", logA.length === 2 && logB.length === 1);
+check("decision records are company-scoped", logA.length === 3 && logB.length === 1);
 check("decision records contain no request content or credential", !JSON.stringify([logA, logB]).includes("hello") && !JSON.stringify([logA, logB]).includes("runtime-a") && !JSON.stringify([logA, logB]).includes("runtime-b"));
 
 console.log(`\n${failures === 0 ? "REHEARSAL PASSED" : `REHEARSAL FAILED — ${failures} check(s) failed`}`);

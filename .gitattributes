@@ -1,0 +1,2 @@
+# Unified-diff context records contain a structural leading space.
+docs/operator/*.patch whitespace=-blank-at-eol

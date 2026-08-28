@@ -1,3 +1,15 @@
+import { createInterface } from "node:readline";
+import { PassThrough } from "node:stream";
+
+import {
+  createRequest,
+  createSuccessResponse,
+  definePlugin,
+  JsonRpcCallError,
+  parseMessage,
+  serializeMessage,
+  startWorkerRpcHost,
+} from "@paperclipai/plugin-sdk";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -43,6 +55,50 @@ function response(body: unknown, status = 200, headers: Record<string, string> =
 
 function rawResponse(body: string, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(body, { status, headers });
+}
+
+async function fetchThroughSdk(responseResult: {
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  body: string;
+}): Promise<Response> {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  stdout.setEncoding("utf8");
+  let contextFetch: ((url: string, init?: RequestInit) => Promise<Response>) | undefined;
+  const plugin = definePlugin({
+    async setup(ctx) {
+      contextFetch = ctx.http.fetch.bind(ctx.http);
+    },
+  });
+  const host = startWorkerRpcHost({ plugin, stdin, stdout });
+  const lines = createInterface({ input: stdout });
+  const messages = lines[Symbol.asyncIterator]();
+  const workerMessage = async (): Promise<Record<string, unknown>> => {
+    const next = await messages.next();
+    if (next.done) throw new Error("SDK worker output ended early");
+    return parseMessage(next.value) as unknown as Record<string, unknown>;
+  };
+
+  try {
+    stdin.write(serializeMessage(createRequest(
+      "initialize",
+      { manifest: {}, config: {} },
+      "initialize",
+    )));
+    await workerMessage();
+    if (!contextFetch) throw new Error("SDK context did not initialize");
+    const requestPromise = contextFetch("https://upstream.example/v1/messages", { method: "POST" });
+    const outbound = await workerMessage();
+    if (typeof outbound.id !== "string" && typeof outbound.id !== "number") {
+      throw new Error("SDK request did not include an id");
+    }
+    stdin.write(serializeMessage(createSuccessResponse(outbound.id, responseResult)));
+    return await requestPromise;
+  } finally {
+    host.stop();
+  }
 }
 
 describe("exact compatible-upstream wires", () => {
@@ -160,6 +216,8 @@ describe("runtime request validation", () => {
     expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "tool", content: "result" }], maxOutputTokens: 10 }, 100)).toThrow("toolCallId");
     expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "user", content: "hi" }], maxOutputTokens: 101 }, 100)).toThrow("company maximum");
     expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "user", content: [{ type: "image_url", url: "https://images.example/a.png" }] }], maxOutputTokens: 10 }, 100, "anthropic-messages")).toThrow("image_url");
+    expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "user", content: [{ type: "image_url", url: "data:image/png;base64,AAAA" }] }], maxOutputTokens: 10 }, 100, "openai-chat-completions")).toThrow("inline data");
+    expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "user", content: [{ type: "image_url", url: "images.example/a.png" }] }], maxOutputTokens: 10 }, 100, "openai-chat-completions")).toThrow("absolute http or https URL");
     expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "user", content: [{ type: "tool_call", id: "x", name: "lookup", arguments: {} }] }], maxOutputTokens: 10 }, 100)).toThrow("assistant role");
     expect(() => parseInvokeRequest({ task: {}, messages: [{ role: "assistant", content: [{ type: "tool_result", toolCallId: "x", content: "done" }] }], maxOutputTokens: 10 }, 100)).toThrow("tool_result");
   });
@@ -209,12 +267,82 @@ describe("single-attempt transport", () => {
     expect(result.error?.code).toBe("upstream-response-too-large");
   });
 
-  it("maps host URL rejection and network failure separately", async () => {
+  it("maps stock SDK host URL rejection and network failure separately", async () => {
     const config = fixtureConfig("company-a").upstream;
-    const rejected = await invokeCompatibleUpstream({ http: { fetch: async () => { throw new TypeError("blocked"); } }, config, credential: "resolved-value", request, modelId: "m" });
-    expect(rejected.error?.code).toBe("upstream-url-rejected");
-    const unavailable = await invokeCompatibleUpstream({ http: { fetch: async () => { throw new Error("connect failed"); } }, config, credential: "resolved-value", request, modelId: "m" });
-    expect(unavailable.error?.code).toBe("upstream-connect");
+    for (const cause of [
+      new JsonRpcCallError({ code: -32603, message: "All resolved IPs for private.example are in private/reserved ranges" }),
+      new JsonRpcCallError({ code: -32603, message: "Resolved IPs for private.example include private/reserved ranges" }),
+      new JsonRpcCallError({ code: -32603, message: 'Disallowed protocol "file:" — only http: and https: are permitted' }),
+      new JsonRpcCallError({ code: -32603, message: "url resolves to a private, local, multicast, or reserved address" }),
+    ]) {
+      const rejected = await invokeCompatibleUpstream({ http: { fetch: async () => { throw cause; } }, config, credential: "resolved-value", request, modelId: "m" });
+      expect(rejected.error).toMatchObject({ code: "upstream-url-rejected", retryable: false });
+    }
+    for (const message of [
+      "DNS resolution returned no results for upstream.example",
+      "DNS lookup timed out after 5000ms for upstream.example",
+      "DNS resolution failed for upstream.example: temporary failure",
+      "socket hang up",
+    ]) {
+      const unavailable = await invokeCompatibleUpstream({ http: { fetch: async () => { throw new JsonRpcCallError({ code: -32603, message }); } }, config, credential: "resolved-value", request, modelId: "m" });
+      expect(unavailable.error).toMatchObject({ code: "upstream-connect", retryable: true });
+    }
+    const typeError = await invokeCompatibleUpstream({ http: { fetch: async () => { throw new TypeError("socket closed"); } }, config, credential: "resolved-value", request, modelId: "m" });
+    expect(typeError.error).toMatchObject({ code: "upstream-connect", retryable: true });
+  });
+
+  it("fails closed before HTTP when called with an unknown runtime protocol", async () => {
+    const config = fixtureConfig("company-a").upstream;
+    (config as { protocol: string | null }).protocol = "future-provider-wire";
+    const fetch = vi.fn();
+    const result = await invokeCompatibleUpstream({ http: { fetch }, config, credential: "resolved-value", request, modelId: "m" });
+    expect(result.error).toMatchObject({ code: "upstream-url-rejected", retryable: false });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("classifies SDK-reconstructed HTTP 304 as redirect instead of URL rejection", async () => {
+    const config = fixtureConfig("company-a").upstream;
+    const result = await invokeCompatibleUpstream({
+      http: {
+        fetch: async () => fetchThroughSdk({
+          status: 304,
+          statusText: "Not Modified",
+          headers: { "x-request-id": "sdk-304-request" },
+          body: "",
+        }),
+      },
+      config,
+      credential: "resolved-value",
+      request,
+      modelId: "m",
+    });
+    expect(result.error).toMatchObject({
+      code: "upstream-redirect",
+      retryable: false,
+      upstreamStatus: 304,
+      upstreamRequestId: null,
+    });
+  });
+
+  it.each([301, 302, 303, 307, 308])("classifies HTTP %s as redirect before media or body validation", async (status) => {
+    const config = fixtureConfig("company-a").upstream;
+    const result = await invokeCompatibleUpstream({
+      http: { fetch: async () => rawResponse("not-json", status, {
+        "content-type": "text/html",
+        "location": "https://redirect.example/elsewhere",
+        "x-request-id": `redirect-request-${status}`,
+      }) },
+      config,
+      credential: "resolved-value",
+      request,
+      modelId: "m",
+    });
+    expect(result.error).toMatchObject({
+      code: "upstream-redirect",
+      retryable: false,
+      upstreamStatus: status,
+      upstreamRequestId: `redirect-request-${status}`,
+    });
   });
 
   it("returns caller-visible timeout without starting another request", async () => {

@@ -1,3 +1,4 @@
+import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
 import type { PluginHttpClient } from "@paperclipai/plugin-sdk";
 
 import type { CompatibleUpstreamConfig } from "../config/types.js";
@@ -21,6 +22,25 @@ function error(code: InferenceError["code"], message: string, retryable: boolean
   return { response: null, error: { code, message, retryable, upstreamStatus: null, upstreamRequestId: null } };
 }
 
+function sdkReconstructedEmptyResponseStatus(cause: unknown): 204 | 205 | 304 | null {
+  if (!(cause instanceof TypeError)) return null;
+  const match = /^Response constructor: Invalid response status code (204|205|304)$/.exec(cause.message);
+  if (!match) return null;
+  return Number(match[1]) as 204 | 205 | 304;
+}
+
+function isHostUrlRejection(cause: unknown): boolean {
+  if (!(cause instanceof JsonRpcCallError)) return false;
+  const message = cause.message.toLowerCase();
+  return message.startsWith("invalid url:") ||
+    message.startsWith("disallowed protocol ") ||
+    message.startsWith("all resolved ips for ") ||
+    message.startsWith("resolved ips for ") ||
+    message.includes("url resolves to a private, local, multicast, or reserved address") ||
+    message.includes("url cannot target private or reserved network addresses") ||
+    message.includes("url cannot resolve to private or reserved network addresses");
+}
+
 async function readBoundedJson(response: Response, maxBytes: number): Promise<{ value: unknown; tooLarge: boolean }> {
   const text = await response.text();
   if (new TextEncoder().encode(text).byteLength > maxBytes) {
@@ -40,12 +60,25 @@ export async function invokeCompatibleUpstream(input: {
   request: InvokeRequest;
   modelId: string;
 }): Promise<TransportResult> {
-  const body = input.config.protocol === "openai-chat-completions"
-    ? buildOpenAiRequest(input.request, input.modelId)
-    : buildAnthropicRequest(input.request, input.modelId);
-  const request = input.http.fetch(upstreamUrl(input.config), {
+  let url: string;
+  let headers: Record<string, string>;
+  let body: unknown;
+  try {
+    url = upstreamUrl(input.config);
+    headers = requestHeaders(input.config, input.credential);
+    if (input.config.protocol === "openai-chat-completions") {
+      body = buildOpenAiRequest(input.request, input.modelId);
+    } else if (input.config.protocol === "anthropic-messages") {
+      body = buildAnthropicRequest(input.request, input.modelId);
+    } else {
+      return error("upstream-url-rejected", "The configured compatible upstream protocol is not supported.", false);
+    }
+  } catch {
+    return error("upstream-url-rejected", "The configured compatible upstream is invalid.", false);
+  }
+  const request = input.http.fetch(url, {
     method: "POST",
-    headers: requestHeaders(input.config, input.credential),
+    headers,
     body: JSON.stringify(body),
     redirect: "manual",
   });
@@ -63,16 +96,23 @@ export async function invokeCompatibleUpstream(input: {
       request.catch(() => undefined);
       return error("upstream-timeout", "The compatible upstream exceeded the configured request timeout.", true);
     }
-    const name = cause instanceof Error ? cause.name : "";
-    if (name === "TypeError") {
+    const emptyStatus = sdkReconstructedEmptyResponseStatus(cause);
+    if (emptyStatus !== null) {
+      response = new Response(null, { status: emptyStatus });
+    } else if (isHostUrlRejection(cause)) {
       return error("upstream-url-rejected", "The host rejected the configured compatible upstream URL.", false);
+    } else {
+      return error("upstream-connect", "The router could not connect to the compatible upstream.", true);
     }
-    return error("upstream-connect", "The router could not connect to the compatible upstream.", true);
   } finally {
     if (timer) clearTimeout(timer);
   }
 
   try {
+    if (response.status >= 300 && response.status < 400) {
+      const requestId = upstreamRequestId(response.headers, null);
+      return { response: null, error: classifyHttpError(response.status, requestId) };
+    }
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
     const contentEncoding = response.headers.get("content-encoding")?.toLowerCase() ?? "identity";
     if (!contentType.includes("application/json") || (contentEncoding !== "identity" && contentEncoding !== "")) {

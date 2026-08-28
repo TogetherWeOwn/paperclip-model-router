@@ -99,7 +99,11 @@ function parseTask(value: unknown): TaskDescriptor {
   return task;
 }
 
-function parseBlock(value: unknown, path: string): ContentBlock {
+function parseBlock(
+  value: unknown,
+  path: string,
+  protocol?: "openai-chat-completions" | "anthropic-messages",
+): ContentBlock {
   const raw = record(value, path);
   if (raw.type === "text") {
     rejectUnknown(raw, new Set(["type", "text"]), path);
@@ -110,6 +114,18 @@ function parseBlock(value: unknown, path: string): ContentBlock {
     rejectUnknown(raw, new Set(["type", "url"]), path);
     if (typeof raw.url !== "string" || raw.url.length === 0) {
       throw new InvocationValidationError(`${path}.url must be a non-empty string`);
+    }
+    if (protocol === "anthropic-messages") {
+      throw new InvocationValidationError("image_url is not supported by the Anthropic-compatible v1 profile");
+    }
+    let imageUrl: URL;
+    try {
+      imageUrl = new URL(raw.url);
+    } catch {
+      throw new InvocationValidationError(`${path}.url must be an absolute http or https URL`);
+    }
+    if (imageUrl.protocol !== "https:" && imageUrl.protocol !== "http:") {
+      throw new InvocationValidationError(`${path}.url must not use inline data or another unsupported scheme`);
     }
     return { type: "image_url", url: raw.url };
   }
@@ -138,7 +154,11 @@ function parseBlock(value: unknown, path: string): ContentBlock {
   throw new InvocationValidationError(`${path}.type is not supported`);
 }
 
-function parseMessage(value: unknown, index: number): Message {
+function parseMessage(
+  value: unknown,
+  index: number,
+  protocol?: "openai-chat-completions" | "anthropic-messages",
+): Message {
   const path = `messages[${index}]`;
   const raw = record(value, path);
   rejectUnknown(raw, new Set(["role", "content", "toolCallId"]), path);
@@ -153,7 +173,7 @@ function parseMessage(value: unknown, index: number): Message {
   if (typeof raw.content === "string") {
     content = raw.content;
   } else if (Array.isArray(raw.content)) {
-    content = raw.content.map((block, blockIndex) => parseBlock(block, `${path}.content[${blockIndex}]`));
+    content = raw.content.map((block, blockIndex) => parseBlock(block, `${path}.content[${blockIndex}]`, protocol));
     if (content.some((block) => block.type === "tool_call") && raw.role !== "assistant") {
       throw new InvocationValidationError(`${path} may contain tool_call blocks only for the assistant role`);
     }
@@ -195,7 +215,7 @@ export function parseInvokeRequest(
     throw new InvocationValidationError(`maxOutputTokens exceeds the configured company maximum of ${configuredMaxOutputTokens}`);
   }
 
-  const messages = raw.messages.map(parseMessage);
+  const messages = raw.messages.map((message, index) => parseMessage(message, index, protocol));
   const task = parseTask(raw.task);
   const hasImage = messages.some(
     (message) =>
@@ -241,13 +261,6 @@ export function parseInvokeRequest(
     for (const [key, entry] of Object.entries(metadata)) {
       if (typeof entry !== "string") throw new InvocationValidationError(`metadata.${key} must be a string`);
       request.metadata[key] = entry;
-    }
-  }
-  if (protocol === "anthropic-messages") {
-    if (hasImage) {
-      throw new InvocationValidationError(
-        "image_url is not supported by the Anthropic-compatible v1 profile",
-      );
     }
   }
   return request;

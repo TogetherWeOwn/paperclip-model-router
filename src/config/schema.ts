@@ -1,4 +1,11 @@
 import { MODEL_TIER_ORDER } from "../engine/types.js";
+import {
+  FORBIDDEN_EXTRA_HEADER_NAMES,
+  MAX_REQUEST_TIMEOUT_MS,
+  MAX_RESPONSE_BYTES,
+  MIN_REQUEST_TIMEOUT_MS,
+  MIN_RESPONSE_BYTES,
+} from "./upstream-constraints.js";
 
 const TIERS = [...MODEL_TIER_ORDER];
 const MODEL_CAPABILITIES = [
@@ -24,23 +31,11 @@ const SECRET_REF_SCHEMA = {
   default: null,
 } as const;
 
-const FORBIDDEN_HEADER_NAMES = [
-  "authorization",
-  "proxy-authorization",
-  "x-api-key",
-  "content-length",
-  "host",
-  "connection",
-  "transfer-encoding",
-  "cookie",
-  "accept-encoding",
-];
-
 function anyCase(value: string): string {
   return value.replace(/[a-z]/g, (character) => `[${character}${character.toUpperCase()}]`);
 }
 
-const FORBIDDEN_HEADER_PATTERN = `^(?:${FORBIDDEN_HEADER_NAMES.map(anyCase).join("|")})$`;
+const FORBIDDEN_HEADER_PATTERN = `^(?:${FORBIDDEN_EXTRA_HEADER_NAMES.map(anyCase).join("|")})$`;
 
 export const ROUTER_CONFIG_SCHEMA = {
   $schema: "http://json-schema.org/draft-07/schema#",
@@ -86,11 +81,16 @@ export const ROUTER_CONFIG_SCHEMA = {
           type: "object",
           default: undefined,
         },
-        requestTimeoutMs: { type: "integer", minimum: 1000, maximum: 25000, default: 25000 },
+        requestTimeoutMs: {
+          type: "integer",
+          minimum: MIN_REQUEST_TIMEOUT_MS,
+          maximum: MAX_REQUEST_TIMEOUT_MS,
+          default: MAX_REQUEST_TIMEOUT_MS,
+        },
         maxResponseBytes: {
           type: "integer",
-          minimum: 1024,
-          maximum: 16777216,
+          minimum: MIN_RESPONSE_BYTES,
+          maximum: MAX_RESPONSE_BYTES,
           default: 8388608,
         },
         extraHeaders: {

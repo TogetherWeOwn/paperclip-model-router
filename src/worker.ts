@@ -166,10 +166,14 @@ export function createPlugin() {
           return result;
         }
         try {
+          const protocol = config.upstream.protocol;
+          if (protocol !== "openai-chat-completions" && protocol !== "anthropic-messages") {
+            throw new Error("unsupported compatible upstream protocol");
+          }
           request = parseInvokeRequest(
             raw,
             config.routing.maxOutputTokens,
-            config.upstream.protocol,
+            protocol,
           );
         } catch (failure) {
           result = {
