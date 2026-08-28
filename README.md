@@ -9,6 +9,24 @@ A stock Paperclip plugin that performs one audited operation:
 
 The normative contract is [`docs/contracts/compatible-upstream-v1.md`](docs/contracts/compatible-upstream-v1.md).
 
+## Release status
+
+`0.3.0` is the first private artifact for that replacement contract. It runs on
+stock Paperclip plugin API v1 and needs no Paperclip source checkout, patch,
+migration, or private host module at runtime. The package remains `private: true`
+and `UNLICENSED`; it is not published to npm and this repository does not
+authorize a public GitHub release or a live instance installation.
+
+`v0.2.7` is obsolete for acceptance and installation. It implements the removed
+selection-only/provider-policy product. Its old acceptance transcript, release
+asset, and install commands do not prove this compatible-upstream implementation,
+and rollback must not install it.
+
+The private artifact path is documented in
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md). A replacement is acceptable only
+after the packed tarball itself is inspected, installed in a clean directory,
+and loaded—not merely after a source build passes.
+
 ## Native surfaces
 
 - agent tool: `togetherweown.paperclip-model-router:model_router_invoke`

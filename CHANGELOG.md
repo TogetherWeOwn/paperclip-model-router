@@ -10,6 +10,8 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-28
+
 ### Changed
 
 - Replaced the selection-only, deployment-specific product with the accepted
@@ -45,7 +47,12 @@ version is not present here.
 
 - This is a breaking configuration and invocation-surface replacement. Existing
   selection-only configs must be replaced with the compatible-upstream schema.
-  TOG-532 does not authorize a public release or live installation.
+- `v0.2.7` acceptance evidence, release assets, install instructions, and
+  rollback path are obsolete. `v0.2.7` is not a compatible predecessor to this
+  contract and must not be installed as a fallback.
+- `0.3.0` is prepared as a private artifact only. The package remains
+  `private: true` and `UNLICENSED`; no public release, npm publication, or live
+  installation is authorized by this entry.
 
 
 ## [0.2.7] - 2026-08-25
@@ -761,7 +768,8 @@ First release. Installs globally, configures per company.
 - Budget pressure is supplied by the caller as `budgetSpentFraction`. The plugin
   does not read company spend itself; it holds no `costs.read` capability.
 
-[Unreleased]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.2.7...v0.3.0
 [0.2.7]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.2.6...v0.2.7
 [0.1.1]: https://github.com/TogetherWeOwn/paperclip-model-router/releases/tag/v0.1.1
 [0.1.0]: https://github.com/TogetherWeOwn/paperclip-model-router/releases/tag/v0.1.0
