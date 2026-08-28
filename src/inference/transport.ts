@@ -22,8 +22,14 @@ function error(code: InferenceError["code"], message: string, retryable: boolean
   return { response: null, error: { code, message, retryable, upstreamStatus: null, upstreamRequestId: null } };
 }
 
+function sdkReconstructedEmptyResponseStatus(cause: unknown): 204 | 205 | 304 | null {
+  if (!(cause instanceof TypeError)) return null;
+  const match = /^Response constructor: Invalid response status code (204|205|304)$/.exec(cause.message);
+  if (!match) return null;
+  return Number(match[1]) as 204 | 205 | 304;
+}
+
 function isHostUrlRejection(cause: unknown): boolean {
-  if (cause instanceof TypeError) return true;
   if (!(cause instanceof JsonRpcCallError)) return false;
   const message = cause.message.toLowerCase();
   return message.startsWith("invalid url:") ||
@@ -90,10 +96,14 @@ export async function invokeCompatibleUpstream(input: {
       request.catch(() => undefined);
       return error("upstream-timeout", "The compatible upstream exceeded the configured request timeout.", true);
     }
-    if (isHostUrlRejection(cause)) {
+    const emptyStatus = sdkReconstructedEmptyResponseStatus(cause);
+    if (emptyStatus !== null) {
+      response = new Response(null, { status: emptyStatus });
+    } else if (isHostUrlRejection(cause)) {
       return error("upstream-url-rejected", "The host rejected the configured compatible upstream URL.", false);
+    } else {
+      return error("upstream-connect", "The router could not connect to the compatible upstream.", true);
     }
-    return error("upstream-connect", "The router could not connect to the compatible upstream.", true);
   } finally {
     if (timer) clearTimeout(timer);
   }
