@@ -30,9 +30,6 @@ function isHostUrlRejection(cause: unknown): boolean {
     message.startsWith("disallowed protocol ") ||
     message.startsWith("all resolved ips for ") ||
     message.startsWith("resolved ips for ") ||
-    message.startsWith("dns resolution returned no results for ") ||
-    message.startsWith("dns lookup timed out after ") ||
-    message.startsWith("dns resolution failed for ") ||
     message.includes("url resolves to a private, local, multicast, or reserved address") ||
     message.includes("url cannot target private or reserved network addresses") ||
     message.includes("url cannot resolve to private or reserved network addresses");

@@ -224,8 +224,15 @@ describe("single-attempt transport", () => {
       const rejected = await invokeCompatibleUpstream({ http: { fetch: async () => { throw cause; } }, config, credential: "resolved-value", request, modelId: "m" });
       expect(rejected.error).toMatchObject({ code: "upstream-url-rejected", retryable: false });
     }
-    const unavailable = await invokeCompatibleUpstream({ http: { fetch: async () => { throw new JsonRpcCallError({ code: -32603, message: "socket hang up" }); } }, config, credential: "resolved-value", request, modelId: "m" });
-    expect(unavailable.error?.code).toBe("upstream-connect");
+    for (const message of [
+      "DNS resolution returned no results for upstream.example",
+      "DNS lookup timed out after 5000ms for upstream.example",
+      "DNS resolution failed for upstream.example: temporary failure",
+      "socket hang up",
+    ]) {
+      const unavailable = await invokeCompatibleUpstream({ http: { fetch: async () => { throw new JsonRpcCallError({ code: -32603, message }); } }, config, credential: "resolved-value", request, modelId: "m" });
+      expect(unavailable.error).toMatchObject({ code: "upstream-connect", retryable: true });
+    }
   });
 
   it("fails closed before HTTP when called with an unknown runtime protocol", async () => {
