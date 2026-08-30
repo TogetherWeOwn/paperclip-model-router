@@ -84,6 +84,21 @@ export function upstreamUrl(config: CompatibleUpstreamConfig): string {
   return parsed.toString();
 }
 
+/**
+ * The catalogue endpoint for the configured upstream. Both supported protocols
+ * expose it at `/v1/models`, so the base is derived exactly as `upstreamUrl`
+ * derives it — strip whichever protocol suffix the operator already typed, then
+ * append the catalogue path.
+ */
+export function catalogueUrl(config: CompatibleUpstreamConfig): string {
+  const parsed = new URL(config.baseUrl);
+  const suffix = supportedProtocol(config) === "openai-chat-completions" ? "/v1/chat/completions" : "/v1/messages";
+  let path = parsed.pathname.replace(/\/+$/, "");
+  if (path.endsWith(suffix)) path = path.slice(0, -suffix.length);
+  parsed.pathname = `${path}/v1/models`.replace(/\/{2,}/g, "/");
+  return parsed.toString();
+}
+
 function openAiMessages(request: InvokeRequest): Record<string, unknown>[] {
   const output: Record<string, unknown>[] = [];
   if (request.system !== undefined) output.push({ role: "system", content: request.system });

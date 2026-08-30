@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { PLUGIN_API_VERSION, PLUGIN_ID, PLUGIN_VERSION, ROUTE_KEYS, TOOL_NAMES } from "../src/constants.js";
+import { JOB_KEYS, PLUGIN_API_VERSION, PLUGIN_ID, PLUGIN_VERSION, ROUTE_KEYS, TOOL_NAMES } from "../src/constants.js";
 import manifest from "../src/manifest.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -27,13 +27,37 @@ describe("manifest", () => {
 
   it("requests only the published capabilities it uses", () => {
     expect([...manifest.capabilities].sort()).toEqual([
+      // The health probe's three: it logs flips to the board, runs on the
+      // host's own scheduler, and has to enumerate companies because a job is
+      // not a company-scoped invocation.
+      "activity.log.write",
       "agent.tools.register",
       "api.routes.register",
+      "companies.read",
       "http.outbound",
+      "jobs.schedule",
       "metrics.write",
       "plugin.state.read",
       "plugin.state.write",
       "secrets.read-ref",
+    ]);
+  });
+
+  it("holds no capability that could change what model an agent runs on", () => {
+    // decisions/0010: the host lets a plugin rewrite an agent's adapterConfig —
+    // model, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL — but only through
+    // `agents.managed`. The router is an invocation API and does not govern
+    // agent model selection, and this is where that stops being a promise.
+    // The host pairs these two itself — declaring `agents` without
+    // `agents.managed` fails its own manifest validator — so asserting both
+    // leaves no way to acquire the authority by halves.
+    expect(manifest.capabilities.filter((name) => name.startsWith("agents."))).toEqual([]);
+    expect(manifest.agents ?? []).toEqual([]);
+  });
+
+  it("declares the model health job the scheduler will run", () => {
+    expect(manifest.jobs?.map((job) => [job.jobKey, job.schedule])).toEqual([
+      [JOB_KEYS.modelHealth, "*/15 * * * *"],
     ]);
   });
 

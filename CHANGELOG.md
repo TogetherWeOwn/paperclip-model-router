@@ -10,6 +10,37 @@ version is not present here.
 
 ## [Unreleased]
 
+### Added
+
+- A scheduled `model-health-probe` job (manifest `jobs[]`, run by the host's own
+  plugin job scheduler) reads each company's upstream catalogue and takes models
+  that have gone dark out of service, logging each flip through
+  `activity.log.write`. Health is a company-scoped plugin-state overlay applied
+  at selection time: `ctx.config` is read-only, and a model the operator
+  disabled is never re-enabled by a probe. Two consecutive absences are required
+  before a model is disabled, and a failed probe changes nothing at all
+  (TOG-681 §3).
+- The budget gates now run on the router's own measured spend. Completed calls
+  with reported usage accrue into a company-scoped monthly ledger, and the halt
+  fraction is computed from it rather than from a caller-supplied signal
+  (TOG-681 §4).
+- `npm run check:host-coupling` fails the build if a host patch becomes
+  reachable from anything that runs, if runtime source imports a private
+  `@paperclipai` module or a path into a Paperclip checkout, or if the packed
+  tarball starts carrying either. Wired into `npm run verify` and CI (TOG-681 §1).
+- `docs/decisions/0010` records that the host's agent model selection and this
+  router are two independent systems, and which decisions belong to each
+  (TOG-681 §0).
+
+### Security
+
+- An invocation can no longer supply its own `budgetSpentFraction`. A caller
+  that could set the fraction could set it to zero and walk through the halt
+  gate; the value is now derived only from the router's own audit rows.
+- The manifest declares no `agents.*` capability and no `agents` block, which is
+  what prevents the router from influencing the model any agent runs on. Pinned
+  by test.
+
 ## [0.3.0] - 2026-08-28
 
 ### Changed

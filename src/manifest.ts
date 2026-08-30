@@ -2,6 +2,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 import { ROUTER_CONFIG_SCHEMA } from "./config/schema.js";
 import {
+  JOB_KEYS,
   PLUGIN_API_VERSION,
   PLUGIN_ID,
   PLUGIN_VERSION,
@@ -68,9 +69,26 @@ const manifest: PaperclipPluginManifestV1 = {
     "metrics.write",
     "agent.tools.register",
     "api.routes.register",
+    "jobs.schedule",
+    "activity.log.write",
+    "companies.read",
   ],
   entrypoints: { worker: "./dist/worker.js" },
   instanceConfigSchema: ROUTER_CONFIG_SCHEMA as unknown as Record<string, unknown>,
+  // The model table is static config; nothing in an invocation path ever
+  // notices that an upstream stopped serving a model. This job is the only
+  // thing that does. It must be a manifest job and not a host cron script:
+  // heartbeat timers are off instance-wide, and a host script is exactly the
+  // out-of-band dependency the stock-host requirement exists to remove.
+  jobs: [
+    {
+      jobKey: JOB_KEYS.modelHealth,
+      displayName: "Model health probe",
+      description:
+        "Read each company's configured upstream catalogue and take models that have gone dark out of service.",
+      schedule: "*/15 * * * *",
+    },
+  ],
   tools: [
     {
       name: TOOL_NAMES.invoke,

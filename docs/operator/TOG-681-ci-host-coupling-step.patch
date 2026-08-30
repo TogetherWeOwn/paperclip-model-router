@@ -1,0 +1,77 @@
+From 2ad836d0a3f0c358e5a72d45485d5330e032b96c Mon Sep 17 00:00:00 2001
+From: "togetherweown[bot]"
+ <319968614+togetherweown[bot]@users.noreply.github.com>
+Date: Sun, 30 Aug 2026 00:45:56 +0000
+Subject: [PATCH] TOG-681: probe model health on the host scheduler, gate
+ budget on measured spend
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three defects, one frame: this plugin must work on a stock host.
+
+A dead-but-enabled cheap model was selected forever. Survivors sort
+cheapest-first and the transport makes one attempt, so nothing ever
+removed it. `enabled` was static because nothing could flip it —
+`ctx.config` is read-only, so the fix cannot be a config mutation.
+
+A manifest `jobs[]` entry now runs on the host's own plugin job
+scheduler and reads each company's upstream catalogue, storing a
+company-scoped health overlay that selection applies. The overlay only
+ever removes a model from service: a model the operator disabled stays
+disabled regardless of what the upstream says. Two consecutive absences
+are required before disabling, and an indeterminate probe — transport
+failure, 401, 503, non-JSON — changes nothing rather than blacking out
+the whole table, which would be strictly worse than the defect. Flips go
+to the board through activity.log.write.
+
+The budget gates were inert: `budgetSpentFraction` was an optional the
+caller supplied and nobody did, and `gateLevelFor` reads a non-finite
+value as "ok". Completed calls with reported usage now accrue into a
+monthly ledger and the fraction is computed from it. Unreported usage
+counts as zero rather than an invented estimate, so the halt gate only
+ever fires on numbers someone can audit. The caller-supplied signal is
+gone — a caller that could set its own fraction could set it to zero and
+walk through the halt gate.
+
+Both are demonstrated end-to-end through the registered job handler and
+the real action path, not only against the pure functions: a model
+leaving the catalogue reroutes the next selection, and a ledger crossing
+the halt line refuses non-pinned work while still honouring a pin.
+
+check:host-coupling keeps the stock-host claim honest. It fails if a
+host patch becomes reachable from anything that runs, if src imports a
+private @paperclipai module or a path into a checkout, or if the packed
+tarball starts carrying either. Each detector was mutation-tested.
+decisions/0010 records why the router does not govern the model agents
+run on, and the manifest's absent agents.* capability is what enforces
+it.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ .github/workflows/ci.yml | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 602093a..136bbd7 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -42,6 +42,15 @@ jobs:
+       - name: Assert the runtime entrypoints exist
+         run: test -f dist/manifest.js && test -f dist/worker.js
+ 
++      # The README claims this plugin runs on a stock host — no checkout, no
++      # patch, no private host module. That claim is only as good as the last
++      # person who remembered it, so it is a gate: a host patch reachable from
++      # anything that runs, an /app path in src, or a private @paperclipai
++      # import fails the build. Runs before verify:host because it needs no
++      # host checkout and its failure explains the others.
++      - name: Assert no coupling to a modified host
++        run: npm run check:host-coupling
++
+       # Validate the BUILT artifact with the host's own install-time validators
+       # (`pluginManifestV1Schema` and the Ajv config validator), so a manifest
+       # or config schema the host would reject fails here rather than at
+-- 
+2.47.3
+

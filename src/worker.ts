@@ -9,13 +9,26 @@ import type { RouterConfig } from "./config/types.js";
 import {
   ACTION_KEYS,
   DECISION_LOG_LIMIT,
+  JOB_KEYS,
   PLUGIN_VERSION,
   ROUTE_KEYS,
   STATE_KEYS,
   TOOL_NAMES,
 } from "./constants.js";
 import { selectModel } from "./engine/select.js";
+import {
+  accrue,
+  emptyLedger,
+  invocationCostUsd,
+  isSpendLedger,
+  monthKey,
+  spentFraction,
+  type SpendLedger,
+} from "./engine/spend.js";
 import type { RoutingDecision } from "./engine/types.js";
+import { applyHealth, reconcileHealth } from "./health/reconcile.js";
+import { probeCatalogue } from "./health/probe.js";
+import type { ModelHealthState } from "./health/types.js";
 import { validateUpstreamConfig } from "./inference/adapters.js";
 import { invokeCompatibleUpstream } from "./inference/transport.js";
 import type { InferenceResult, InvokeRequest } from "./inference/types.js";
@@ -92,6 +105,26 @@ export function createPlugin() {
         await ctx.state.set(stickyKey(companyId), map);
       };
 
+      const healthKey = (companyId: string) => ({
+        scopeKind: "company" as const,
+        scopeId: companyId,
+        stateKey: STATE_KEYS.modelHealth,
+      });
+
+      const spendKey = (companyId: string) => ({
+        scopeKind: "company" as const,
+        scopeId: companyId,
+        stateKey: STATE_KEYS.spendLedger,
+      });
+
+      const readHealth = async (companyId: string): Promise<ModelHealthState> =>
+        asRecord(await ctx.state.get(healthKey(companyId))) as ModelHealthState;
+
+      const readLedger = async (companyId: string, at: Date): Promise<SpendLedger> => {
+        const stored = await ctx.state.get(spendKey(companyId));
+        return isSpendLedger(stored) ? stored : emptyLedger(monthKey(at));
+      };
+
       const record = async (
         companyId: string,
         runId: string | null,
@@ -129,6 +162,22 @@ export function createPlugin() {
         });
         await ctx.state.set(key, log.slice(0, DECISION_LOG_LIMIT));
         await ctx.metrics.write(`model_router.invoke.${result.outcome}`, 1);
+
+        // Accrue what this call actually cost, so the budget gates have a feed.
+        // Only completed calls with reported usage move the ledger.
+        if (response && decision?.modelId) {
+          const config = await companyConfig(companyId);
+          const cost = invocationCostUsd(
+            config.models.find((model) => model.id === decision.modelId),
+            response.usage,
+          );
+          if (cost > 0) {
+            const at = new Date();
+            const next = accrue(await readLedger(companyId, at), cost, at);
+            await ctx.state.set(spendKey(companyId), next);
+            await ctx.metrics.write("model_router.spend.usd", cost);
+          }
+        }
       };
 
       const invokeFor = async (
@@ -195,11 +244,23 @@ export function createPlugin() {
           return result;
         }
 
+        // The operator's table is what routing policy is written against, but a
+        // model the scheduled probe found dark must not be selectable. The
+        // overlay only ever removes models, so operator intent still wins.
+        const health = await readHealth(companyId);
+        const ledger = await readLedger(companyId, new Date(startedAt));
         const decision = selectModel({
           descriptor: request.task,
-          config,
+          config: { ...config, models: applyHealth(config.models, health) },
           signals: {
-            budgetSpentFraction: request.task.signals?.budgetSpentFraction,
+            // Measured spend, not a caller-supplied number: a caller that could
+            // set its own budget fraction could also set it to zero and walk
+            // straight through the halt gate.
+            budgetSpentFraction: spentFraction(
+              ledger,
+              config.budget.monthlyCapUsd,
+              new Date(startedAt),
+            ),
             stickyModelId: config.routing.stickyModelWithinIssue
               ? await readStickyModel(companyId, request.task.issueId)
               : undefined,
@@ -294,6 +355,89 @@ export function createPlugin() {
         if (!actionCtx.companyId) throw new Error("host-authorized company context is required");
         const { companyId: _hostInjectedCompanyId, ...request } = params;
         return invokeFor(actionCtx.companyId, request, actionCtx.actor.runId);
+      });
+
+      // --- scheduled model health -------------------------------------------
+      // Probe one company's upstream catalogue and fold the answer into stored
+      // health. Returns the flips so the job can log them; throws nothing, so
+      // one broken company config cannot stop the sweep for the others.
+      const probeCompany = async (companyId: string): Promise<number> => {
+        let config: RouterConfig;
+        try {
+          config = await companyConfig(companyId);
+        } catch {
+          return 0;
+        }
+        if (config.models.length === 0) return 0;
+        if (validateUpstreamConfig(config.upstream).length > 0) return 0;
+        if (!config.upstream.credentialSecretRef) return 0;
+
+        let credential: string;
+        try {
+          credential = await ctx.secrets.resolve(config.upstream.credentialSecretRef as never, {
+            companyId,
+            configPath: "upstream.credentialSecretRef",
+          });
+        } catch {
+          // Indeterminate, not dead. Leave the table exactly as it was.
+          return 0;
+        }
+
+        const probe = await probeCatalogue({ http: ctx.http, config: config.upstream, credential });
+        const { next, flips } = reconcileHealth({
+          models: config.models,
+          probe,
+          previous: await readHealth(companyId),
+          now: new Date().toISOString(),
+        });
+        if (probe.modelIds === null) {
+          ctx.logger.warn("Model health probe was indeterminate; model table left unchanged", {
+            companyId,
+            detail: probe.detail,
+            status: probe.status,
+          });
+          return 0;
+        }
+        await ctx.state.set(healthKey(companyId), next);
+
+        // A model going dark belongs on the board, not only in the failed
+        // invocations it would otherwise cause.
+        for (const flip of flips) {
+          await ctx.activity.log({
+            companyId,
+            message: flip.to === "dead"
+              ? `Model Router took ${flip.modelId} out of service: ${flip.reason}.`
+              : `Model Router returned ${flip.modelId} to service: ${flip.reason}.`,
+          });
+          await ctx.metrics.write(`model_router.health.${flip.to}`, 1);
+        }
+        return flips.length;
+      };
+
+      ctx.jobs.register(JOB_KEYS.modelHealth, async () => {
+        // Jobs are not company-scoped invocations, so the companies to sweep
+        // have to be enumerated rather than inferred from an ambient scope.
+        let companies: Array<{ id: string }>;
+        try {
+          companies = await ctx.companies.list();
+        } catch (cause) {
+          ctx.logger.error("Model health probe could not list companies", {
+            error: cause instanceof Error ? cause.message : String(cause),
+          });
+          return;
+        }
+        let flips = 0;
+        for (const company of companies) {
+          try {
+            flips += await probeCompany(company.id);
+          } catch (cause) {
+            ctx.logger.error("Model health probe failed for a company", {
+              companyId: company.id,
+              error: cause instanceof Error ? cause.message : String(cause),
+            });
+          }
+        }
+        ctx.logger.info("Model health probe complete", { companies: companies.length, flips });
       });
 
       ctx.logger.info("Model Router worker ready", { version: PLUGIN_VERSION });

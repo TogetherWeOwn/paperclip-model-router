@@ -18,9 +18,15 @@ export const ROUTE_KEYS = {
   invokeIssue: "invoke-issue",
 } as const;
 
+export const JOB_KEYS = {
+  modelHealth: "model-health-probe",
+} as const;
+
 export const STATE_KEYS = {
   decisionLog: "decision-log",
   issueStickiness: "issue-stickiness",
+  modelHealth: "model-health",
+  spendLedger: "spend-ledger",
 } as const;
 
 export const DECISION_LOG_LIMIT = 200;
