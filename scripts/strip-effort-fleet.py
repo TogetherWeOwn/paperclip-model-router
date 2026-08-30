@@ -21,7 +21,24 @@ must therefore store an explicit falsy `effort: ""`, which both lanes guard on
 by truthiness -- ACP at acpx-engine/execute.ts:2137 (`if
 (prepared.requestedThinkingEffort)`) and the CLI at claude-local
 server/execute.ts:851 (`if (effectiveEffort) args.push("--effort", ...)`).
-Regression-tested in /app/server/src/__tests__/tog685-effort-merge.test.ts.
+
+Proven behaviourally, not just by config read: canary run
+b5d91ff1-02ad-4b6b-a71f-ab6b106a0774 (issue TOG-691, 2026-08-30T05:03Z) reached
+status=succeeded with error_code NULL and
+result_json->modelProfile->>applied = "cheap". Its ACP session opened with
+`"thinkingEffort": null`, i.e. no set_config_option('effort') was ever attempted.
+
+KNOWN LIMIT of a single-key pin. The ACP engine resolves reasoning effort from
+FOUR keys in precedence order (acpx-engine/execute.ts:1121-1128):
+
+    modelReasoningEffort > reasoningEffort > thinkingEffort > effort
+
+Today's claude_local adapter default only ships `effort`, so pinning `effort`
+alone fully suppresses it. If that default ever moves to one of the other three,
+a pin on `effort` stops covering it -- the higher-precedence key wins and the
+ACP lane breaks again. `needs_fix` therefore audits all four keys, so this sweep
+detects such a move instead of silently reporting the fleet clean. The permanent
+source fix is TOG-687 (drop `effort` from the adapter default itself).
 
 This is a read-modify-write sweep: it preserves every other key in runtimeConfig
 (notably `heartbeat`, whose shape is NOT uniform across the fleet -- paused
@@ -73,21 +90,45 @@ def cheap_profile(runtime_config):
     return profiles.get("cheap") or {}
 
 
+# Reasoning-effort keys the ACP engine reads, in precedence order. Only the
+# LAST one is shipped by today's adapter default, which is why an absent
+# `effort` defaults to the truthy "low" below while the others default to "".
+# See acpx-engine/execute.ts:1121-1128.
+EFFORT_KEYS = ("modelReasoningEffort", "reasoningEffort", "thinkingEffort", "effort")
+ADAPTER_DEFAULTED_EFFORT_KEYS = {"effort": "low"}
+
+
+def unsuppressed_effort_keys(runtime_config):
+    """Effort keys that could still reach the ACP lane with a truthy value.
+
+    A key present with a truthy value is unsafe. A key that is ABSENT is unsafe
+    only if the adapter default supplies it, because the merge refills omitted
+    keys -- that is the whole trap this script exists for.
+    """
+    adapter_config = cheap_profile(runtime_config).get("adapterConfig") or {}
+    return [
+        key
+        for key in EFFORT_KEYS
+        if bool(adapter_config.get(key, ADAPTER_DEFAULTED_EFFORT_KEYS.get(key, "")))
+    ]
+
+
 def needs_fix(runtime_config):
-    """True when this agent could still emit a truthy `effort` on the cheap lane.
+    """True when this agent could still emit a truthy effort on the cheap lane.
 
     An explicitly disabled profile never enters the merge path, so it is safe.
-    Anything else is unsafe unless it already pins a falsy `effort`, because an
-    absent key is refilled from the adapter default.
     """
-    profile = cheap_profile(runtime_config)
-    if profile.get("enabled") is False:
+    if cheap_profile(runtime_config).get("enabled") is False:
         return False
-    return bool((profile.get("adapterConfig") or {}).get("effort", "low"))
+    return bool(unsuppressed_effort_keys(runtime_config))
 
 
 def suppress(runtime_config):
-    """Copy runtime_config with cheap.adapterConfig.effort pinned to "".
+    """Copy runtime_config with every unsuppressed effort key pinned to "".
+
+    Only the keys that are actually unsafe are pinned, so the stored profile
+    stays minimal today ("effort") but automatically widens if the adapter
+    default ever moves to a higher-precedence key.
 
     Every sibling key is carried through untouched -- this is the whole point of
     the function, since PATCH replaces runtimeConfig wholesale.
@@ -96,7 +137,9 @@ def suppress(runtime_config):
     profiles = out.setdefault("modelProfiles", {})
     profile = profiles.setdefault("cheap", {})
     profile.setdefault("enabled", True)
-    profile.setdefault("adapterConfig", {})["effort"] = ""
+    adapter_config = profile.setdefault("adapterConfig", {})
+    for key in unsuppressed_effort_keys(runtime_config) or ["effort"]:
+        adapter_config[key] = ""
     return out
 
 
