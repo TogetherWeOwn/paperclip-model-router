@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import type { PluginContext, ToolResult } from "@paperclipai/plugin-sdk";
 
+import { bareModelIdWarnings } from "./config/model-id.js";
 import { resolveConfig } from "./config/resolve.js";
 import { validateSecretRefShape } from "./config/secret-ref.js";
 import type { RouterConfig } from "./config/types.js";
@@ -467,6 +468,7 @@ export function createPlugin() {
         if (ids.has(model.id)) errors.push(`duplicate model id: ${model.id}`);
         ids.add(model.id);
       }
+      warnings.push(...bareModelIdWarnings(config.models.map((model) => model.id)));
       for (const entry of config.taskClasses) {
         if (entry.pinnedModelId && !ids.has(entry.pinnedModelId)) {
           errors.push(`task class ${entry.key} pins ${entry.pinnedModelId}, which is not in the model table`);
