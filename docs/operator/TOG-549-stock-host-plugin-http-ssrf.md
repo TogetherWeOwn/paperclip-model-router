@@ -77,6 +77,32 @@ The TypeScript command exited `0` with no output.
 
 The positive transport case asserts exactly one DNS lookup and one HTTP request, connection `host: "93.184.216.34"`, original `Host: api.example.test:8080`, and a returned `302` response while the HTTPS request mock remains unused. Thus the correction preserves resolve-once pinning and does not follow redirects.
 
+## Deployment status — re-measured 2026-08-30
+
+**The patch is NOT deployed. The gap is open on the running host.** Re-measured directly
+against the live `/app` tree on 2026-08-30:
+
+| check | expected if deployed | measured |
+| --- | --- | --- |
+| `plugin-host-services.ts` predicate | shared `isPrivateOrReservedIp` | local `isPrivateIP`, `services/plugin-host-services.ts:109` |
+| forbidden-answer handling | fail closed (`.some`) | filter-and-continue, `:199` |
+| `__tests__/plugin-host-services-http-fetch.test.ts` | present | absent |
+| `plugin-host-services.ts` mtime | post-patch | `2026-08-18 03:17`, unchanged |
+
+`git apply --check` against a scratch copy of the current live sources exits `0`, so the
+artifact has not bit-rotted and still applies to the tree as it stands today.
+
+The mutation control was re-run on 2026-08-30 against the live `/app/server` dependency
+tree, overlaying only the test file onto stock sources and then restoring: **22 failed,
+1 passed** on stock, **23 passed** patched. The stock failures are live reachability, not
+stale assertions — `fetch` to a resolved `100.64.0.1` returns a completed `200` rather
+than rejecting. `/app` was restored byte-identical (`cmp`-verified) after each run.
+
+One correction to a claim in circulation: `isPrivateOrReservedIp` is not missing from the
+host. It exists at `remote-http-endpoint-guard.ts:96` but is module-private; a grep for
+the exported form finds nothing. The patch exports it. This does not change the
+conclusion — plugin HTTP does not use it either way.
+
 ## Operator/vendor handoff
 
 A Paperclip host source owner should apply the patch in the company-owned host repository, rerun the commands above, and route it through that repository's normal review and release path. Do not open a public upstream issue or pull request without the required public-commitment authority.
