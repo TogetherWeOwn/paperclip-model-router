@@ -1,0 +1,366 @@
+From 59cfb8c01c19ee372713b23baefddf3972c4e49e Mon Sep 17 00:00:00 2001
+From: "togetherweown[bot]"
+ <319968614+togetherweown[bot]@users.noreply.github.com>
+Date: Sun, 30 Aug 2026 05:26:35 +0000
+Subject: [PATCH] TOG-687: stop shipping an ACP-fatal `effort` default on the
+ Claude lane
+
+The claude_local adapter's default cheap profile declared `effort: "low"`.
+`resolveModelProfileApplication` spreads the adapter default FIRST and the
+agent's stored profile second, so that value is re-supplied to any cheap
+profile that does not explicitly pin `effort` to a falsy value. TOG-685
+closed this at the fleet level by writing `effort: ""` onto all 47 agent
+rows; that holds only for rows that exist today. Enabling a cheap profile
+later -- console, API, or plugin -- silently re-arms it. Removing the key
+from the adapter default is the source-side fix, and the merge order is
+exactly why deleting it from a stored profile was never enough.
+
+The exposure is wider than the cheap profile, which is the second change
+here. `effort` is a documented top-level claude_local config field, and
+the ACP lane pushes it at set_config_option for every agent except codex.
+The Claude ACP backend advertises the `effort` option CONDITIONALLY, on
+whether the selected model supports it (buildConfigOptions in
+claude-agent-acp), so acpx raises ACP_BACKEND_UNSUPPORTED_CONTROL and the
+run dies in configure_session. Any claude_local ACP agent with a
+top-level `effort` hits this with no cheap profile involved -- measured,
+not inferred: a probe against the real executor returned
+configOptions [{"key":"effort","value":"low"}].
+
+An unsupported *preference* should not kill a run, so a rejected optional
+option now degrades with a stderr line saying it did not apply. `model`
+is deliberately NOT in that set: continuing after a rejected model would
+run the turn on a different model, at a different price, while reporting
+success. Matching is on the error's `code`, not its message text, so an
+upstream wording change cannot quietly make a fatal path degradable.
+
+Verified on the live tree with mutation controls -- stock sources plus
+these tests fail (adapter default re-supplies `effort: "low"`; the
+rejected-effort run exits 1), patched they pass. 157 acpx-engine tests
+and the claude-local package suite are unchanged; the one failing test in
+that package (acp.test.ts "reports ACP prerequisites") fails identically
+on stock sources and is unrelated.
+---
+ .../adapter-utils/src/acpx-engine/execute.ts  |  50 ++++++-
+ .../src/acpx-engine/tog687-acp-effort.test.ts | 132 ++++++++++++++++++
+ packages/adapters/claude-local/src/index.ts   |   9 +-
+ .../tog687-cheap-profile-effort.test.ts       |  79 +++++++++++
+ 4 files changed, 264 insertions(+), 6 deletions(-)
+ create mode 100644 packages/adapter-utils/src/acpx-engine/tog687-acp-effort.test.ts
+ create mode 100644 server/src/__tests__/tog687-cheap-profile-effort.test.ts
+
+diff --git a/packages/adapter-utils/src/acpx-engine/execute.ts b/packages/adapter-utils/src/acpx-engine/execute.ts
+index 3dc9fa7..b08a8fa 100644
+--- a/packages/adapter-utils/src/acpx-engine/execute.ts
++++ b/packages/adapter-utils/src/acpx-engine/execute.ts
+@@ -2122,6 +2122,26 @@ async function buildRuntime(input: {
+   };
+ }
+ 
++// A session config option the backend may legitimately not advertise. `model`
++// is NOT optional: silently continuing after a rejected model would run the
++// turn on a different model than was asked for, at a different price. An
++// effort/fast-mode preference is a hint -- degrading it beats killing the run.
++const OPTIONAL_SESSION_CONFIG_KEYS = new Set(["effort", "service_tier", "features.fast_mode"]);
++
++/**
++ * True when the backend rejected a config option because it does not advertise
++ * it. Matched on acpx's `ACP_BACKEND_UNSUPPORTED_CONTROL` code rather than on
++ * message text so a wording change upstream cannot silently turn a degradable
++ * failure back into a fatal one.
++ */
++function isUnsupportedConfigOptionError(err: unknown): boolean {
++  const code =
++    err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
++      ? (err as { code: string }).code
++      : null;
++  return code === "ACP_BACKEND_UNSUPPORTED_CONTROL";
++}
++
+ function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: string; value: string }> {
+   const options: Array<{ key: string; value: string }> = [];
+   // Claude and Codex runtime config is pre-set via startup env vars; skip
+@@ -2164,11 +2184,31 @@ async function applySessionConfigOptions(input: {
+     throw new Error(message);
+   }
+   for (const option of options) {
+-    await input.runtime.setConfigOption({
+-      handle: input.handle,
+-      key: option.key,
+-      value: option.value,
+-    });
++    try {
++      await input.runtime.setConfigOption({
++        handle: input.handle,
++        key: option.key,
++        value: option.value,
++      });
++    } catch (err) {
++      // The backend advertises its config options per session, and for Claude
++      // the `effort` option appears only when the selected model supports it.
++      // A rejected *preference* must not take the whole run down: degrade it,
++      // say so on stderr so the run log shows the setting did not apply, and
++      // carry on. Anything else -- a rejected `model`, a transport failure --
++      // still throws.
++      if (
++        !isUnsupportedConfigOptionError(err) ||
++        !OPTIONAL_SESSION_CONFIG_KEYS.has(option.key)
++      ) {
++        throw err;
++      }
++      await input.onLog(
++        "stderr",
++        `[paperclip] ACPX ${input.prepared.acpxAgent} does not support config ${option.key}=${option.value} for this session; continuing without it.\n`,
++      );
++      continue;
++    }
+     await input.onLog(
+       "stdout",
+       `[paperclip] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
+diff --git a/packages/adapter-utils/src/acpx-engine/tog687-acp-effort.test.ts b/packages/adapter-utils/src/acpx-engine/tog687-acp-effort.test.ts
+new file mode 100644
+index 0000000..6ba30eb
+--- /dev/null
++++ b/packages/adapter-utils/src/acpx-engine/tog687-acp-effort.test.ts
+@@ -0,0 +1,132 @@
++import { describe, expect, it } from "vitest";
++
++import { createAcpxEngineExecutor } from "./execute.js";
++
++// TOG-687. Two claims under test, both about the ACP lane's `effort` session
++// config option:
++//
++//  1. The Claude ACP backend advertises `effort` only when the SELECTED model
++//     supports it, so pushing it unconditionally can fail the run with
++//     ACP_BACKEND_UNSUPPORTED_CONTROL. A rejected effort *preference* must
++//     degrade, not kill the run -- but a rejected `model` must still be fatal,
++//     because silently continuing would run the turn on the wrong model.
++//  2. The claude_local adapter's default cheap profile must not declare
++//     `effort` at all (covered in the server-side merge test).
++
++/** The real shape acpx throws: an Error carrying a `.code`. */
++class FakeAcpRuntimeError extends Error {
++  code: string;
++  constructor(code: string, message: string) {
++    super(message);
++    this.name = "AcpRuntimeError";
++    this.code = code;
++  }
++}
++
++async function runWithBackend(
++  config: Record<string, unknown>,
++  rejectKeys: Record<string, FakeAcpRuntimeError> = {},
++) {
++  const configOptions: Array<{ key: string; value: string }> = [];
++  const logs: Array<{ stream: string; text: string }> = [];
++  const execute = createAcpxEngineExecutor({
++    createRuntime: () =>
++      ({
++        ensureSession: async () => ({
++          backendSessionId: "backend-session",
++          agentSessionId: "agent-session",
++          runtimeSessionName: "runtime-session",
++        }),
++        startTurn: () => ({
++          events: (async function* () {
++            yield { type: "done", stopReason: "end_turn" };
++          })(),
++          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
++          cancel: async () => {},
++        }),
++        setConfigOption: async (input: { key: string; value: string }) => {
++          const rejection = rejectKeys[input.key];
++          if (rejection) throw rejection;
++          configOptions.push({ key: input.key, value: input.value });
++        },
++        close: async () => {},
++      }) as never,
++  });
++
++  const result = await execute({
++    runId: "run-1",
++    agent: { id: "agent-1", companyId: "company-1" },
++    runtime: {},
++    config,
++    context: {},
++    onLog: async (stream: "stdout" | "stderr", text: string) => {
++      logs.push({ stream, text });
++    },
++    onMeta: async () => {},
++    onEvent: async () => {},
++  } as never);
++  return { configOptions, logs, result };
++}
++
++const unsupportedEffort = () =>
++  new FakeAcpRuntimeError(
++    "ACP_BACKEND_UNSUPPORTED_CONTROL",
++    "ACP session rec-1 does not advertise config option 'effort'. Supported config options: mode, model.",
++  );
++
++describe("TOG-687: an unsupported ACP effort option degrades instead of killing the run", () => {
++  it("survives a backend that does not advertise `effort`, and says so on stderr", async () => {
++    const { result, logs } = await runWithBackend(
++      { agent: "claude", model: "claude-sonnet-4-6", effort: "low" },
++      { effort: unsupportedEffort() },
++    );
++
++    // Before this fix the rejection propagated and the run died here.
++    expect(result.exitCode).toBe(0);
++    expect(logs).toContainEqual({
++      stream: "stderr",
++      text: "[paperclip] ACPX claude does not support config effort=low for this session; continuing without it.\n",
++    });
++  });
++
++  it("still applies `effort` when the backend does advertise it", async () => {
++    const { configOptions, result } = await runWithBackend({
++      agent: "gemini",
++      model: "gemini-2.5-pro",
++      thinkingEffort: "high",
++    });
++
++    expect(result.exitCode).toBe(0);
++    expect(configOptions).toEqual([
++      { key: "model", value: "gemini-2.5-pro" },
++      { key: "effort", value: "high" },
++    ]);
++  });
++
++  it("does NOT swallow a rejected `model` -- wrong model is worse than a failed run", async () => {
++    const { result } = await runWithBackend(
++      { agent: "gemini", model: "gemini-2.5-pro" },
++      {
++        model: new FakeAcpRuntimeError(
++          "ACP_BACKEND_UNSUPPORTED_CONTROL",
++          "ACP session rec-1 does not advertise config option 'model'. Supported config options: mode.",
++        ),
++      },
++    );
++
++    expect(result.exitCode).toBe(1);
++    expect(result.errorCode).toBe("acpx_session_config_failed");
++    expect(result.errorMessage).toMatch(/does not advertise config option 'model'/);
++  });
++
++  it("does NOT swallow a non-advertisement failure on an optional key", async () => {
++    const { result } = await runWithBackend(
++      { agent: "gemini", model: "gemini-2.5-pro", thinkingEffort: "high" },
++      { effort: new FakeAcpRuntimeError("ACP_TRANSPORT_FAILED", "connection reset") },
++    );
++
++    expect(result.exitCode).toBe(1);
++    expect(result.errorCode).toBe("acpx_session_config_failed");
++    expect(result.errorMessage).toMatch(/connection reset/);
++  });
++});
+diff --git a/packages/adapters/claude-local/src/index.ts b/packages/adapters/claude-local/src/index.ts
+index 88fb662..f769e14 100644
+--- a/packages/adapters/claude-local/src/index.ts
++++ b/packages/adapters/claude-local/src/index.ts
+@@ -23,9 +23,16 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
+     key: "cheap",
+     label: "Cheap",
+     description: "Use Claude Sonnet as the lower-cost Claude Code lane while preserving the agent's primary model.",
++    // No `effort` here. The adapter default is spread in BEFORE an agent's
++    // stored profile, so any key declared here is re-supplied to every cheap
++    // profile that does not explicitly pin it to a falsy value. `effort` is
++    // only valid on the CLI lane: the Claude ACP backend advertises the
++    // `effort` config option conditionally on the selected model, so pushing
++    // it at an ACP session that does not advertise it fails the run with
++    // ACP_BACKEND_UNSUPPORTED_CONTROL. Setting effort per-agent stays
++    // supported; it just is not a default we can honour on both lanes.
+     adapterConfig: {
+       model: "claude-sonnet-4-6",
+-      effort: "low",
+     },
+     source: "adapter_default",
+   },
+diff --git a/server/src/__tests__/tog687-cheap-profile-effort.test.ts b/server/src/__tests__/tog687-cheap-profile-effort.test.ts
+new file mode 100644
+index 0000000..48edf37
+--- /dev/null
++++ b/server/src/__tests__/tog687-cheap-profile-effort.test.ts
+@@ -0,0 +1,79 @@
++import { describe, expect, it } from "vitest";
++
++import { modelProfiles as claudeLocalModelProfiles } from "@paperclipai/adapter-claude-local";
++
++import {
++  mergeModelProfileAdapterConfig,
++  resolveModelProfileApplication,
++} from "../services/heartbeat.ts";
++
++// TOG-687 (follow-up to TOG-685). `resolveModelProfileApplication` spreads the
++// ADAPTER DEFAULT FIRST and the agent's stored profile second, so any key the
++// adapter declares is re-supplied to every stored cheap profile that does not
++// explicitly pin it to a falsy value. The fleet-level TOG-685 fix pinned
++// `effort: ""` on all 47 agent rows; this pins the source side, so a cheap
++// profile enabled later -- via console, API, or plugin -- cannot silently
++// inherit an ACP-fatal `effort`.
++const cheapAdapterProfile = claudeLocalModelProfiles.find((p) => p.key === "cheap")!;
++
++function resolveCheap(storedCheapProfile: unknown) {
++  const modelProfile = resolveModelProfileApplication({
++    adapterModelProfiles: [cheapAdapterProfile],
++    agentRuntimeConfig: { modelProfiles: { cheap: storedCheapProfile } },
++    issueModelProfile: null,
++    contextSnapshot: { modelProfile: "cheap" },
++  });
++  return {
++    modelProfile,
++    merged: mergeModelProfileAdapterConfig({
++      baseConfig: { model: "claude-opus-5" },
++      modelProfile,
++      issueAdapterConfig: null,
++    }),
++  };
++}
++
++describe("TOG-687: the claude_local cheap profile does not ship `effort`", () => {
++  it("declares a model but no effort", () => {
++    expect(cheapAdapterProfile.adapterConfig).toEqual({ model: "claude-sonnet-4-6" });
++    expect(cheapAdapterProfile.adapterConfig).not.toHaveProperty("effort");
++  });
++
++  it("a stored profile that omits effort no longer inherits one", () => {
++    // This is the case TOG-685 could not fix from the fleet side: before the
++    // source fix this merged to `effort: "low"`.
++    const { merged } = resolveCheap({
++      enabled: true,
++      adapterConfig: { model: "cliproxy/claude-haiku-4-5-20251001" },
++    });
++
++    expect(merged).not.toHaveProperty("effort");
++    expect(merged.model).toBe("cliproxy/claude-haiku-4-5-20251001");
++  });
++
++  it("keeps the explicit TOG-685 pin working, so the 47 swept rows are unaffected", () => {
++    const { merged } = resolveCheap({
++      enabled: true,
++      adapterConfig: { model: "cliproxy/claude-haiku-4-5-20251001", effort: "" },
++    });
++
++    expect(merged.effort).toBe("");
++  });
++
++  it("still lets an operator opt into effort deliberately (CLI lane)", () => {
++    const { merged } = resolveCheap({
++      enabled: true,
++      adapterConfig: { model: "claude-sonnet-4-6", effort: "low" },
++    });
++
++    expect(merged.effort).toBe("low");
++  });
++
++  it("a disabled cheap profile contributes no adapter config at all", () => {
++    const { modelProfile, merged } = resolveCheap({ enabled: false });
++
++    expect(modelProfile.fallbackReason).toBe("agent_runtime_profile_disabled");
++    expect(modelProfile.adapterConfig).toBeNull();
++    expect(merged).not.toHaveProperty("effort");
++  });
++});
+-- 
+2.47.3
+
