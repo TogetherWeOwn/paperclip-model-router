@@ -1,0 +1,330 @@
+{
+ "opencode-go/glm-5.3-flash": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.0010999999999999998,
+  "enabled": true
+ },
+ "opencode-go/deepseek-v4-flash": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.0030800000000000003,
+  "enabled": true
+ },
+ "opencode-go/deepseek-v4-flash-vision-exp": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.0030800000000000003,
+  "enabled": true
+ },
+ "cliproxy/gpt-5.6-luna": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.004,
+  "enabled": true
+ },
+ "opencode-go/minimax-m3": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.0048,
+  "enabled": true
+ },
+ "opencode-go/minimax-m2.7": {
+  "tier": "standard",
+  "quality": 61,
+  "cost": 0.0048,
+  "enabled": true
+ },
+ "opencode-go/qwen3.7-plus": {
+  "tier": "standard",
+  "quality": 61,
+  "cost": 0.0064,
+  "enabled": true
+ },
+ "cliproxy/gemini-3.6-flash-high": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.0082,
+  "enabled": true
+ },
+ "opencode-go/deepseek-v4-pro": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.00924,
+  "enabled": true
+ },
+ "opencode-go/qwen3.6-plus": {
+  "tier": "standard",
+  "quality": 63,
+  "cost": 0.01,
+  "enabled": true
+ },
+ "cliproxy/gemini-3.7-flash-high": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.0116,
+  "enabled": true
+ },
+ "opencode-go/glm-5": {
+  "tier": "standard",
+  "quality": 64,
+  "cost": 0.0144,
+  "enabled": true
+ },
+ "opencode-go/kimi-k2.6": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.01482,
+  "enabled": true
+ },
+ "cliproxy/gpt-5.4-mini": {
+  "tier": "standard",
+  "quality": 64,
+  "cost": 0.015000000000000001,
+  "enabled": true
+ },
+ "opencode-go/kimi-k2.7-code": {
+  "tier": "standard",
+  "quality": 67,
+  "cost": 0.0156,
+  "enabled": true
+ },
+ "opencode-go/glm-5.2": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.02,
+  "enabled": true
+ },
+ "opencode-go/glm-5.3": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.02,
+  "enabled": true
+ },
+ "opencode-go/glm-5.1": {
+  "tier": "standard",
+  "quality": 64,
+  "cost": 0.02,
+  "enabled": true
+ },
+ "opencode-go/qwen3.8-max": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.028,
+  "enabled": true
+ },
+ "opencode-go/qwen3.7-max": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.035,
+  "enabled": true
+ },
+ "cliproxy/gemini-3.1-pro-low": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.04,
+  "enabled": true
+ },
+ "cliproxy/gpt-5.3-codex-spark": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.042,
+  "enabled": true
+ },
+ "opencode-go/kimi-k3": {
+  "tier": "standard",
+  "quality": 69,
+  "cost": 0.0513,
+  "enabled": true
+ },
+ "cliproxy/claude-sonnet-4-6": {
+  "tier": "standard",
+  "quality": 66,
+  "cost": 0.054,
+  "enabled": true
+ },
+ "cliproxy/claude-sonnet-4-5-20250929": {
+  "tier": "standard",
+  "quality": 60,
+  "cost": 0.054,
+  "enabled": true
+ },
+ "cliproxy/claude-haiku-4-5-20251001": {
+  "quality": 40,
+  "enabled": true,
+  "tier": "small",
+  "cost": 0.018000000000000002
+ },
+ "cliproxy/claude-sonnet-4-20250514": {
+  "enabled": false
+ },
+ "cliproxy/claude-3-7-sonnet-20250219": {
+  "enabled": false
+ },
+ "cliproxy/claude-3-5-haiku-20241022": {
+  "enabled": false
+ },
+ "cliproxy/gpt-oss-120b-medium": {
+  "enabled": false
+ },
+ "cliproxy/gemini-3-flash": {
+  "quality": 46,
+  "enabled": true,
+  "tier": "standard",
+  "cost": 0.01
+ },
+ "cliproxy/grok-4.3": {
+  "enabled": false
+ },
+ "cliproxy/grok-4.5": {
+  "enabled": false
+ },
+ "cliproxy/grok-4.6": {
+  "enabled": false
+ },
+ "cliproxy/kimi-k2": {
+  "enabled": false
+ },
+ "cliproxy/kimi-k2-thinking": {
+  "enabled": false
+ },
+ "cliproxy/kimi-k2.5": {
+  "enabled": false
+ },
+ "cliproxy/kimi-k2.6": {
+  "enabled": false
+ },
+ "cliproxy/kimi-k3": {
+  "enabled": false
+ },
+ "cliproxy/kimi-k3-256k": {
+  "enabled": false
+ },
+ "cliproxy/claude-opus-4-20250514": {
+  "enabled": false
+ },
+ "cliproxy/claude-opus-4-1-20250805": {
+  "enabled": false
+ },
+ "cliproxy/gemini-3.1-flash-lite": {
+  "quality": 42,
+  "enabled": true,
+  "tier": "small",
+  "cost": 0.005
+ },
+ "cliproxy/gemini-pro-agent": {
+  "quality": 55,
+  "enabled": true,
+  "tier": "standard",
+  "cost": 0.04
+ },
+ "cliproxy/grok-3-mini": {
+  "enabled": false
+ },
+ "cliproxy/grok-3-mini-fast": {
+  "enabled": false
+ },
+ "cliproxy/grok-4.20-0309-non-reasoning": {
+  "enabled": false
+ },
+ "cliproxy/grok-4.20-0309-reasoning": {
+  "enabled": false
+ },
+ "cliproxy/grok-4.20-multi-agent-0309": {
+  "enabled": false
+ },
+ "cliproxy/grok-build-0.1": {
+  "enabled": false
+ },
+ "cliproxy/grok-composer-2.5-fast": {
+  "enabled": false
+ },
+ "cliproxy/kimi-k2.7-code": {
+  "enabled": false
+ },
+ "cliproxy/kimi-k2.7-code-highspeed": {
+  "enabled": false
+ },
+ "opencode-go/kimi-k2.5": {
+  "enabled": false
+ },
+ "opencode-go/minimax-m2.5": {
+  "quality": 54,
+  "enabled": true,
+  "tier": "standard",
+  "cost": 0.0048
+ },
+ "opencode-go/grok-4.5": {
+  "enabled": false
+ },
+ "opencode-go/grok-4.6": {
+  "enabled": false
+ },
+ "opencode-go/gpt-5.6-luna": {
+  "enabled": false
+ },
+ "opencode-go/qwen3.5-plus": {
+  "quality": 32,
+  "enabled": true,
+  "tier": "small",
+  "cost": 0.004
+ },
+ "cliproxy/claude-fable-5": {
+  "tier": "frontier",
+  "enabled": true
+ },
+ "cliproxy/claude-opus-5": {
+  "tier": "frontier",
+  "enabled": true
+ },
+ "cliproxy/claude-opus-4-8": {
+  "tier": "strong",
+  "enabled": true,
+  "quality": 88,
+  "cost": 0.09
+ },
+ "cliproxy/claude-opus-4-7": {
+  "tier": "strong",
+  "enabled": true,
+  "quality": 84,
+  "cost": 0.09
+ },
+ "cliproxy/claude-opus-4-6": {
+  "tier": "strong",
+  "enabled": true,
+  "quality": 80,
+  "cost": 0.09
+ },
+ "cliproxy/claude-opus-4-5-20251101": {
+  "tier": "strong",
+  "enabled": true,
+  "quality": 76,
+  "cost": 0.09
+ },
+ "cliproxy/claude-sonnet-5": {
+  "tier": "strong",
+  "enabled": true,
+  "quality": 72,
+  "cost": 0.054
+ },
+ "cliproxy/gpt-5.4": {
+  "tier": "strong",
+  "enabled": true,
+  "quality": 69
+ },
+ "cliproxy/gpt-5.5": {
+  "tier": "strong",
+  "enabled": true,
+  "quality": 69
+ },
+ "cliproxy/gpt-5.6-sol": {
+  "tier": "strong",
+  "enabled": true,
+  "quality": 69
+ },
+ "cliproxy/gpt-5.6-terra": {
+  "tier": "strong",
+  "enabled": true,
+  "quality": 69
+ }
+}

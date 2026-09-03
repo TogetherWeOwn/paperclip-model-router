@@ -18,10 +18,6 @@ function tierIndex(tier: ModelTier): number {
   return index === -1 ? MODEL_TIER_ORDER.indexOf("standard") : index;
 }
 
-function lowerTier(tier: ModelTier, steps: number): ModelTier {
-  return MODEL_TIER_ORDER[Math.max(0, tierIndex(tier) - steps)] as ModelTier;
-}
-
 export function gateLevelFor(
   value: number | undefined,
   thresholds: { warn: number; downshift: number; halt: number },
@@ -145,9 +141,13 @@ export function selectModel(input: SelectInput): RoutingDecision {
     trace.push(`task class ceiling: ${taskClass.key} caps at ${ceiling}`);
   }
   if (budgetGate === "downshift" || budgetGate === "halt") {
-    const dropped = lowerTier(ceiling, 1);
-    trace.push(`budget gate ${budgetGate} at ${((budgetFraction ?? 0) * 100).toFixed(0)}% of cap: ceiling ${ceiling} -> ${dropped}`);
-    ceiling = dropped;
+    // TOG-877: this rung used to drop the tier ceiling by one. That could never
+    // reduce spend — it only ever shrank the survivor set, and shrinking a set
+    // cannot lower its minimum. On the live catalogue it made the one class it
+    // touched 4.5x dearer, because tier is not a cost proxy here (3 of 28
+    // `standard` models undercut every `small` model). The gate now acts on cost
+    // directly, below, once real costs are known.
+    trace.push(`budget gate ${budgetGate} at ${((budgetFraction ?? 0) * 100).toFixed(0)}% of cap: selecting on cost, not tier`);
   } else if (budgetGate === "warn") {
     trace.push(`budget gate warn at ${((budgetFraction ?? 0) * 100).toFixed(0)}% of cap`);
   }
@@ -205,8 +205,10 @@ export function selectModel(input: SelectInput): RoutingDecision {
     base.effectiveTier = lowestQualifiedTier;
   }
 
+  const overCeiling: Array<{ model: ModelEntry; cost: number }> = [];
   const survivors = qualified.filter((entry) => {
     if (tierIndex(entry.model.tier) <= tierIndex(appliedCeiling)) return true;
+    overCeiling.push(entry);
     rejections.push({
       modelId: entry.model.id,
       stage: "tier-ceiling",
@@ -214,6 +216,41 @@ export function selectModel(input: SelectInput): RoutingDecision {
     });
     return false;
   });
+
+  // TOG-877: the budget rung, acting on cost rather than through the tier proxy.
+  // It may only WIDEN the survivor set, and only with models strictly cheaper
+  // than what the ok rung would already have picked. Widening is what makes a
+  // cost reduction possible at all: the winner is the cost-minimum of the
+  // survivor set, so the old narrowing rung could never lower it. Bounding the
+  // readmission by `cheapestSurvivingCost` is what keeps the rung from ever
+  // raising cost — every model it admits is below the price the router was
+  // about to pay anyway, so the minimum can only fall or stay put.
+  if (budgetGate === "downshift" || budgetGate === "halt") {
+    const cheapestSurvivingCost = survivors.reduce(
+      (lowest, entry) => (entry.cost < lowest ? entry.cost : lowest),
+      Number.POSITIVE_INFINITY,
+    );
+    const readmitted = overCeiling.filter((entry) => entry.cost < cheapestSurvivingCost);
+    if (readmitted.length > 0) {
+      const readmittedIds = new Set(readmitted.map((entry) => entry.model.id));
+      for (let index = rejections.length - 1; index >= 0; index--) {
+        const rejection = rejections[index]!;
+        if (rejection.stage === "tier-ceiling" && readmittedIds.has(rejection.modelId)) {
+          rejections.splice(index, 1);
+        }
+      }
+      survivors.push(...readmitted);
+      const best = readmitted.reduce((low, entry) => (entry.cost < low.cost ? entry : low), readmitted[0]!);
+      trace.push(
+        `budget gate ${budgetGate}: readmitted ${readmitted.length} model(s) above the ${appliedCeiling} ceiling that cost less than the $${cheapestSurvivingCost.toFixed(5)} the ok rung would have paid — cheapest is ${best.model.id} at $${best.cost.toFixed(5)}`,
+      );
+      if (tierIndex(best.model.tier) > tierIndex(appliedCeiling)) base.effectiveTier = best.model.tier;
+    } else {
+      trace.push(
+        `budget gate ${budgetGate}: no model above the ${appliedCeiling} ceiling undercuts the ok-rung price — selection unchanged`,
+      );
+    }
+  }
 
   survivors.sort((left, right) => {
     if (left.cost !== right.cost) return left.cost - right.cost;

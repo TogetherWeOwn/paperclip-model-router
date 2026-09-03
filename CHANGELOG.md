@@ -32,6 +32,23 @@ version is not present here.
   router are two independent systems, and which decisions belong to each
   (TOG-681 §0).
 
+### Fixed
+
+- The budget `downshift` rung now reduces spend, which it previously could not
+  do on any catalogue. It used to lower only the tier *ceiling*, which can only
+  shrink the survivor set — and since the winner is that set's cost-minimum,
+  shrinking it can never lower the price. On the live 42-model catalogue it went
+  backwards, making the one class it changed 4.5x dearer, because tier is not a
+  cost proxy there: 3 of 28 `standard` models undercut every `small` model. The
+  rung now acts on cost directly, readmitting above-ceiling models *only* when
+  they are strictly cheaper than the price the `ok` rung would have paid — so it
+  can lower cost and can never raise it. Across 20,000 randomized catalogues:
+  4,596 trials now get a cheaper model (was 0) and 0 get a dearer one (was
+  2,040), with no trial refused that `ok` would have taken. Note this rung may
+  now select *above* the tier ceiling when doing so is cheaper; `effectiveTier`
+  reports the tier actually routed to. Halt-rung refusal behaviour is unchanged
+  (TOG-877, split from TOG-250).
+
 ### Security
 
 - An invocation can no longer supply its own `budgetSpentFraction`. A caller
