@@ -11,8 +11,9 @@ const source: CapacitySourceConfig = {
   id: "subscriptions",
   statusUrl: "https://capacity.example.test/status",
   apiKeySecretRef: null,
-  providers: ["teamclaude", "openrouter"],
-  accountIdFields: ["account"],
+  modelIds: ["subscription-model", "available-model"],
+  requestTimeoutMs: 5000,
+  maxResponseBytes: 1048576,
   healthFields: ["status"],
   windows: [
     {
@@ -48,21 +49,21 @@ describe("provider-neutral capacity normalization", () => {
     });
 
     expect(snapshot.error).toBeNull();
-    expect(snapshot.lanes).toHaveLength(2);
-    expect(snapshot.lanes[0]).toMatchObject({
-      account: "subscription-a",
+    expect(snapshot.evidence).toHaveLength(2);
+    expect(snapshot.evidence[0]).toMatchObject({
+      laneLabel: "record-1",
       utilization: 0.96,
       resetsAt: "2026-09-04T12:02:00.000Z",
       resetInSeconds: 120,
       telemetryAvailable: true,
     });
-    expect(snapshot.lanes[0]!.remainingFraction).toBeCloseTo(0.04);
+    expect(snapshot.evidence[0]!.remainingFraction).toBeCloseTo(0.04);
     expect(JSON.stringify(snapshot)).not.toContain("credential");
   });
 
   it("treats an exhausted window resetting imminently as degraded, not permanently dead", () => {
     const snapshot = normalizeCapacityPayload({
-      source: { ...source, providers: ["teamclaude"] },
+      source: { ...source, modelIds: ["subscription-model"] },
       fetchedAt: NOW,
       payload: {
         accounts: [{
@@ -72,7 +73,7 @@ describe("provider-neutral capacity normalization", () => {
         }],
       },
     });
-    expect(snapshot.lanes[0]).toMatchObject({ health: "degraded", posture: "avoid" });
+    expect(snapshot.evidence[0]).toMatchObject({ health: "degraded", posture: "avoid" });
   });
 
   it("does not turn an envelope status into a synthetic healthy account", () => {
@@ -90,14 +91,14 @@ describe("provider-neutral capacity normalization", () => {
       },
     });
 
-    expect(snapshot.lanes).toHaveLength(2);
-    expect(snapshot.lanes.every((lane) => lane.account === "real-account")).toBe(true);
-    expect(snapshot.lanes.every((lane) => lane.posture === "unavailable")).toBe(true);
+    expect(snapshot.evidence).toHaveLength(2);
+    expect(snapshot.evidence.every((lane) => lane.laneLabel === "record-1")).toBe(true);
+    expect(snapshot.evidence.every((lane) => lane.posture === "unavailable")).toBe(true);
   });
 
   it("pairs the restrictive window's utilization with its own reset", () => {
     const snapshot = normalizeCapacityPayload({
-      source: { ...source, providers: ["teamclaude"] },
+      source: { ...source, modelIds: ["subscription-model"] },
       fetchedAt: NOW,
       payload: {
         accounts: [{
@@ -110,7 +111,7 @@ describe("provider-neutral capacity normalization", () => {
       },
     });
 
-    expect(snapshot.lanes[0]).toMatchObject({
+    expect(snapshot.evidence[0]).toMatchObject({
       health: "exhausted",
       posture: "unavailable",
       utilization: 1,
@@ -118,13 +119,53 @@ describe("provider-neutral capacity normalization", () => {
       resetInSeconds: 518400,
     });
   });
+
+  it.each([
+    ["degraded", "degraded", "avoid"],
+    ["exhausted", "exhausted", "unavailable"],
+    ["unknown", "unknown", "unknown"],
+  ] as const)("keeps explicit %s health at least as restrictive as a healthy window", (status, health, posture) => {
+    const snapshot = normalizeCapacityPayload({
+      source: { ...source, modelIds: ["subscription-model"] },
+      fetchedAt: NOW,
+      payload: { accounts: [{ account: "explicit", status, used5h: 0.1 }] },
+    });
+    expect(snapshot.evidence[0]).toMatchObject({ health, posture });
+  });
+
+  it("keeps exhaustion unavailable when reset is current or past", () => {
+    const snapshot = normalizeCapacityPayload({
+      source: { ...source, modelIds: ["subscription-model"] },
+      fetchedAt: NOW,
+      payload: { accounts: [{ account: "expired", used5h: 1, resets5hAt: NOW }] },
+    });
+    expect(snapshot.evidence[0]).toMatchObject({ health: "exhausted", posture: "unavailable", resetInSeconds: 0 });
+  });
+
+  it("does not persist remote lane/account/URL-like labels", () => {
+    const snapshot = normalizeCapacityPayload({
+      source: { ...source, modelIds: ["subscription-model"] },
+      fetchedAt: NOW,
+      payload: { accounts: [{ account: "https://secret.example/token", used5h: 0.2 }] },
+    });
+    expect(snapshot.evidence[0]?.laneLabel).toBe("record-1");
+    expect(JSON.stringify(snapshot)).not.toContain("secret.example");
+  });
+
+  it("ignores reset-only windows when choosing restrictive utilization", () => {
+    const snapshot = normalizeCapacityPayload({
+      source: { ...source, modelIds: ["subscription-model"] },
+      fetchedAt: NOW,
+      payload: { accounts: [{ account: "reset-only", resets5hAt: "2026-09-10T12:00:00Z", used7d: 0.7, resets7dAt: "2026-09-11T12:00:00Z" }] },
+    });
+    expect(snapshot.evidence[0]).toMatchObject({ utilization: 0.7, resetsAt: "2026-09-11T12:00:00.000Z", telemetryAvailable: true });
+  });
 });
 
 function routingConfig(mode: "shadow" | "enforce") {
   return resolveConfig({
     routing: { enabled: true, mode: "advise", stickyModelWithinIssue: false },
-    providers: { permitted: ["teamclaude", "openrouter"], preferenceOrder: ["teamclaude"] },
-    capacityRouting: {
+        capacityRouting: {
       enabled: true,
       mode,
       unknownTelemetry: "fail-closed",
@@ -139,8 +180,7 @@ function routingConfig(mode: "shadow" | "enforce") {
         costPerMTokIn: 0,
         costPerMTokOut: 0,
         contextWindow: 200000,
-        providers: ["teamclaude"],
-      },
+              },
       {
         id: "available-model",
         family: "other",
@@ -149,8 +189,7 @@ function routingConfig(mode: "shadow" | "enforce") {
         costPerMTokIn: 1,
         costPerMTokOut: 4,
         contextWindow: 200000,
-        providers: ["openrouter"],
-      },
+              },
       {
         id: "cheap-below-floor",
         family: "other",
@@ -159,8 +198,7 @@ function routingConfig(mode: "shadow" | "enforce") {
         costPerMTokIn: 0,
         costPerMTokOut: 0,
         contextWindow: 200000,
-        providers: ["openrouter"],
-      },
+              },
     ],
     taskClasses: [{ key: "implementation", qualityFloor: 70 }],
   });
@@ -168,8 +206,9 @@ function routingConfig(mode: "shadow" | "enforce") {
 
 const lanes = [
   {
-    provider: "teamclaude",
-    account: "scarce-subscription",
+    modelId: "subscription-model",
+    source: "subscriptions",
+    laneLabel: "scarce-subscription",
     health: "degraded" as const,
     posture: "avoid" as const,
     utilization: 0.96,
@@ -181,8 +220,9 @@ const lanes = [
     reason: "near exhausted",
   },
   {
-    provider: "openrouter",
-    account: "available-capacity",
+    modelId: "available-model",
+    source: "subscriptions",
+    laneLabel: "available-capacity",
     health: "healthy" as const,
     posture: "available" as const,
     utilization: 0.2,
@@ -200,37 +240,94 @@ describe("usage-aware selection", () => {
     const decision = selectModel({
       config: routingConfig("shadow"),
       descriptor: { taskClass: "implementation", requestedProfile: "implementation" },
-      signals: { capacityLanes: lanes },
+      signals: { capacityEvidence: lanes },
     });
     expect(decision.modelId).toBe("subscription-model");
     expect(decision.capacity).toMatchObject({
       mode: "shadow",
       shadowModelId: "available-model",
-      shadowProvider: "openrouter",
-      shadowAccount: "available-capacity",
+      shadowSource: "subscriptions",
+      shadowLaneLabel: "available-capacity",
     });
     expect(decision.rejections).toContainEqual(
       expect.objectContaining({ modelId: "cheap-below-floor", stage: "quality-floor" }),
     );
   });
 
+  it.each(["capacity-snapshot-stale", "capacity-request-failed"])("does not use retained evidence under exclude-lane after %s", (capacityError) => {
+    const config = resolveConfig({
+      ...routingConfig("enforce"),
+      capacityRouting: { ...routingConfig("enforce").capacityRouting, unknownTelemetry: "exclude-lane" },
+    });
+    const decision = selectModel({
+      config,
+      descriptor: { taskClass: "implementation" },
+      signals: { capacityEvidence: lanes, capacityError },
+    });
+    expect(decision).toMatchObject({ outcome: "no-eligible-model", modelId: null, capacity: { telemetry: "unavailable" } });
+  });
+
+  it("ignores uncovered candidates above the effective tier under fail-closed", () => {
+    const config = resolveConfig({
+      ...routingConfig("enforce"),
+      tiering: { signalWeights: {}, thresholds: { small: 0, standard: 30, strong: 60, frontier: 85 }, defaultTier: "small" },
+      models: [
+        { id: "healthy-small", tier: "small", quality: 80, costPerMTokIn: 1, costPerMTokOut: 1, contextWindow: 200000 },
+        { id: "uncovered-frontier", tier: "frontier", quality: 95, costPerMTokIn: 10, costPerMTokOut: 10, contextWindow: 200000 },
+      ],
+    });
+    const healthy = { ...lanes[1]!, modelId: "healthy-small" };
+    const decision = selectModel({ config, descriptor: { taskClass: "implementation" }, signals: { capacityEvidence: [healthy] } });
+    expect(decision).toMatchObject({ outcome: "selected", modelId: "healthy-small" });
+    expect(decision.rejections).toContainEqual(expect.objectContaining({ modelId: "uncovered-frontier", stage: "tier-ceiling" }));
+  });
+
+  it("aggregates contradictory evidence to the most restrictive posture", () => {
+    const contradictory = [
+      ...lanes,
+      { ...lanes[1]!, source: "secondary", laneLabel: "record-1", health: "exhausted" as const, posture: "unavailable" as const, utilization: 1, remainingFraction: 0 },
+    ];
+    const decision = selectModel({ config: routingConfig("enforce"), descriptor: { taskClass: "implementation" }, signals: { capacityEvidence: contradictory } });
+    expect(decision.outcome).toBe("no-eligible-model");
+  });
+
   it("prefers usable capacity after the quality floor in enforce mode", () => {
     const decision = selectModel({
       config: routingConfig("enforce"),
       descriptor: { taskClass: "implementation" },
-      signals: { capacityLanes: lanes },
+      signals: { capacityEvidence: lanes },
     });
     expect(decision.modelId).toBe("available-model");
     expect(decision.capacity).toMatchObject({
-      selectedProvider: "openrouter",
-      selectedAccount: "available-capacity",
+      selectedSource: "subscriptions",
+      selectedLaneLabel: "available-capacity",
       usagePosture: "available",
     });
   });
 
+  it.each([
+    ["pin", true],
+    ["stickiness", false],
+  ] as const)("does not let %s use telemetryAvailable:false evidence in enforce mode", (_label, pinned) => {
+    const config = resolveConfig({
+      ...routingConfig("enforce"),
+      routing: { enabled: true, mode: "advise", stickyModelWithinIssue: !pinned },
+    });
+    const unknown = lanes.map((lane) => lane.modelId === "subscription-model"
+      ? { ...lane, telemetryAvailable: false, health: "healthy" as const, posture: "available" as const }
+      : lane);
+    const decision = selectModel({
+      config,
+      descriptor: { taskClass: "implementation", ...(pinned ? { pinnedModelId: "subscription-model" } : { issueId: "issue-1" }) },
+      signals: { capacityEvidence: unknown, ...(pinned ? {} : { stickyModelId: "subscription-model" }) },
+    });
+    expect(decision.modelId).toBeNull();
+    expect(decision.outcome).toBe("no-eligible-model");
+  });
+
   it("does not let a pin resurrect an exhausted lane in enforce mode", () => {
     const unavailableSubscription = lanes.map((lane) =>
-      lane.provider === "teamclaude"
+      lane.modelId === "subscription-model"
         ? { ...lane, health: "exhausted" as const, posture: "unavailable" as const, utilization: 1, remainingFraction: 0 }
         : lane,
     );
@@ -241,12 +338,11 @@ describe("usage-aware selection", () => {
         pinnedModelId: "subscription-model",
         pinReason: "incident override",
       },
-      signals: { capacityLanes: unavailableSubscription },
+      signals: { capacityEvidence: unavailableSubscription },
     });
 
-    expect(decision.modelId).toBe("available-model");
-    expect(decision.pin).toMatchObject({ modelId: "subscription-model", honored: false });
-    expect(decision.capacity.usagePosture).toBe("available");
+    expect(decision.modelId).toBeNull();
+    expect(decision.outcome).toBe("no-eligible-model");
   });
 
   it("does not let issue stickiness resurrect an exhausted lane in enforce mode", () => {
@@ -255,7 +351,7 @@ describe("usage-aware selection", () => {
       routing: { enabled: true, mode: "advise", stickyModelWithinIssue: true },
     });
     const unavailableSubscription = lanes.map((lane) =>
-      lane.provider === "teamclaude"
+      lane.modelId === "subscription-model"
         ? { ...lane, health: "exhausted" as const, posture: "unavailable" as const, utilization: 1, remainingFraction: 0 }
         : lane,
     );
@@ -263,14 +359,13 @@ describe("usage-aware selection", () => {
       config,
       descriptor: { taskClass: "implementation", issueId: "issue-1" },
       signals: {
-        capacityLanes: unavailableSubscription,
+        capacityEvidence: unavailableSubscription,
         stickyModelId: "subscription-model",
       },
     });
 
-    expect(decision.modelId).toBe("available-model");
-    expect(decision.capacity.usagePosture).toBe("available");
-    expect(decision.trace.join(" ")).toContain("switching despite the cache cost");
+    expect(decision.modelId).toBeNull();
+    expect(decision.outcome).toBe("no-eligible-model");
   });
 
   it("rejects candidates with no covered provider lane under fail-closed enforcement", () => {
@@ -286,7 +381,7 @@ describe("usage-aware selection", () => {
     const decision = selectModel({
       config: routingConfig("enforce"),
       descriptor: { taskClass: "implementation" },
-      signals: { capacityLanes: exhaustedOpenrouterOnly },
+      signals: { capacityEvidence: exhaustedOpenrouterOnly },
     });
 
     expect(decision.outcome).toBe("no-eligible-model");
@@ -295,9 +390,24 @@ describe("usage-aware selection", () => {
       expect.objectContaining({
         modelId: "subscription-model",
         stage: "capacity",
-        reason: expect.stringContaining("no capacity telemetry covers"),
+        reason: expect.stringContaining("no capacity evidence covers"),
       }),
     );
+  });
+
+  it("refuses a below-quality-floor fallback whose enforced capacity is unknown", () => {
+    const config = resolveConfig({
+      ...routingConfig("enforce"),
+      routing: { enabled: true, fallbackModelId: "cheap-below-floor", stickyModelWithinIssue: false },
+    });
+    const decision = selectModel({
+      config,
+      descriptor: { taskClass: "implementation" },
+      signals: { capacityEvidence: lanes.map((lane) => ({ ...lane, health: "exhausted" as const, posture: "unavailable" as const, telemetryAvailable: true })) },
+    });
+    expect(decision.outcome).toBe("no-eligible-model");
+    expect(decision.fallbackUsed).toBe(false);
+    expect(decision.rejections).toContainEqual(expect.objectContaining({ modelId: "cheap-below-floor", stage: "quality-floor" }));
   });
 
   it("refuses rather than using a configured fallback when every lane is unavailable", () => {
@@ -315,7 +425,7 @@ describe("usage-aware selection", () => {
     const decision = selectModel({
       config,
       descriptor: { taskClass: "implementation" },
-      signals: { capacityLanes: unavailable },
+      signals: { capacityEvidence: unavailable },
     });
     expect(decision.outcome).toBe("no-eligible-model");
     expect(decision.fallbackUsed).toBe(false);
@@ -339,7 +449,7 @@ describe("usage-aware selection", () => {
       config: routingConfig("enforce"),
       descriptor: { taskClass: "implementation" },
       signals: {
-        capacityLanes: lanes,
+        capacityEvidence: lanes,
         capacityError: "secondary telemetry endpoint unavailable",
       },
     });
@@ -355,20 +465,14 @@ describe("usage-aware selection", () => {
         taskClass: "implementation",
         requestedModelId: "subscription-model",
         servingModelId: "available-model",
-        servingProvider: "openrouter",
-        servingAccount: "available-capacity",
       },
       signals: {
-        capacityLanes: lanes,
+        capacityEvidence: lanes,
         servingModelId: "available-model",
-        servingProvider: "openrouter",
-        servingAccount: "available-capacity",
       },
     });
     expect(decision.capacity).toMatchObject({
       servingModelId: "available-model",
-      servingProvider: "openrouter",
-      servingAccount: "available-capacity",
     });
   });
 });

@@ -7,6 +7,7 @@ export const PLUGIN_API_VERSION = 1 as const;
 
 export const ACTION_KEYS = {
   invoke: "invoke",
+  refreshCapacity: "refresh-capacity",
 } as const;
 
 export const TOOL_NAMES = {

@@ -120,12 +120,6 @@ export const ROUTER_CONFIG_SCHEMA = {
             items: { type: "string", enum: MODEL_CAPABILITIES },
             default: [],
           },
-          providers: {
-            type: "array",
-            items: { type: "string", minLength: 1 },
-            default: [],
-            description: "Capacity telemetry lane labels associated with this opaque model id.",
-          },
           enabled: { type: "boolean", default: true },
         },
       },
@@ -191,30 +185,40 @@ export const ROUTER_CONFIG_SCHEMA = {
         },
         conserveUtilization: { type: "number", minimum: 0, maximum: 1, default: 0.6 },
         avoidUtilization: { type: "number", minimum: 0, maximum: 1, default: 0.8 },
+        maxSnapshotAgeMs: { type: "integer", minimum: 1000, maximum: 86400000, default: 300000 },
         sources: {
           type: "array",
           default: [],
           items: {
             type: "object",
             additionalProperties: false,
-            required: ["id", "statusUrl", "providers", "windows"],
+            required: ["id", "statusUrl", "modelIds", "windows"],
             properties: {
               id: { type: "string", minLength: 1 },
               statusUrl: {
                 type: "string",
                 format: "uri",
                 pattern: "^https://[^/?#@]+(?:/[^?#]*)?$",
+                not: { pattern: "^https://(?:localhost|127(?:\\.[0-9]{1,3}){3}|0(?:\\.[0-9]{1,3}){3}|10(?:\\.[0-9]{1,3}){3}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?::[0-9]+)?(?:/|$)" },
               },
               apiKeySecretRef: SECRET_REF_SCHEMA,
-              providers: {
+              modelIds: {
                 type: "array",
                 minItems: 1,
                 items: { type: "string", minLength: 1 },
+                description: "Opaque model ids whose selection this source may inform.",
               },
-              accountIdFields: {
-                type: "array",
-                items: { type: "string", minLength: 1 },
-                default: ["account", "accountId", "id", "email"],
+              requestTimeoutMs: {
+                type: "integer",
+                minimum: 1000,
+                maximum: 25000,
+                default: 5000,
+              },
+              maxResponseBytes: {
+                type: "integer",
+                minimum: 1024,
+                maximum: 16777216,
+                default: 262144,
               },
               healthFields: {
                 type: "array",

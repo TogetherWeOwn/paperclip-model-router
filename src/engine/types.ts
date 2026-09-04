@@ -22,8 +22,6 @@ export interface ModelEntry {
   costPerMTokOut: number;
   contextWindow: number;
   capabilities: ModelCapability[];
-  /** Capacity telemetry lane labels associated with this opaque model id. */
-  providers: string[];
   enabled: boolean;
 }
 
@@ -37,8 +35,6 @@ export interface TaskDescriptor {
   requestedProfile?: string;
   requestedModelId?: string;
   servingModelId?: string;
-  servingProvider?: string;
-  servingAccount?: string;
   pinnedModelId?: string;
   pinReason?: string;
   estimatedInputTokens?: number;
@@ -47,11 +43,9 @@ export interface TaskDescriptor {
 
 export interface RuntimeSignals {
   budgetSpentFraction?: number;
-  capacityLanes?: import("../capacity/types.js").CapacityLane[];
+  capacityEvidence?: import("../capacity/types.js").CapacityEvidence[];
   capacityError?: string;
   servingModelId?: string;
-  servingProvider?: string;
-  servingAccount?: string;
   stickyModelId?: string;
 }
 
@@ -82,9 +76,9 @@ export interface Candidate {
   tier: ModelTier;
   quality: number;
   expectedCostUsd: number;
-  provider: string | null;
-  account: string | null;
-  usagePosture: import("../capacity/types.js").CapacityLane["posture"] | "not-evaluated";
+  capacitySource: string | null;
+  laneLabel: string | null;
+  usagePosture: import("../capacity/types.js").CapacityEvidence["posture"] | "not-evaluated";
   utilization: number | null;
   resetsAt: string | null;
 }
@@ -104,18 +98,16 @@ export interface RoutingDecision {
   capacity: {
     mode: "disabled" | "shadow" | "enforce";
     telemetry: "available" | "unavailable" | "not-configured";
-    selectedProvider: string | null;
-    selectedAccount: string | null;
-    usagePosture: import("../capacity/types.js").CapacityLane["posture"] | "not-evaluated";
+    selectedSource: string | null;
+    selectedLaneLabel: string | null;
+    usagePosture: import("../capacity/types.js").CapacityEvidence["posture"] | "not-evaluated";
     utilization: number | null;
     resetsAt: string | null;
     shadowModelId: string | null;
-    shadowProvider: string | null;
-    shadowAccount: string | null;
+    shadowSource: string | null;
+    shadowLaneLabel: string | null;
     decisionReason: string;
     servingModelId: string | null;
-    servingProvider: string | null;
-    servingAccount: string | null;
     fallbackEvents: string[];
   };
   gates: { budget: GateLevel };

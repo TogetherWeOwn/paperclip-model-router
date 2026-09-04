@@ -46,6 +46,7 @@ export const DEFAULT_CAPACITY_ROUTING: CapacityRoutingConfig = {
   unknownTelemetry: "fail-closed",
   conserveUtilization: 0.6,
   avoidUtilization: 0.8,
+  maxSnapshotAgeMs: 300_000,
   sources: [],
 };
 
@@ -90,7 +91,6 @@ function resolveModels(value: unknown): ModelEntry[] {
       costPerMTokOut: pickNumber(raw.costPerMTokOut, 0),
       contextWindow: pickNumber(raw.contextWindow, 0),
       capabilities: pickStringArray(raw.capabilities, []) as ModelEntry["capabilities"],
-      providers: pickStringArray(raw.providers, []),
       enabled: pickBoolean(raw.enabled, true),
     });
   }
@@ -145,9 +145,10 @@ function resolveCapacitySources(value: unknown): CapacityRoutingConfig["sources"
       apiKeySecretRef: isRecord(raw.apiKeySecretRef)
         ? (raw.apiKeySecretRef as unknown as CapacityRoutingConfig["sources"][number]["apiKeySecretRef"])
         : null,
-      providers: pickStringArray(raw.providers, []),
-      accountIdFields: pickStringArray(raw.accountIdFields, ["account", "accountId", "id", "email"]),
+      modelIds: pickStringArray(raw.modelIds, []),
       healthFields: pickStringArray(raw.healthFields, ["health", "status", "unifiedStatus"]),
+      requestTimeoutMs: pickNumber(raw.requestTimeoutMs, 5_000),
+      maxResponseBytes: pickNumber(raw.maxResponseBytes, 262_144),
       windows,
     }];
   });
@@ -253,6 +254,7 @@ export function resolveConfig(raw: unknown): RouterConfig {
       unknownTelemetry: capacityRaw.unknownTelemetry === "exclude-lane" ? "exclude-lane" : "fail-closed",
       conserveUtilization: pickNumber(capacityRaw.conserveUtilization, DEFAULT_CAPACITY_ROUTING.conserveUtilization),
       avoidUtilization: pickNumber(capacityRaw.avoidUtilization, DEFAULT_CAPACITY_ROUTING.avoidUtilization),
+      maxSnapshotAgeMs: pickNumber(capacityRaw.maxSnapshotAgeMs, DEFAULT_CAPACITY_ROUTING.maxSnapshotAgeMs),
       sources: resolveCapacitySources(capacityRaw.sources),
     },
     rule0: resolveRule0(source.rule0),

@@ -16,77 +16,46 @@ Nothing yet.
 
 ### Added
 
-- **Provider-neutral capacity telemetry and usage-aware routing (TOG-943/972).**
-  Configured status sources map provider/account identifiers, health, utilization
-  windows, and reset timestamps into auditable lane snapshots. The selector applies
-  every hard constraint and the task-class quality floor first, then ranks only those
-  survivors by usable capacity. Catalogue presence is not treated as health evidence.
-- **Shadow and enforce decision records.** Shadow mode preserves the compatible-upstream
-  v1 selection and records the capacity-aware alternative; enforce mode can apply that
-  alternative. Records keep requested and selected model identities, capacity-lane/account
-  labels, utilization, reset, reason, and fallback facts separate from actual serving
-  identity, which the compatible upstream remains responsible for.
-- **Compatible-upstream v1 clarification.** The contract now distinguishes configured
-  pre-inference capacity-lane labels from the actual provider/account that serves an
-  inference. Capacity may rank quality-qualified models; it does not select an upstream
-  deployment leg, prove serving identity, retry transport, or trigger post-HTTP fallback.
+- **Sanitized model-usage evidence (TOG-943/972).** Capacity sources associate health,
+  utilization, and reset facts with exact opaque model IDs. Source IDs and lane labels are
+  audit labels only; the plugin neither chooses nor reports the provider/account that serves
+  inference. Catalogue presence is not health evidence.
+- **Separate refresh semantics.** `refresh-capacity` performs one bounded, host-managed GET
+  per configured source and stores a company-scoped snapshot only when every refresh result
+  is valid. Canonical `invoke` performs zero telemetry GETs and still attempts inference once.
 
 ### Changed
 
-- Replaced the selection-only, deployment-specific product with the accepted
-  compatible-upstream v1 contract (TOG-530/TOG-532). The plugin now exposes one
-  `select -> invoke -> normalize -> record` operation through the agent tool,
-  action, and two scoped routes.
-- Added exact OpenAI Chat Completions-compatible and Anthropic Messages-compatible
-  request encoders, response normalizers, stable error classification, one-attempt
-  transport behavior, caller-visible timeout, redirect refusal, and buffered
-  response-size enforcement through the published `ctx.http.fetch` boundary.
-- Added per-company protocol/base URL/secret reference/transport configuration,
-  host-context tenant authorization, `multiCompanyConfig: true`, company-scoped
-  audit state, aggregate-only metrics, and call-time Paperclip secret resolution.
+- Replaced the selection-only product with the compatible-upstream v1
+  `select -> invoke -> normalize -> record` operation and exact OpenAI Chat Completions- and
+  Anthropic Messages-compatible adapters.
+- Capacity is disabled by default and shadow-first. Shadow records an evidence-aware model
+  alternative while preserving v1 selection. Enforce may change only the opaque model ID,
+  after capability, context, budget halt, and quality gates. Pins, stickiness, and fallback
+  use the same strict evidence predicate and cannot cross unavailable or unknown evidence.
 
-### Removed
+### Security and safety
 
-- Removed all router-owned provider policy, provider-bearing model facts, combo
-  arming, pay-as-you-go controls, and pooled-subscription quota behavior from the
-  active schema, engine, worker, fixtures, and tests. Deployment routing now belongs
-  entirely to the configured compatible upstream.
+- Capacity reads require absolute public HTTPS URLs, closed Paperclip secret references,
+  manual redirects, JSON with identity encoding, bounded time and size, one request, no retry,
+  and router-authored failure codes. Failed refreshes do not overwrite a valid snapshot.
+- Enforce defaults to `fail-closed`. Explicit health and window health combine conservatively;
+  reset-only fields never suppress valid utilization, and utilization stays paired with its reset.
+- No capacity output contains credentials, raw bodies, URLs, deployment provider/account, or
+  unverified serving identity. Transport failure never causes replay or model reselection.
 
-### Security
+### Promotion policy
 
-- Closed native invocation fields and secret-reference objects; callers cannot
-  override model, protocol, base URL, auth headers, or streaming. Credentials and
-  upstream bodies are excluded from logs, state, errors, metrics, fixtures, and
-  returned data.
-- Added source and built-artifact checks requiring inference networking to use only
-  Paperclip's host-managed HTTP boundary with redirects disabled and
-  `Accept-Encoding: identity`.
-
-### Safety
-
-- Capacity routing is disabled by default and defaults to `shadow` when enabled.
-- Enforce mode defaults to `unknownTelemetry: "fail-closed"`: an unreadable or empty
-  configured source produces `no-eligible-model` rather than treating unknown capacity
-  as healthy or crossing the rule through a fallback, pin, or sticky selection.
-- Capacity never lowers a configured quality floor. Missing serving identity remains
-  null and is never inferred from the requested model.
-
-### Promotion gates
-
-Promote a company to `mode: "enforce"` only after representative shadow comparisons show
-no unexplained serving-identity mismatch or hard-gate regression, the affected models have
-measured quality evidence at or above each task-class floor, every required telemetry lane
-has been read without exposing credential material, and an outage rehearsal proves the
-production no-telemetry policy refuses work. Disable `capacityRouting` to return to v1.
+Promotion is an operator decision, not an automatic gate. Require TOG-901/916 observations,
+TOG-251 measurements, fresh coverage for every affected model, a clean representative shadow
+window, and an outage rehearsal proving fail-closed behavior. This staged version authorizes
+neither a public release nor a live installation. Disable `capacityRouting` to restore v1.
 
 ### Compatibility
 
-- The compatible-upstream configuration and invocation surfaces introduced after v0.2.7
-  remain authoritative. Capacity routing is an optional additive surface; existing current-
-  main configs keep their v1 selection and invocation behavior without changes.
-- This remains a breaking upgrade from the historical selection-only v0.2.7 product. Such
-  configs must first migrate to the compatible-upstream schema.
-
+- Existing current-main compatible-upstream configs retain v1 behavior because capacity is
+  optional and disabled by default. Historical selection-only v0.2.7 configs still require
+  migration to the compatible-upstream schema.
 
 ## [0.2.7] - 2026-08-25
 

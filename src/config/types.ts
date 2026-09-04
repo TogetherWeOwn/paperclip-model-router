@@ -60,6 +60,7 @@ export interface CapacityRoutingConfig {
   unknownTelemetry: "fail-closed" | "exclude-lane";
   conserveUtilization: number;
   avoidUtilization: number;
+  maxSnapshotAgeMs: number;
   sources: CapacitySourceConfig[];
 }
 

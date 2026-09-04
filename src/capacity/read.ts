@@ -1,3 +1,4 @@
+import { isReservedLiteralHost } from "../config/upstream-constraints.js";
 import { normalizeCapacityPayload } from "./normalize.js";
 import type { CapacitySnapshot, CapacitySourceConfig } from "./types.js";
 
@@ -5,8 +6,15 @@ export interface CapacityHttpClient {
   request(input: {
     url: string;
     method: "GET";
-    headers?: Record<string, string>;
-  }): Promise<{ status: number; body: unknown }>;
+    headers: Record<string, string>;
+    redirect: "manual";
+    timeoutMs: number;
+    maxResponseBytes: number;
+  }): Promise<{ status: number; contentType: string | null; body: unknown; responseBytes: number; redirected: boolean }>;
+}
+
+function failure(source: CapacitySourceConfig, fetchedAt: string, error: string): CapacitySnapshot {
+  return { fetchedAt, source: source.id, evidence: [], error };
 }
 
 export async function readCapacitySource(input: {
@@ -16,40 +24,33 @@ export async function readCapacitySource(input: {
   now: () => string;
 }): Promise<CapacitySnapshot> {
   const fetchedAt = input.now();
-  let response: { status: number; body: unknown };
+  let parsed: URL;
+  try { parsed = new URL(input.source.statusUrl); } catch { return failure(input.source, fetchedAt, "capacity-url-rejected"); }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash || isReservedLiteralHost(parsed.hostname)) {
+    return failure(input.source, fetchedAt, "capacity-url-rejected");
+  }
+  let response: Awaited<ReturnType<CapacityHttpClient["request"]>>;
   try {
     response = await input.http.request({
       url: input.source.statusUrl,
       method: "GET",
-      headers: input.apiKey ? { "x-api-key": input.apiKey } : {},
+      headers: {
+        Accept: "application/json",
+        "Accept-Encoding": "identity",
+        ...(input.apiKey ? { "x-api-key": input.apiKey } : {}),
+      },
+      redirect: "manual",
+      timeoutMs: input.source.requestTimeoutMs,
+      maxResponseBytes: input.source.maxResponseBytes,
     });
-  } catch (error) {
-    return {
-      fetchedAt,
-      source: input.source.id,
-      lanes: [],
-      error: `capacity status request failed: ${error instanceof Error ? error.message : String(error)}`,
-    };
+  } catch {
+    return failure(input.source, fetchedAt, "capacity-request-failed");
   }
-  if (response.status === 401 || response.status === 403) {
-    return {
-      fetchedAt,
-      source: input.source.id,
-      lanes: [],
-      error: `capacity status rejected the credential (HTTP ${response.status})`,
-    };
-  }
-  if (response.status < 200 || response.status >= 300) {
-    return {
-      fetchedAt,
-      source: input.source.id,
-      lanes: [],
-      error: `capacity status returned HTTP ${response.status}`,
-    };
-  }
-  return normalizeCapacityPayload({
-    payload: response.body,
-    source: input.source,
-    fetchedAt,
-  });
+  if (response.redirected || (response.status >= 300 && response.status < 400)) return failure(input.source, fetchedAt, "capacity-redirect-refused");
+  if (response.responseBytes > input.source.maxResponseBytes) return failure(input.source, fetchedAt, "capacity-response-too-large");
+  if (response.status === 401 || response.status === 403) return failure(input.source, fetchedAt, "capacity-authentication-failed");
+  if (response.status < 200 || response.status >= 300) return failure(input.source, fetchedAt, "capacity-http-failed");
+  if (!response.contentType?.toLowerCase().split(";", 1)[0]?.trim().endsWith("/json") && !response.contentType?.toLowerCase().split(";", 1)[0]?.trim().endsWith("+json")) return failure(input.source, fetchedAt, "capacity-unexpected-media-type");
+  if (response.body === null || typeof response.body !== "object") return failure(input.source, fetchedAt, "capacity-invalid-json");
+  return normalizeCapacityPayload({ payload: response.body, source: input.source, fetchedAt });
 }

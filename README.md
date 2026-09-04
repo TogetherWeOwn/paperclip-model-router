@@ -12,7 +12,7 @@ The normative contract is [`docs/contracts/compatible-upstream-v1.md`](docs/cont
 ## Native surfaces
 
 - agent tool: `togetherweown.paperclip-model-router:model_router_invoke`
-- action: `invoke`
+- actions: `invoke`, `refresh-capacity`
 - `POST /api/plugins/togetherweown.paperclip-model-router/api/invoke?companyId=<uuid>`
 - `POST /api/plugins/togetherweown.paperclip-model-router/api/issues/:issueId/invoke`
 
@@ -82,32 +82,33 @@ Credentials are resolved at invocation time through `ctx.secrets.resolve` using 
 
 ### `capacityRouting` — usage-aware Router v2
 
-Capacity routing is disabled by default. When enabled, it defaults to `shadow`: the router
-reads provider/account telemetry, records the capacity-aware alternative, and keeps the
-existing compatible-upstream selection. `mode: "enforce"` applies the capacity ranking only
-after every hard constraint and the task-class quality floor have passed.
+Capacity routing is disabled by default and defaults to `shadow`. It consumes sanitized,
+pre-inference evidence keyed to exact opaque model IDs. It does not choose or expose the
+provider or account that serves inference. Run the company-scoped `refresh-capacity` action
+to read telemetry and store a valid snapshot; canonical `invoke` reads that snapshot and
+never performs a telemetry GET inline. Inference still makes exactly one upstream attempt.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `enabled` | boolean | `false` | Enables capacity reads and capacity-aware decisions. |
-| `mode` | `"shadow"` \| `"enforce"` | `"shadow"` | Shadow records the alternative; enforce selects it. |
-| `unknownTelemetry` | `"fail-closed"` \| `"exclude-lane"` | `"fail-closed"` | Enforcement refuses when required telemetry is unavailable, or excludes uncovered lanes only. |
-| `conserveUtilization` | number 0–1 | `0.6` | Marks a lane for conservation. |
-| `avoidUtilization` | number 0–1 | `0.8` | Prefers another qualified lane when possible. |
-| `sources` | array | `[]` | Provider-neutral field mappings for account, health, utilization, and reset data. |
+| `enabled` | boolean | `false` | Enables capacity-aware decisions from stored evidence. |
+| `mode` | `"shadow"` \| `"enforce"` | `"shadow"` | Shadow records the alternative; enforce may choose another qualified model ID. |
+| `unknownTelemetry` | `"fail-closed"` \| `"exclude-lane"` | `"fail-closed"` | Enforcement refuses when required evidence is absent or unknown, or excludes uncovered models. |
+| `conserveUtilization` | number 0–1 | `0.6` | Marks evidence for conservation. |
+| `avoidUtilization` | number 0–1 | `0.8` | Prefers another quality-qualified model when possible. |
+| `sources` | array | `[]` | Model IDs, sanitized lane-label fields, health/utilization mappings, and bounded read controls. |
 
-Each source names a status URL, one or more provider labels, account-id and health field
-candidates, and one or more utilization windows. Optional credentials remain Paperclip
-secret references and are resolved only for that telemetry request. Normalized snapshots and
-decision records contain account labels and utilization facts, never credential values.
-Catalogue presence is not health evidence.
+Each source names exact `modelIds`, a public HTTPS status URL, optional Paperclip secret
+reference, lane-label and health fields, utilization/reset windows, a 1–25 second timeout
+(default 5 seconds), and a bounded response ceiling (default 256 KiB). Refresh uses one
+host-managed GET with redirects refused and never overwrites a valid snapshot on failure.
+Stored evidence contains only model ID, source ID, a sanitized lane label, health, posture,
+utilization, and reset facts. It contains no credential, raw body, URL, provider, account, or
+serving-identity claim.
 
-The decision keeps requested and selected identities separate from observed downstream
-serving identity. Serving fields remain null when the compatible upstream does not report
-them; they are never inferred from the requested model. Promotion from shadow to enforce
-requires representative comparison evidence, measured quality-floor coverage, successful
-reads from every required lane, and a rehearsal proving the default telemetry-outage policy
-fails closed. Disable `capacityRouting` to restore the v1 selection path.
+Promotion to `enforce` is an operator decision, never an automatic gate. Before changing it,
+require TOG-901/916 evidence, TOG-251 measurements, fresh evidence for every affected model,
+a clean representative shadow window, and an outage rehearsal proving fail-closed behavior.
+Disable `capacityRouting` to restore v1 selection exactly.
 
 ## Invocation
 

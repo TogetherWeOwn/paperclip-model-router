@@ -1,32 +1,32 @@
-# ADR 0008 — Capacity routing is shadow-first and fails closed
+# ADR 0010 — Model-usage evidence is refreshed separately, shadow-first, and fails closed
 
 ## Decision
 
-Usage-aware routing is an extension of the existing selector, not a second router.
-The quality floor and hard gates run first. Provider/account capacity ranks the
-survivors afterwards.
+Usage-aware routing remains one model selector. Every capability, context, budget-halt,
+and task-class quality gate runs before capacity evidence. The optional evidence is keyed
+to an exact opaque model ID and may rank only models that cleared those gates. Source IDs
+and lane labels are sanitized telemetry labels; they do not identify or select the provider
+or account that ultimately serves inference.
 
-The feature defaults to disabled; when enabled it defaults to `shadow`. Shadow mode
-records the capacity-aware alternative while returning the v1 selection. Promotion to
-`enforce` is a config change backed by explicit comparison evidence, not an automatic
-state transition.
+The feature defaults to disabled and defaults to `shadow` when enabled. The company-scoped
+`refresh-capacity` action performs bounded telemetry reads and stores a valid snapshot.
+Canonical `invoke` reads only stored evidence and performs no telemetry GET. Shadow records
+the evidence-aware alternative while returning the v1 winner. Enforce may change only the
+selected model ID and still makes exactly one inference attempt.
 
-In enforce mode the default no-telemetry behavior is `fail-closed`. Unknown capacity is
-not healthy capacity. Operators may choose `exclude-lane` only when independent sources
-cover the remaining lanes.
+Enforce defaults to `fail-closed`. Evidence is usable only when telemetry is available and
+health/posture are known and serviceable. The same rule applies to ordinary selection, pins,
+stickiness, and fallback. A failed refresh never replaces the last valid snapshot.
 
-## Why
+## Promotion policy
 
-TOG-251 remains the authority for measured task-class quality. Usage pressure may choose
-between models above that floor; it may not lower the floor. TOG-930 established that
-catalogue presence is not health evidence, and TOG-358 requires live enforcement to fail
-closed when usage telemetry is unavailable.
-
-The router records requested and selected identities separately from observed serving
-identity. TOG-901/916 are not deployed, so missing serving evidence remains null rather
-than being inferred from the request.
+Promotion is an operator decision, not an automatic state transition or release gate. Do not
+set `enforce` until TOG-901/916 supplies trustworthy observations, TOG-251 measures affected
+models, every affected model has fresh capacity coverage, a representative shadow window is
+clean, and an outage rehearsal proves fail-closed behavior. This record authorizes neither a
+public release nor a live installation.
 
 ## Undo
 
-Set `capacityRouting.enabled` to `false` to return to the v1 selector. No model table,
-quality floor, provider rule, or existing quota gate changes are required.
+Set `capacityRouting.enabled` to `false` to restore the v1 selector. Deployment-provider and
+account routing remains entirely inside the configured compatible upstream.

@@ -8,9 +8,15 @@ export interface CapacityWindow {
   sourcePath: string;
 }
 
-export interface CapacityLane {
-  provider: string;
-  account: string;
+/**
+ * Capacity evidence associated with an opaque model id before inference.
+ * `source` and `laneLabel` are operator-defined telemetry labels. They are not
+ * claims about the provider or account that ultimately serves the request.
+ */
+export interface CapacityEvidence {
+  modelId: string;
+  source: string;
+  laneLabel: string;
   health: CapacityHealth;
   posture: "available" | "conserve" | "avoid" | "unavailable" | "unknown";
   utilization: number | null;
@@ -25,7 +31,7 @@ export interface CapacityLane {
 export interface CapacitySnapshot {
   fetchedAt: string;
   source: string;
-  lanes: CapacityLane[];
+  evidence: CapacityEvidence[];
   error: string | null;
 }
 
@@ -33,9 +39,11 @@ export interface CapacitySourceConfig {
   id: string;
   statusUrl: string;
   apiKeySecretRef: import("../config/types.js").SecretRef | null;
-  providers: string[];
-  accountIdFields: string[];
+  /** Opaque model ids whose selection this source may inform. */
+  modelIds: string[];
   healthFields: string[];
+  requestTimeoutMs: number;
+  maxResponseBytes: number;
   windows: Array<{
     name: string;
     utilizationFields: string[];

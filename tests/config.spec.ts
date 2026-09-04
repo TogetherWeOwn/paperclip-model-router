@@ -117,7 +117,7 @@ describe("compatible-upstream config", () => {
       sources: [{
         id: "capacity",
         statusUrl: "https://capacity.example/status",
-        providers: ["subscription-a"],
+        modelIds: ["minimax-m2.5"],
         windows: [{ name: "weekly", utilizationFields: ["used7d"], resetFields: ["resets7dAt"] }],
       }],
     };
@@ -139,7 +139,7 @@ describe("compatible-upstream config", () => {
       sources: [{
         id: "capacity",
         statusUrl: "https://user:pass@capacity.example/status?token=x",
-        providers: ["subscription-a"],
+        modelIds: ["minimax-m2.5"],
         apiKeySecretRef: "raw-secret",
         windows: [{ name: "weekly", utilizationFields: ["used7d"] }],
       }],
