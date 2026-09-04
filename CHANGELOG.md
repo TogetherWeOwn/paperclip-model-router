@@ -12,7 +12,13 @@ version is not present here.
 
 Nothing yet.
 
-## [0.3.0] - 2026-09-04
+## [0.4.0] - 2026-09-04
+
+Version note: this line was briefly staged as `0.3.0`. That number was already taken by the
+invocation-health line (`tog-534-private-release-0-3-0`, built 2026-09-02 and staged on the
+host), so two disjoint builds claimed one version. Router v2 vacated the collision and takes
+`0.4.0`; `0.3.0` and `0.3.1` belong to the invocation line. Never resolve a router artifact by
+version string alone — check `dist/` for the feature markers of the line you mean.
 
 ### Added
 
@@ -843,8 +849,8 @@ First release. Installs globally, configures per company.
 - Budget pressure is supplied by the caller as `budgetSpentFraction`. The plugin
   does not read company spend itself; it holds no `costs.read` capability.
 
-[Unreleased]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.2.7...v0.3.0
+[Unreleased]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.2.7...v0.4.0
 [0.2.7]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.2.6...v0.2.7
 [0.1.1]: https://github.com/TogetherWeOwn/paperclip-model-router/releases/tag/v0.1.1
 [0.1.0]: https://github.com/TogetherWeOwn/paperclip-model-router/releases/tag/v0.1.0
