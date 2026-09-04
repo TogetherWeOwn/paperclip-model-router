@@ -41,6 +41,7 @@ export interface TaskDescriptor {
 export interface RuntimeSignals {
   budgetSpentFraction?: number;
   stickyModelId?: string;
+  degradedModelIds?: ReadonlySet<string>;
 }
 
 export type DecisionOutcome =

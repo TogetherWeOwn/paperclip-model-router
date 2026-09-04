@@ -10,6 +10,8 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-04
+
 ### Added
 
 - A scheduled `model-health-probe` job (manifest `jobs[]`, run by the host's own
@@ -20,6 +22,12 @@ version is not present here.
   disabled is never re-enabled by a probe. Two consecutive absences are required
   before a model is disabled, and a failed probe changes nothing at all
   (TOG-681 §3).
+- Model health now consumes the router's own invocation outcomes. Catalogue
+  presence yields `unknown`, never `healthy`; two routed failures produce the
+  soft `degraded` verdict, healthier qualified models outrank a degraded lane,
+  and two routed completions confirm recovery. A degraded cooldown opens a
+  probationary path automatically, while pins may still choose a degraded model
+  and operator-disabled models remain disabled (TOG-930).
 - The budget gates now run on the router's own measured spend. Completed calls
   with reported usage accrue into a company-scoped monthly ledger, and the halt
   fraction is computed from it rather than from a caller-supplied signal
@@ -816,7 +824,8 @@ First release. Installs globally, configures per company.
 - Budget pressure is supplied by the caller as `budgetSpentFraction`. The plugin
   does not read company spend itself; it holds no `costs.read` capability.
 
-[Unreleased]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.2.7...v0.3.0
 [0.2.7]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.2.6...v0.2.7
 [0.1.1]: https://github.com/TogetherWeOwn/paperclip-model-router/releases/tag/v0.1.1

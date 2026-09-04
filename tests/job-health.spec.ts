@@ -25,7 +25,10 @@ function completion(modelId: string) {
  * A harness whose upstream serves a catalogue we control and completions for
  * anything else, so a job run and an invocation share one fake upstream.
  */
-async function harnessWith(catalogue: () => Response) {
+async function harnessWith(
+  catalogue: () => Response,
+  invoke: (modelId: string) => Response = completion,
+) {
   const config = readFixture("company-a");
   const harness = createTestHarness({ manifest, config: {} });
   harness.seed({ companies: [{ id: COMPANY_A, name: "A" } as never] });
@@ -37,7 +40,7 @@ async function harnessWith(catalogue: () => Response) {
       urls.push(String(url));
       if (String(url).endsWith("/v1/models")) return catalogue();
       const body = JSON.parse(String((init as RequestInit).body));
-      return completion(body.model);
+      return invoke(body.model);
     },
   };
   const { definition } = createPlugin();
@@ -101,6 +104,128 @@ describe("a dead upstream model stops being selected", () => {
     })).toBeUndefined();
     expect(await invokeModelId(broken.harness)).toBe("minimax-m2.5");
     expect(broken.harness.activity).toEqual([]);
+  });
+});
+
+describe("invocation outcomes govern present-model health", () => {
+  it("degrades repeated 403s, reroutes, and recovers from real completions", async () => {
+    let minimaxFails = true;
+    const routed = await harnessWith(catalogueOf(ALL_MODELS), (modelId) =>
+      modelId === "minimax-m2.5" && minimaxFails
+        ? new Response("{}", { status: 403 })
+        : completion(modelId),
+    );
+
+    await routed.harness.runJob(JOB_KEYS.modelHealth);
+    expect(await invokeModelId(routed.harness)).toBe("minimax-m2.5");
+    expect(await invokeModelId(routed.harness)).toBe("minimax-m2.5");
+
+    let health = routed.harness.getState({
+      scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.modelHealth,
+    }) as Record<string, { verdict: string }>;
+    expect(health["minimax-m2.5"]?.verdict).toBe("degraded");
+    expect(await invokeModelId(routed.harness)).toBe("claude-sonnet-5");
+    expect(routed.harness.activity.map((entry) => entry.message)).toContainEqual(
+      expect.stringContaining("degraded minimax-m2.5"),
+    );
+
+    minimaxFails = false;
+    for (const at of ["2026-08-30T00:00:00.000Z", "2026-08-30T00:30:00.000Z"]) {
+      const current = routed.harness.getState({
+        scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.modelHealth,
+      }) as Record<string, unknown>;
+      current["minimax-m2.5"] = {
+        ...(current["minimax-m2.5"] as object),
+        checkedAt: at,
+        degradedAt: at,
+      };
+      await routed.harness.ctx.state.set(
+        { scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.modelHealth },
+        current,
+      );
+    }
+    // The scheduled catalogue reconciliation opens a probation window after the
+    // degraded cooldown; the next two real calls prove recovery.
+    await routed.harness.runJob(JOB_KEYS.modelHealth);
+    expect(await invokeModelId(routed.harness)).toBe("minimax-m2.5");
+    expect(await invokeModelId(routed.harness)).toBe("minimax-m2.5");
+    health = routed.harness.getState({
+      scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.modelHealth,
+    }) as Record<string, { verdict: string }>;
+    expect(health["minimax-m2.5"]?.verdict).toBe("healthy");
+  });
+
+  it("keeps a degraded model as the last eligible option", async () => {
+    const routed = await harnessWith(catalogueOf(ALL_MODELS), (modelId) =>
+      modelId === "claude-sonnet-5" ? new Response("{}", { status: 403 }) : completion(modelId),
+    );
+    const pinned = {
+      ...invocation,
+      task: { taskClass: "architecture", pinnedModelId: "claude-sonnet-5" },
+    };
+    await routed.harness.performAction(ACTION_KEYS.invoke, pinned, { companyId: COMPANY_A });
+    await routed.harness.performAction(ACTION_KEYS.invoke, pinned, { companyId: COMPANY_A });
+    expect(await invokeModelId(routed.harness)).toBe("minimax-m2.5");
+
+    const architecture = await routed.harness.performAction(ACTION_KEYS.invoke, {
+      ...invocation,
+      task: { taskClass: "architecture" },
+    }, { companyId: COMPANY_A }) as { decision: { modelId: string | null } };
+    expect(architecture.decision.modelId).toBe("claude-sonnet-5");
+  });
+
+  it("does not change model health for failures before transport", async () => {
+    const { harness, urls } = await harnessWith(catalogueOf(ALL_MODELS));
+    const result = await harness.performAction(ACTION_KEYS.invoke, {
+      task: { taskClass: "implementation" },
+      messages: [],
+      maxOutputTokens: 100,
+    }, { companyId: COMPANY_A }) as { outcome: string };
+    expect(result.outcome).toBe("error");
+    expect(urls).toEqual([]);
+    expect(harness.getState({
+      scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.modelHealth,
+    })).toBeUndefined();
+  });
+
+  it("does not attribute a shared authentication failure to one model", async () => {
+    const { harness } = await harnessWith(
+      catalogueOf(ALL_MODELS),
+      () => new Response("{}", { status: 401, headers: { "content-type": "application/json" } }),
+    );
+    await invokeModelId(harness);
+    await invokeModelId(harness);
+    expect(harness.getState({
+      scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.modelHealth,
+    })).toBeUndefined();
+  });
+
+  it("returns the invocation result when health telemetry fails", async () => {
+    const routed = await harnessWith(
+      catalogueOf(ALL_MODELS),
+      () => new Response("{}", { status: 403 }),
+    );
+    let metricWrites = 0;
+    routed.harness.ctx.activity = { async log() { throw new Error("activity unavailable"); } };
+    routed.harness.ctx.metrics = {
+      async write() {
+        metricWrites += 1;
+        if (metricWrites === 2) throw new Error("health metric unavailable");
+      },
+    };
+    const first = await routed.harness.performAction(
+      ACTION_KEYS.invoke,
+      invocation,
+      { companyId: COMPANY_A },
+    ) as { outcome: string };
+    expect(first.outcome).toBe("error");
+    const result = await routed.harness.performAction(
+      ACTION_KEYS.invoke,
+      invocation,
+      { companyId: COMPANY_A },
+    ) as { outcome: string; error: { code: string } };
+    expect(result.outcome).toBe("error");
+    expect(result.error.code).toBe("invalid-upstream-response");
   });
 });
 

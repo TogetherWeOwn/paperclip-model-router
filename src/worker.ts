@@ -27,9 +27,15 @@ import {
   type SpendLedger,
 } from "./engine/spend.js";
 import type { RoutingDecision } from "./engine/types.js";
-import { applyHealth, reconcileHealth } from "./health/reconcile.js";
+import {
+  applyHealth,
+  degradedModelIds,
+  normalizeHealthState,
+  reconcileHealth,
+  reconcileInvocation,
+} from "./health/reconcile.js";
 import { probeCatalogue } from "./health/probe.js";
-import type { ModelHealthState } from "./health/types.js";
+import type { HealthFlip, ModelHealthState } from "./health/types.js";
 import { validateUpstreamConfig } from "./inference/adapters.js";
 import { invokeCompatibleUpstream } from "./inference/transport.js";
 import type { InferenceResult, InvokeRequest } from "./inference/types.js";
@@ -70,9 +76,17 @@ function summary(result: InferenceResult): string {
   return "No eligible model was available for this invocation.";
 }
 
+function healthFlipMessage(flip: HealthFlip): string {
+  if (flip.to === "dead") return `Model Router took ${flip.modelId} out of service: ${flip.reason}.`;
+  if (flip.to === "degraded") return `Model Router degraded ${flip.modelId}: ${flip.reason}.`;
+  if (flip.to === "healthy") return `Model Router confirmed ${flip.modelId} healthy: ${flip.reason}.`;
+  return `Model Router put ${flip.modelId} into probation: ${flip.reason}.`;
+}
+
 export function createPlugin() {
   let context: PluginContext | null = null;
   let invoke: ((companyId: string, raw: unknown, runId?: string | null) => Promise<InferenceResult>) | null = null;
+  const healthQueues = new Map<string, Promise<void>>();
 
   return definePlugin({
     multiCompanyConfig: true,
@@ -119,7 +133,53 @@ export function createPlugin() {
       });
 
       const readHealth = async (companyId: string): Promise<ModelHealthState> =>
-        asRecord(await ctx.state.get(healthKey(companyId))) as ModelHealthState;
+        normalizeHealthState(await ctx.state.get(healthKey(companyId)));
+
+      const emitHealthFlips = async (companyId: string, flips: HealthFlip[]): Promise<void> => {
+        for (const flip of flips) {
+          try {
+            await ctx.activity.log({ companyId, message: healthFlipMessage(flip) });
+          } catch (cause) {
+            ctx.logger.error("Model health activity logging failed", {
+              companyId,
+              modelId: flip.modelId,
+              verdict: flip.to,
+              error: cause instanceof Error ? cause.message : String(cause),
+            });
+          }
+          try {
+            await ctx.metrics.write(`model_router.health.${flip.to}`, 1);
+          } catch (cause) {
+            ctx.logger.error("Model health metric write failed", {
+              companyId,
+              modelId: flip.modelId,
+              verdict: flip.to,
+              error: cause instanceof Error ? cause.message : String(cause),
+            });
+          }
+        }
+      };
+
+      const mutateHealth = async (
+        companyId: string,
+        mutate: (previous: ModelHealthState) => { next: ModelHealthState; flips: HealthFlip[] },
+      ): Promise<HealthFlip[]> => {
+        let flips: HealthFlip[] = [];
+        const before = healthQueues.get(companyId) ?? Promise.resolve();
+        const current = before.catch(() => undefined).then(async () => {
+          const result = mutate(await readHealth(companyId));
+          await ctx.state.set(healthKey(companyId), result.next);
+          await emitHealthFlips(companyId, result.flips);
+          flips = result.flips;
+        });
+        healthQueues.set(companyId, current);
+        try {
+          await current;
+          return flips;
+        } finally {
+          if (healthQueues.get(companyId) === current) healthQueues.delete(companyId);
+        }
+      };
 
       const readLedger = async (companyId: string, at: Date): Promise<SpendLedger> => {
         const stored = await ctx.state.get(spendKey(companyId));
@@ -265,6 +325,7 @@ export function createPlugin() {
             stickyModelId: config.routing.stickyModelWithinIssue
               ? await readStickyModel(companyId, request.task.issueId)
               : undefined,
+            degradedModelIds: degradedModelIds(health),
           },
         });
 
@@ -334,6 +395,16 @@ export function createPlugin() {
         result = transport.error
           ? { outcome: "error", requestId, decision, response: null, error: transport.error }
           : { outcome: "completed", requestId, decision, response: transport.response, error: null };
+        const observesModelHealth = result.outcome === "completed" ||
+          (result.outcome === "error" && result.error.code !== "upstream-authentication");
+        if (observesModelHealth) {
+          await mutateHealth(companyId, (previous) => reconcileInvocation({
+            modelId: decision.modelId!,
+            succeeded: result.outcome === "completed",
+            previous,
+            now: new Date().toISOString(),
+          }));
+        }
         await record(companyId, runId, request, result, Date.now() - startedAt);
         return result;
       };
@@ -385,12 +456,6 @@ export function createPlugin() {
         }
 
         const probe = await probeCatalogue({ http: ctx.http, config: config.upstream, credential });
-        const { next, flips } = reconcileHealth({
-          models: config.models,
-          probe,
-          previous: await readHealth(companyId),
-          now: new Date().toISOString(),
-        });
         if (probe.modelIds === null) {
           ctx.logger.warn("Model health probe was indeterminate; model table left unchanged", {
             companyId,
@@ -399,19 +464,12 @@ export function createPlugin() {
           });
           return 0;
         }
-        await ctx.state.set(healthKey(companyId), next);
-
-        // A model going dark belongs on the board, not only in the failed
-        // invocations it would otherwise cause.
-        for (const flip of flips) {
-          await ctx.activity.log({
-            companyId,
-            message: flip.to === "dead"
-              ? `Model Router took ${flip.modelId} out of service: ${flip.reason}.`
-              : `Model Router returned ${flip.modelId} to service: ${flip.reason}.`,
-          });
-          await ctx.metrics.write(`model_router.health.${flip.to}`, 1);
-        }
+        const flips = await mutateHealth(companyId, (previous) => reconcileHealth({
+          models: config.models,
+          probe,
+          previous,
+          now: new Date().toISOString(),
+        }));
         return flips.length;
       };
 

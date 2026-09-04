@@ -7,21 +7,28 @@
  * of service, never put one back into service against the operator's wish.
  */
 
-/** A model-level verdict. `unknown` is a deliberate third state: an indeterminate
- * probe must never be read as "dead", which is what would mass-disable a table
- * the first time the upstream had a bad minute. */
-export type HealthVerdict = "healthy" | "dead" | "unknown";
+/** A model-level verdict. Catalogue presence is only reachability metadata;
+ * `healthy` and `degraded` require real invocation evidence. `unknown` keeps a
+ * fresh or probationary model routable without claiming it works. */
+export type HealthVerdict = "healthy" | "degraded" | "dead" | "unknown";
 
 export interface ModelHealthEntry {
   verdict: HealthVerdict;
-  /** ISO timestamp of the probe that last produced a definitive verdict. */
+  /** ISO timestamp of the catalogue reconciliation that last touched the row. */
   checkedAt: string;
-  /** Operator-readable reason, e.g. "absent from the upstream catalogue". */
+  /** Operator-readable reason, e.g. "two consecutive invocation failures". */
   reason: string;
-  /** Consecutive definitive-dead observations. A model is only taken out of
-   * service once this reaches the configured threshold, so one flaky catalogue
-   * read cannot black out the cheap tier. */
+  /** Consecutive catalogue-absence observations. Kept separate from invocation
+   * evidence so an upstream outage cannot silently become model absence. */
   strikes: number;
+  /** Consecutive routed calls that failed after selecting this model. */
+  failureStreak: number;
+  /** Consecutive routed calls that completed after selecting this model. */
+  successStreak: number;
+  /** ISO timestamp of the most recent routed call observed for this model. */
+  lastInvocationAt: string | null;
+  /** ISO timestamp at which the current degraded verdict began. */
+  degradedAt: string | null;
 }
 
 export type ModelHealthState = Record<string, ModelHealthEntry>;

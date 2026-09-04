@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * TOG-681 §7 asks for two LIVE demonstrations, not two green tests:
+ * TOG-681 §7 and TOG-930 ask for installed-artifact demonstrations:
  *
- *   - disabling an upstream account causes the scheduled job to flip `enabled`
- *     and the next selection to route elsewhere;
+ *   - real invocation failures degrade a catalogue-present model, hysteresis
+ *     prevents a one-sample flap, and sustained success recovers it;
  *   - the halt gate refuses non-pinned work.
  *
  * `tests/job-health.spec.ts` already asserts both. This script is not a second
@@ -83,7 +83,7 @@ say(`job key   ${JOB_KEY} (read from the INSTALLED manifest)`);
  * account's answer to "what models can you serve" — taking an id out of it is
  * exactly what disabling that model upstream looks like from here.
  */
-async function harness(catalogue) {
+async function harness(catalogue, invokeResponse = null) {
   const h = createTestHarness({ manifest, config: {} });
   h.seed({ companies: [{ id: COMPANY, name: "A" }] });
   h.ctx.config = { async get() { return structuredClone(config); } };
@@ -98,6 +98,7 @@ async function harness(catalogue) {
         });
       }
       const body = JSON.parse(String(init.body));
+      if (invokeResponse) return invokeResponse(body.model);
       return new Response(JSON.stringify({
         id: "chatcmpl-1", object: "chat.completion", model: body.model,
         choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
@@ -121,72 +122,84 @@ async function invoke(h, extra = {}) {
   return h.performAction("invoke", { ...INVOCATION, ...extra }, { companyId: COMPANY });
 }
 
-// === DEMONSTRATION 1 — an upstream model goes dark ==========================
+// === DEMONSTRATION 1 — invocation-backed model health ======================
 
-say(`\n${"=".repeat(74)}\nDEMONSTRATION 1 — disabling a model upstream reroutes the next selection\n${"=".repeat(74)}\n`);
+say(`\n${"=".repeat(74)}\nDEMONSTRATION 1 — repeated invocation failure degrades and reroutes\n${"=".repeat(74)}\n`);
 
-const healthy = await harness(ALL);
-const beforeId = (await invoke(healthy.h)).decision.modelId;
-say(`  upstream catalogue: ${ALL.join(", ")}`);
-say(`  selection          -> ${beforeId}   (cheapest clearing the quality floor)`);
-check(beforeId === "minimax-m2.5", "the cheapest qualifying model is selected while everything is healthy", `selected ${beforeId}`);
-
-// The account stops serving it. Everything else about the config is unchanged.
-const remaining = ALL.filter((id) => id !== beforeId);
-const dark = await harness(remaining);
-say(`\n  ${beforeId} is disabled on the upstream account.`);
-say(`  upstream catalogue: ${remaining.join(", ")}\n`);
-
-await dark.h.runJob(JOB_KEY);
-const afterOneRun = (await invoke(dark.h)).decision.modelId;
-say(`  scheduled job run 1 -> selection still ${afterOneRun}`);
-check(
-  afterOneRun === beforeId,
-  "one absence is a strike, not a verdict — the table is unchanged after a single run",
-  "a flap must not black out a model on one reading",
-);
-
-await dark.h.runJob(JOB_KEY);
-const health = dark.h.getState({ scopeKind: "company", scopeId: COMPANY, stateKey: "model-health" });
-const verdict = health?.[beforeId]?.verdict;
-const afterTwoRuns = (await invoke(dark.h)).decision.modelId;
-say(`  scheduled job run 2 -> ${beforeId} verdict="${verdict}"`);
-say(`  selection           -> ${afterTwoRuns}   (rerouted)\n`);
-
-check(verdict === "dead", `the job flipped ${beforeId} out of service`, `verdict=${verdict}`);
-check(
-  afterTwoRuns !== beforeId,
-  "the next selection routes elsewhere instead of failing forever against a dead model",
-  `${beforeId} -> ${afterTwoRuns}`,
-);
-const messages = dark.h.activity.map((entry) => entry.message);
-check(
-  messages.some((message) => message.includes(`took ${beforeId} out of service`)),
-  "the flip reached the board through activity.log.write",
-  messages.join("\n      ") || "(no activity recorded)",
-);
-
-// An indeterminate probe must change nothing — blacking out the whole table
-// on a 503 would be strictly worse than the defect being fixed.
-const broken = await harness(ALL);
-broken.h.ctx.http.fetch = async (url, init) => {
-  if (String(url).endsWith("/v1/models")) return new Response("{}", { status: 503 });
+let failSelected = true;
+const routed = await harness(ALL, (modelId) => {
+  if (modelId === "minimax-m2.5" && failSelected) return new Response("{}", { status: 403 });
   return new Response(JSON.stringify({
-    id: "c", object: "chat.completion", model: JSON.parse(String(init.body)).model,
+    id: "chatcmpl-1", object: "chat.completion", model: modelId,
     choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
-    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    usage: { prompt_tokens: 1000, completion_tokens: 1000, total_tokens: 2000 },
   }), { status: 200, headers: { "content-type": "application/json" } });
-};
-await broken.h.runJob(JOB_KEY);
-await broken.h.runJob(JOB_KEY);
-const brokenState = broken.h.getState({ scopeKind: "company", scopeId: COMPANY, stateKey: "model-health" });
-say(`  upstream returns 503 to the catalogue probe, twice`);
-say(`  health overlay      -> ${brokenState === undefined ? "never written" : JSON.stringify(brokenState)}`);
-say(`  selection           -> ${(await invoke(broken.h)).decision.modelId}   (unchanged)\n`);
+});
+await routed.h.runJob(JOB_KEY);
+const catalogueHealth = routed.h.getState({ scopeKind: "company", scopeId: COMPANY, stateKey: "model-health" });
+say(`  catalogue lists all models; minimax verdict -> ${catalogueHealth?.["minimax-m2.5"]?.verdict}`);
 check(
-  brokenState === undefined && broken.h.activity.length === 0,
-  "an indeterminate probe changes nothing rather than blacking out the table",
-  "a 503 from the catalogue is not evidence that a model is dead",
+  catalogueHealth?.["minimax-m2.5"]?.verdict === "unknown",
+  "catalogue presence alone does not report healthy",
+  `verdict=${catalogueHealth?.["minimax-m2.5"]?.verdict}`,
+);
+
+const firstFailure = await invoke(routed.h);
+let health = routed.h.getState({ scopeKind: "company", scopeId: COMPANY, stateKey: "model-health" });
+say(`  invocation failure 1 -> selected=${firstFailure.decision.modelId}, verdict=${health?.["minimax-m2.5"]?.verdict}`);
+check(
+  firstFailure.outcome === "error" && health?.["minimax-m2.5"]?.verdict === "unknown",
+  "one failed invocation is evidence, not an immediate verdict",
+);
+
+const secondFailure = await invoke(routed.h);
+health = routed.h.getState({ scopeKind: "company", scopeId: COMPANY, stateKey: "model-health" });
+say(`  invocation failure 2 -> selected=${secondFailure.decision.modelId}, verdict=${health?.["minimax-m2.5"]?.verdict}`);
+check(
+  secondFailure.outcome === "error" && health?.["minimax-m2.5"]?.verdict === "degraded",
+  "two consecutive failures degrade the catalogue-present model",
+);
+
+const rerouted = await invoke(routed.h);
+say(`  next selection       -> ${rerouted.decision.modelId}`);
+check(
+  rerouted.decision.modelId === "claude-sonnet-5",
+  "a healthier qualifying model outranks the degraded lane",
+  `minimax-m2.5 -> ${rerouted.decision.modelId}`,
+);
+
+// Age the degraded timestamp, then let the scheduled catalogue pass open the
+// probation window. This is deterministic and sends no live provider traffic.
+health = routed.h.getState({ scopeKind: "company", scopeId: COMPANY, stateKey: "model-health" });
+health["minimax-m2.5"] = {
+  ...health["minimax-m2.5"],
+  degradedAt: "2026-08-30T00:00:00.000Z",
+};
+await routed.h.ctx.state.set(
+  { scopeKind: "company", scopeId: COMPANY, stateKey: "model-health" },
+  health,
+);
+failSelected = false;
+await routed.h.runJob(JOB_KEY);
+health = routed.h.getState({ scopeKind: "company", scopeId: COMPANY, stateKey: "model-health" });
+say(`  cooldown + catalogue -> verdict=${health?.["minimax-m2.5"]?.verdict}`);
+check(
+  health?.["minimax-m2.5"]?.verdict === "unknown",
+  "degraded cooldown opens an automatic probation path",
+);
+
+await invoke(routed.h);
+health = routed.h.getState({ scopeKind: "company", scopeId: COMPANY, stateKey: "model-health" });
+check(
+  health?.["minimax-m2.5"]?.verdict === "unknown",
+  "one successful probation call does not oscillate straight to healthy",
+);
+await invoke(routed.h);
+health = routed.h.getState({ scopeKind: "company", scopeId: COMPANY, stateKey: "model-health" });
+say(`  successful calls x2  -> verdict=${health?.["minimax-m2.5"]?.verdict}\n`);
+check(
+  health?.["minimax-m2.5"]?.verdict === "healthy",
+  "two consecutive successful invocations recover the model without manual intervention",
 );
 
 // === DEMONSTRATION 2 — the halt gate refuses non-pinned work ================

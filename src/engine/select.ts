@@ -285,16 +285,60 @@ export function selectModel(input: SelectInput): RoutingDecision {
     return { ...base, outcome: "no-eligible-model" };
   }
 
+  const degraded = runtime.degradedModelIds ?? new Set<string>();
+  const nonDegradedSurvivors = survivors.filter((entry) => !degraded.has(entry.model.id));
+  const nonDegradedQualified = qualified.filter((entry) => !degraded.has(entry.model.id));
+  let routingPool = nonDegradedSurvivors.length > 0 ? nonDegradedSurvivors : survivors;
+  if (nonDegradedSurvivors.length > 0 && nonDegradedSurvivors.length < survivors.length) {
+    trace.push(
+      `health: deprioritized ${survivors.length - nonDegradedSurvivors.length} degraded model(s); ${nonDegradedSurvivors.length} healthier candidate(s) remain`,
+    );
+  } else if (
+    survivors.length > 0 &&
+    nonDegradedSurvivors.length === 0 &&
+    nonDegradedQualified.length > 0
+  ) {
+    routingPool = [...nonDegradedQualified].sort((left, right) => {
+      if (left.cost !== right.cost) return left.cost - right.cost;
+      if (left.model.quality !== right.model.quality) return right.model.quality - left.model.quality;
+      return left.model.id.localeCompare(right.model.id);
+    });
+    const readmittedIds = new Set(routingPool.map((entry) => entry.model.id));
+    for (let index = rejections.length - 1; index >= 0; index--) {
+      const rejection = rejections[index]!;
+      if (rejection.stage === "tier-ceiling" && readmittedIds.has(rejection.modelId)) {
+        rejections.splice(index, 1);
+      }
+    }
+    trace.push(
+      `health: every candidate under the ${appliedCeiling} ceiling is degraded; lifted the soft ceiling for ${routingPool.length} healthier qualified model(s)`,
+    );
+    base.effectiveTier = routingPool[0]!.model.tier;
+  } else if (survivors.length > 0 && nonDegradedSurvivors.length === 0) {
+    trace.push("health: every qualified model is degraded; retaining them as last-resort candidates");
+  }
+  base.candidates = routingPool.map((entry) => ({
+    modelId: entry.model.id,
+    tier: entry.model.tier,
+    quality: entry.model.quality,
+    expectedCostUsd: entry.cost,
+  }));
+
   if (config.routing.stickyModelWithinIssue && runtime.stickyModelId) {
-    const stickyPool = budgetGate === "downshift" ? survivors : qualified;
+    const stickyPool = budgetGate === "downshift"
+      ? routingPool
+      : qualified.filter((entry) => !degraded.has(entry.model.id));
     const incumbent = stickyPool.find((entry) => entry.model.id === runtime.stickyModelId);
     if (incumbent) {
       trace.push(`sticky: keeping ${incumbent.model.id} already used on this issue — a switch would destroy the prompt cache`);
       return { ...base, outcome: "selected", modelId: incumbent.model.id };
     }
+    if (degraded.has(runtime.stickyModelId)) {
+      trace.push(`sticky: released degraded incumbent ${runtime.stickyModelId}`);
+    }
   }
 
-  if (survivors.length === 0) {
+  if (routingPool.length === 0) {
     trace.push(config.models.length === 0 ? "no models configured" : `no model survived the gates (${rejections.length} rejected)`);
     const fallbackId = config.routing.fallbackModelId;
     if (fallbackId) {
@@ -309,7 +353,7 @@ export function selectModel(input: SelectInput): RoutingDecision {
     return { ...base, outcome: "no-eligible-model" };
   }
 
-  const winner = survivors[0]!;
-  trace.push(`selected ${winner.model.id} at an expected $${winner.cost.toFixed(5)} — cheapest of ${survivors.length} clearing quality floor ${qualityFloor}`);
+  const winner = routingPool[0]!;
+  trace.push(`selected ${winner.model.id} at an expected $${winner.cost.toFixed(5)} — cheapest of ${routingPool.length} preferred candidate(s) clearing quality floor ${qualityFloor}`);
   return { ...base, outcome: "selected", modelId: winner.model.id };
 }

@@ -1,6 +1,6 @@
 # Operations
 
-This runbook covers the private `0.3.0` compatible-upstream artifact. It is
+This runbook covers the private `0.3.1` compatible-upstream artifact. It is
 not authorized for a public release or live installation, and it does not
 authorize npm publication. The package must remain `private: true` and
 `UNLICENSED` until a separate owner decision covers licensing, publication, and
@@ -39,7 +39,7 @@ ARTIFACT_DIR="$PWD/artifacts/private"
 rm -rf "$ARTIFACT_DIR"
 mkdir -p "$ARTIFACT_DIR"
 npm pack --pack-destination "$ARTIFACT_DIR"
-ARTIFACT="$ARTIFACT_DIR/togetherweown-paperclip-model-router-0.3.0.tgz"
+ARTIFACT="$ARTIFACT_DIR/togetherweown-paperclip-model-router-0.3.1.tgz"
 test -f "$ARTIFACT"
 tar -tzf "$ARTIFACT"
 sha256sum "$ARTIFACT"
@@ -56,7 +56,7 @@ Prove the file an operator would consume can install and load in a clean
 directory:
 
 ```sh
-INSTALL_DIR="${PAPERCLIP_RUN_SCRATCH_DIR:-$PWD/.release-check}/installed-0.3.0"
+INSTALL_DIR="${PAPERCLIP_RUN_SCRATCH_DIR:-$PWD/.release-check}/installed-0.3.1"
 rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 tar -xzf "$ARTIFACT" -C "$INSTALL_DIR" --strip-components=1
@@ -66,7 +66,7 @@ tar -xzf "$ARTIFACT" -C "$INSTALL_DIR" --strip-components=1
   node --input-type=module -e '
     const manifest = (await import("./dist/manifest.js")).default;
     const worker = await import("./dist/worker.js");
-    if (manifest.version !== "0.3.0") throw new Error(`unexpected version ${manifest.version}`);
+    if (manifest.version !== "0.3.1") throw new Error(`unexpected version ${manifest.version}`);
     if (typeof worker.default?.definition?.setup !== "function") throw new Error("packed worker has no setup handler");
     console.log(`packed artifact loads: ${manifest.id} v${manifest.version}`);
   '
@@ -149,7 +149,7 @@ change model, replay automatically, or bypass the plugin to make the gate green.
 ## Reversibility
 
 Before any authorized installation, preserve the exact previously installed
-tarball, its SHA-256, and every company's previous config payload. If `0.3.0`
+tarball, its SHA-256, and every company's previous config payload. If `0.3.1`
 regresses after an authorized install:
 
 1. disable the plugin or remove the affected companies' enablement while keeping
@@ -159,7 +159,7 @@ regresses after an authorized install:
    plugin disabled;
 3. verify the restored artifact with its own package/install/load and live
    acceptance evidence; and
-4. revert the `0.3.0` implementation commit in source before preparing a new
+4. revert the `0.3.1` implementation commit in source before preparing a new
    replacement artifact.
 
 Do **not** roll back to `v0.2.7`. It is not the preceding implementation of this
