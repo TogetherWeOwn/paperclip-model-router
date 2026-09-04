@@ -10,6 +10,22 @@ version is not present here.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] - 2026-09-04
+
+### Added
+
+- **Provider-neutral capacity telemetry and usage-aware routing (TOG-943/972).**
+  Configured status sources map provider/account identifiers, health, utilization
+  windows, and reset timestamps into auditable lane snapshots. The selector applies
+  every hard constraint and the task-class quality floor first, then ranks only those
+  survivors by usable capacity. Catalogue presence is not treated as health evidence.
+- **Shadow and enforce decision records.** Shadow mode preserves the compatible-upstream
+  v1 selection and records the capacity-aware alternative; enforce mode can apply that
+  alternative. Records keep requested, selected, observed serving, provider/account,
+  utilization, reset, reason, and fallback facts separate.
+
 ### Changed
 
 - Replaced the selection-only, deployment-specific product with the accepted
@@ -41,11 +57,30 @@ version is not present here.
   Paperclip's host-managed HTTP boundary with redirects disabled and
   `Accept-Encoding: identity`.
 
+### Safety
+
+- Capacity routing is disabled by default and defaults to `shadow` when enabled.
+- Enforce mode defaults to `unknownTelemetry: "fail-closed"`: an unreadable or empty
+  configured source produces `no-eligible-model` rather than treating unknown capacity
+  as healthy or crossing the rule through a fallback, pin, or sticky selection.
+- Capacity never lowers a configured quality floor. Missing serving identity remains
+  null and is never inferred from the requested model.
+
+### Promotion gates
+
+Promote a company to `mode: "enforce"` only after representative shadow comparisons show
+no unexplained serving-identity mismatch or hard-gate regression, the affected models have
+measured quality evidence at or above each task-class floor, every required telemetry lane
+has been read without exposing credential material, and an outage rehearsal proves the
+production no-telemetry policy refuses work. Disable `capacityRouting` to return to v1.
+
 ### Compatibility
 
-- This is a breaking configuration and invocation-surface replacement. Existing
-  selection-only configs must be replaced with the compatible-upstream schema.
-  TOG-532 does not authorize a public release or live installation.
+- The compatible-upstream configuration and invocation surfaces introduced after v0.2.7
+  remain authoritative. Capacity routing is an optional additive surface; existing current-
+  main configs keep their v1 selection and invocation behavior without changes.
+- This remains a breaking upgrade from the historical selection-only v0.2.7 product. Such
+  configs must first migrate to the compatible-upstream schema.
 
 
 ## [0.2.7] - 2026-08-25
@@ -834,7 +869,8 @@ First release. Installs globally, configures per company.
 - Budget pressure is supplied by the caller as `budgetSpentFraction`. The plugin
   does not read company spend itself; it holds no `costs.read` capability.
 
-[Unreleased]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.2.7...v0.3.0
 [0.2.7]: https://github.com/TogetherWeOwn/paperclip-model-router/compare/v0.2.6...v0.2.7
 [0.1.1]: https://github.com/TogetherWeOwn/paperclip-model-router/releases/tag/v0.1.1
 [0.1.0]: https://github.com/TogetherWeOwn/paperclip-model-router/releases/tag/v0.1.0

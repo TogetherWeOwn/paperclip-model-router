@@ -90,5 +90,183 @@ const logB = harness.getState({ scopeKind: "company", scopeId: COMPANY_B, stateK
 check("decision records are company-scoped", logA.length === 3 && logB.length === 1);
 check("decision records contain no request content or credential", !JSON.stringify([logA, logB]).includes("hello") && !JSON.stringify([logA, logB]).includes("runtime-a") && !JSON.stringify([logA, logB]).includes("runtime-b"));
 
+// --- Evidence 7: usage-aware router v2, simulated and credential-free -------
+
+console.log("\nEVIDENCE 7 — usage-aware v2 shadows and enforces across two providers");
+
+const capacitySources = [
+  {
+    id: "simulated-subscription",
+    statusUrl: "https://subscription-capacity.invalid/status",
+    apiKeySecretRef: null,
+    providers: ["teamclaude"],
+    accountIdFields: ["account"],
+    healthFields: ["status"],
+    windows: [{
+      name: "five-hour",
+      utilizationFields: ["used5h"],
+      resetFields: ["resets5hAt"],
+    }],
+  },
+  {
+    id: "simulated-available",
+    statusUrl: "https://available-capacity.invalid/status",
+    apiKeySecretRef: null,
+    providers: ["openrouter"],
+    accountIdFields: ["account"],
+    healthFields: ["status"],
+    windows: [{
+      name: "five-hour",
+      utilizationFields: ["used5h"],
+      resetFields: ["resets5hAt"],
+    }],
+  },
+];
+const capacityConfig = {
+  routing: { enabled: true, mode: "advise", fallbackModelId: null, stickyModelWithinIssue: false },
+  providers: {
+    permitted: ["teamclaude", "openrouter"],
+    preferenceOrder: ["teamclaude", "openrouter"],
+    claudePaygEnabled: false,
+    claudeFamilyProvider: "teamclaude",
+    claudeFamilies: ["claude"],
+  },
+  models: [
+    {
+      id: "subscription-model",
+      family: "other",
+      tier: "standard",
+      quality: 80,
+      costPerMTokIn: 0,
+      costPerMTokOut: 0,
+      contextWindow: 200000,
+      providers: ["teamclaude"],
+    },
+    {
+      id: "available-model",
+      family: "other",
+      tier: "standard",
+      quality: 80,
+      costPerMTokIn: 1,
+      costPerMTokOut: 4,
+      contextWindow: 200000,
+      providers: ["openrouter"],
+    },
+    {
+      id: "cheap-below-floor",
+      family: "other",
+      tier: "small",
+      quality: 30,
+      costPerMTokIn: 0,
+      costPerMTokOut: 0,
+      contextWindow: 200000,
+      providers: ["openrouter"],
+    },
+  ],
+  taskClasses: [{ key: "implementation", qualityFloor: 70 }],
+  capacityRouting: {
+    enabled: true,
+    mode: "shadow",
+    unknownTelemetry: "fail-closed",
+    sources: capacitySources,
+  },
+};
+const capacityPayloads = new Map([
+  [capacitySources[0].statusUrl, {
+    accounts: [{
+      account: "scarce-subscription",
+      status: "allowed",
+      used5h: 0.98,
+      resets5hAt: "2026-09-04T18:00:00Z",
+    }],
+  }],
+  [capacitySources[1].statusUrl, {
+    accounts: [{
+      account: "available-capacity",
+      status: "allowed",
+      used5h: 0.2,
+      resets5hAt: "2026-09-05T12:00:00Z",
+    }],
+  }],
+]);
+const capacityConfigs = new Map([[COMPANY_A, capacityConfig]]);
+const capacityHarness = createTestHarness({ manifest, config: {} });
+capacityHarness.ctx.config = {
+  async get(companyId) {
+    return structuredClone(capacityConfigs.get(String(companyId)));
+  },
+};
+capacityHarness.ctx.http = {
+  async fetch(url) {
+    const capacityPayload = capacityPayloads.get(String(url));
+    return {
+      status: 200,
+      async json() {
+        return capacityPayload ?? { accounts: [{ unified5h: 0.1, unified7d: 0.1 }] };
+      },
+    };
+  },
+};
+const { definition: capacityWorker } = workerModule.createPlugin();
+await capacityWorker.setup(capacityHarness.ctx);
+const shadow = await capacityHarness.performAction("route", {
+  companyId: COMPANY_A,
+  taskClass: "implementation",
+  requestedProfile: "implementation",
+  requestedModelId: "subscription-model",
+  servingModelId: "subscription-model",
+  servingProvider: "openrouter",
+  servingAccount: "observed-lane",
+});
+check(
+  "shadow mode records normalized provider/account capacity without changing serving",
+  shadow.capacity.mode === "shadow" &&
+    shadow.capacity.telemetry === "available" &&
+    shadow.modelId === "subscription-model" &&
+    shadow.capacity.shadowModelId === "available-model" &&
+    shadow.capacity.shadowProvider !== null,
+  `selected=${shadow.modelId} shadow=${shadow.capacity.shadowModelId} lane=${shadow.capacity.shadowProvider}/${shadow.capacity.shadowAccount}`,
+);
+check(
+  "the simulated near-exhausted window is auditable and no credential is consumed or exposed",
+  shadow.capacity.shadowProvider === "openrouter" &&
+    shadow.capacity.shadowAccount === "available-capacity" &&
+    capacitySources.every((source) => source.apiKeySecretRef === null),
+  `shadow=${shadow.capacity.shadowProvider}/${shadow.capacity.shadowAccount}; source credentials are null`,
+);
+
+capacityConfigs.set(COMPANY_A, {
+  ...capacityConfig,
+  capacityRouting: { ...capacityConfig.capacityRouting, mode: "enforce" },
+});
+const enforced = await capacityHarness.performAction("route", {
+  companyId: COMPANY_A,
+  taskClass: "implementation",
+});
+check(
+  "enforce mode deterministically moves eligible work to the healthier provider",
+  enforced.modelId === "available-model" && enforced.capacity.selectedProvider === "openrouter",
+  `selected=${enforced.modelId} lane=${enforced.capacity.selectedProvider}/${enforced.capacity.selectedAccount}`,
+);
+
+const noTelemetryHarness = createTestHarness({ manifest, config: {} });
+noTelemetryHarness.ctx.config = capacityHarness.ctx.config;
+noTelemetryHarness.ctx.http = {
+  async fetch() {
+    throw new Error("simulated telemetry outage");
+  },
+};
+const { definition: noTelemetryWorker } = workerModule.createPlugin();
+await noTelemetryWorker.setup(noTelemetryHarness.ctx);
+const noTelemetry = await noTelemetryHarness.performAction("route", {
+  companyId: COMPANY_A,
+  taskClass: "implementation",
+});
+check(
+  "enforcement fails closed when capacity telemetry is unavailable",
+  noTelemetry.outcome === "no-eligible-model" && noTelemetry.capacity.telemetry === "unavailable",
+  `outcome=${noTelemetry.outcome} reason=${noTelemetry.capacity.decisionReason}`,
+);
+
 console.log(`\n${failures === 0 ? "REHEARSAL PASSED" : `REHEARSAL FAILED — ${failures} check(s) failed`}`);
 process.exit(failures === 0 ? 0 : 1);

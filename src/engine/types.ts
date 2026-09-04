@@ -22,6 +22,8 @@ export interface ModelEntry {
   costPerMTokOut: number;
   contextWindow: number;
   capabilities: ModelCapability[];
+  /** Capacity telemetry lane labels associated with this opaque model id. */
+  providers: string[];
   enabled: boolean;
 }
 
@@ -32,6 +34,11 @@ export interface TaskDescriptor {
   requiredContextTokens?: number;
   signals?: Record<string, number>;
   issueId?: string;
+  requestedProfile?: string;
+  requestedModelId?: string;
+  servingModelId?: string;
+  servingProvider?: string;
+  servingAccount?: string;
   pinnedModelId?: string;
   pinReason?: string;
   estimatedInputTokens?: number;
@@ -40,6 +47,11 @@ export interface TaskDescriptor {
 
 export interface RuntimeSignals {
   budgetSpentFraction?: number;
+  capacityLanes?: import("../capacity/types.js").CapacityLane[];
+  capacityError?: string;
+  servingModelId?: string;
+  servingProvider?: string;
+  servingAccount?: string;
   stickyModelId?: string;
 }
 
@@ -56,6 +68,7 @@ export type RejectionStage =
   | "context-window"
   | "quality-floor"
   | "tier-ceiling"
+  | "capacity"
   | "budget-gate";
 
 export interface Rejection {
@@ -69,6 +82,11 @@ export interface Candidate {
   tier: ModelTier;
   quality: number;
   expectedCostUsd: number;
+  provider: string | null;
+  account: string | null;
+  usagePosture: import("../capacity/types.js").CapacityLane["posture"] | "not-evaluated";
+  utilization: number | null;
+  resetsAt: string | null;
 }
 
 export interface RoutingDecision {
@@ -83,6 +101,23 @@ export interface RoutingDecision {
   candidates: Candidate[];
   pin: { modelId: string; reason: string; honored: boolean } | null;
   fallbackUsed: boolean;
+  capacity: {
+    mode: "disabled" | "shadow" | "enforce";
+    telemetry: "available" | "unavailable" | "not-configured";
+    selectedProvider: string | null;
+    selectedAccount: string | null;
+    usagePosture: import("../capacity/types.js").CapacityLane["posture"] | "not-evaluated";
+    utilization: number | null;
+    resetsAt: string | null;
+    shadowModelId: string | null;
+    shadowProvider: string | null;
+    shadowAccount: string | null;
+    decisionReason: string;
+    servingModelId: string | null;
+    servingProvider: string | null;
+    servingAccount: string | null;
+    fallbackEvents: string[];
+  };
   gates: { budget: GateLevel };
 }
 

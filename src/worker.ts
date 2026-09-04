@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import type { PluginContext, ToolResult } from "@paperclipai/plugin-sdk";
 
+import { readCapacitySource, type CapacityHttpClient } from "./capacity/read.js";
+import type { CapacityLane, CapacitySnapshot } from "./capacity/types.js";
 import { resolveConfig } from "./config/resolve.js";
 import { validateSecretRefShape } from "./config/secret-ref.js";
 import type { RouterConfig } from "./config/types.js";
@@ -38,12 +40,34 @@ interface DecisionRecord {
   inputTokens: number | null;
   outputTokens: number | null;
   upstreamRequestId: string | null;
+  capacityMode: RoutingDecision["capacity"]["mode"] | null;
+  capacityTelemetry: RoutingDecision["capacity"]["telemetry"] | null;
+  capacityLane: string | null;
+  capacityAccount: string | null;
+  capacityPosture: RoutingDecision["capacity"]["usagePosture"] | null;
+  capacityReason: string | null;
+  shadowModelId: string | null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function capacityHttp(ctx: PluginContext): CapacityHttpClient {
+  return {
+    async request({ url, method, headers }) {
+      const response = await ctx.http.fetch(url, {
+        method,
+        headers: { Accept: "application/json", "Accept-Encoding": "identity", ...headers },
+        redirect: "manual",
+      });
+      let body: unknown = null;
+      try { body = await response.json(); } catch { body = null; }
+      return { status: response.status, body };
+    },
+  };
 }
 
 function summary(result: InferenceResult): string {
@@ -92,6 +116,50 @@ export function createPlugin() {
         await ctx.state.set(stickyKey(companyId), map);
       };
 
+      const readCapacity = async (
+        companyId: string,
+        config: RouterConfig,
+      ): Promise<{ snapshots: CapacitySnapshot[]; lanes: CapacityLane[]; error: string | null }> => {
+        if (!config.capacityRouting.enabled) return { snapshots: [], lanes: [], error: null };
+        const snapshots: CapacitySnapshot[] = [];
+        for (let index = 0; index < config.capacityRouting.sources.length; index += 1) {
+          const source = config.capacityRouting.sources[index]!;
+          let apiKey: string | null = null;
+          if (source.apiKeySecretRef) {
+            try {
+              apiKey = await ctx.secrets.resolve(source.apiKeySecretRef as never, {
+                companyId,
+                configPath: `capacityRouting.sources.${index}.apiKeySecretRef`,
+              });
+            } catch {
+              snapshots.push({
+                fetchedAt: new Date().toISOString(),
+                source: source.id,
+                lanes: [],
+                error: "capacity telemetry credential could not be resolved",
+              });
+              continue;
+            }
+          }
+          snapshots.push(await readCapacitySource({
+            source,
+            http: capacityHttp(ctx),
+            apiKey,
+            now: () => new Date().toISOString(),
+          }));
+        }
+        const result = {
+          snapshots,
+          lanes: snapshots.flatMap((snapshot) => snapshot.lanes),
+          error: snapshots.map((snapshot) => snapshot.error).filter((value): value is string => Boolean(value)).join("; ") || null,
+        };
+        await ctx.state.set(
+          { scopeKind: "company", scopeId: companyId, stateKey: STATE_KEYS.capacitySnapshot },
+          result as unknown as Record<string, unknown>,
+        );
+        return result;
+      };
+
       const record = async (
         companyId: string,
         runId: string | null,
@@ -126,6 +194,13 @@ export function createPlugin() {
           inputTokens: response?.usage.inputTokens ?? null,
           outputTokens: response?.usage.outputTokens ?? null,
           upstreamRequestId: response?.upstream.requestId ?? failure?.upstreamRequestId ?? null,
+          capacityMode: decision?.capacity.mode ?? null,
+          capacityTelemetry: decision?.capacity.telemetry ?? null,
+          capacityLane: decision?.capacity.selectedProvider ?? null,
+          capacityAccount: decision?.capacity.selectedAccount ?? null,
+          capacityPosture: decision?.capacity.usagePosture ?? null,
+          capacityReason: decision?.capacity.decisionReason ?? null,
+          shadowModelId: decision?.capacity.shadowModelId ?? null,
         });
         await ctx.state.set(key, log.slice(0, DECISION_LOG_LIMIT));
         await ctx.metrics.write(`model_router.invoke.${result.outcome}`, 1);
@@ -195,11 +270,18 @@ export function createPlugin() {
           return result;
         }
 
+        const capacity = config.routing.enabled && !config.rule0.deterministicPatterns.some((entry) => {
+          try { return request?.task.summary ? new RegExp(entry.pattern, "i").test(request.task.summary) : false; } catch { return false; }
+        })
+          ? await readCapacity(companyId, config)
+          : { snapshots: [], lanes: [], error: null };
         const decision = selectModel({
           descriptor: request.task,
           config,
           signals: {
             budgetSpentFraction: request.task.signals?.budgetSpentFraction,
+            capacityLanes: capacity.lanes,
+            capacityError: capacity.error ?? undefined,
             stickyModelId: config.routing.stickyModelWithinIssue
               ? await readStickyModel(companyId, request.task.issueId)
               : undefined,
@@ -336,6 +418,28 @@ export function createPlugin() {
       }
       if (!(config.budget.warnFraction <= config.budget.downshiftFraction && config.budget.downshiftFraction <= config.budget.haltFraction)) {
         errors.push("budget fractions must satisfy warn <= downshift <= halt");
+      }
+      if (config.capacityRouting.enabled && config.capacityRouting.sources.length === 0) {
+        errors.push("capacityRouting.enabled is true but no telemetry sources are configured");
+      }
+      if (config.capacityRouting.conserveUtilization > config.capacityRouting.avoidUtilization) {
+        errors.push("capacityRouting thresholds must satisfy conserve <= avoid");
+      }
+      if (config.capacityRouting.mode === "enforce") {
+        warnings.push("capacity routing is enforcing; promote only after shadow and outage evidence");
+      }
+      for (let index = 0; index < config.capacityRouting.sources.length; index += 1) {
+        const source = config.capacityRouting.sources[index]!;
+        let parsed: URL | null = null;
+        try { parsed = new URL(source.statusUrl); } catch { errors.push(`capacity source ${source.id} statusUrl must be an absolute URL`); }
+        if (parsed) {
+          if (parsed.protocol !== "https:") errors.push(`capacity source ${source.id} statusUrl must use https`);
+          if (parsed.username || parsed.password || parsed.search || parsed.hash) errors.push(`capacity source ${source.id} statusUrl must not contain credentials, query, or fragment`);
+        }
+        if (source.providers.length === 0) errors.push(`capacity source ${source.id} names no providers`);
+        if (source.windows.length === 0) errors.push(`capacity source ${source.id} names no utilization windows`);
+        const sourceSecretError = validateSecretRefShape(source.apiKeySecretRef, `capacityRouting.sources.${index}.apiKeySecretRef`);
+        if (sourceSecretError) errors.push(sourceSecretError);
       }
       return { ok: errors.length === 0, errors, warnings };
     },

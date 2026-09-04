@@ -64,6 +64,14 @@ Every surface calls the same internal implementation. Company identity comes fro
     "downshiftFraction": 0.8,
     "haltFraction": 0.95
   },
+  "capacityRouting": {
+    "enabled": false,
+    "mode": "shadow",
+    "unknownTelemetry": "fail-closed",
+    "conserveUtilization": 0.6,
+    "avoidUtilization": 0.8,
+    "sources": []
+  },
   "rule0": { "enabled": true, "deterministicPatterns": [] }
 }
 ```
@@ -71,6 +79,35 @@ Every surface calls the same internal implementation. Company identity comes fro
 `upstream.protocol` supports `openai-chat-completions` and `anthropic-messages`. The adapter appends `/v1/chat/completions` or `/v1/messages` and normalizes a duplicate terminal path to one copy.
 
 Credentials are resolved at invocation time through `ctx.secrets.resolve` using the host-authorized company ID and config path. They are never placed in config, logs, state, errors, metrics, fixtures, or returned data.
+
+### `capacityRouting` — usage-aware Router v2
+
+Capacity routing is disabled by default. When enabled, it defaults to `shadow`: the router
+reads provider/account telemetry, records the capacity-aware alternative, and keeps the
+existing compatible-upstream selection. `mode: "enforce"` applies the capacity ranking only
+after every hard constraint and the task-class quality floor have passed.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Enables capacity reads and capacity-aware decisions. |
+| `mode` | `"shadow"` \| `"enforce"` | `"shadow"` | Shadow records the alternative; enforce selects it. |
+| `unknownTelemetry` | `"fail-closed"` \| `"exclude-lane"` | `"fail-closed"` | Enforcement refuses when required telemetry is unavailable, or excludes uncovered lanes only. |
+| `conserveUtilization` | number 0–1 | `0.6` | Marks a lane for conservation. |
+| `avoidUtilization` | number 0–1 | `0.8` | Prefers another qualified lane when possible. |
+| `sources` | array | `[]` | Provider-neutral field mappings for account, health, utilization, and reset data. |
+
+Each source names a status URL, one or more provider labels, account-id and health field
+candidates, and one or more utilization windows. Optional credentials remain Paperclip
+secret references and are resolved only for that telemetry request. Normalized snapshots and
+decision records contain account labels and utilization facts, never credential values.
+Catalogue presence is not health evidence.
+
+The decision keeps requested and selected identities separate from observed downstream
+serving identity. Serving fields remain null when the compatible upstream does not report
+them; they are never inferred from the requested model. Promotion from shadow to enforce
+requires representative comparison evidence, measured quality-floor coverage, successful
+reads from every required lane, and a rehearsal proving the default telemetry-outage policy
+fails closed. Disable `capacityRouting` to restore the v1 selection path.
 
 ## Invocation
 

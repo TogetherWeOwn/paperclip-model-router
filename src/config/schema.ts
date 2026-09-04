@@ -120,6 +120,12 @@ export const ROUTER_CONFIG_SCHEMA = {
             items: { type: "string", enum: MODEL_CAPABILITIES },
             default: [],
           },
+          providers: {
+            type: "array",
+            items: { type: "string", minLength: 1 },
+            default: [],
+            description: "Capacity telemetry lane labels associated with this opaque model id.",
+          },
           enabled: { type: "boolean", default: true },
         },
       },
@@ -169,6 +175,77 @@ export const ROUTER_CONFIG_SCHEMA = {
         warnFraction: { type: "number", minimum: 0, maximum: 1, default: 0.6 },
         downshiftFraction: { type: "number", minimum: 0, maximum: 1, default: 0.8 },
         haltFraction: { type: "number", minimum: 0, maximum: 1, default: 0.95 },
+      },
+    },
+    capacityRouting: {
+      type: "object",
+      title: "Usage-aware capacity routing",
+      additionalProperties: false,
+      properties: {
+        enabled: { type: "boolean", default: false },
+        mode: { type: "string", enum: ["shadow", "enforce"], default: "shadow" },
+        unknownTelemetry: {
+          type: "string",
+          enum: ["fail-closed", "exclude-lane"],
+          default: "fail-closed",
+        },
+        conserveUtilization: { type: "number", minimum: 0, maximum: 1, default: 0.6 },
+        avoidUtilization: { type: "number", minimum: 0, maximum: 1, default: 0.8 },
+        sources: {
+          type: "array",
+          default: [],
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "statusUrl", "providers", "windows"],
+            properties: {
+              id: { type: "string", minLength: 1 },
+              statusUrl: {
+                type: "string",
+                format: "uri",
+                pattern: "^https://[^/?#@]+(?:/[^?#]*)?$",
+              },
+              apiKeySecretRef: SECRET_REF_SCHEMA,
+              providers: {
+                type: "array",
+                minItems: 1,
+                items: { type: "string", minLength: 1 },
+              },
+              accountIdFields: {
+                type: "array",
+                items: { type: "string", minLength: 1 },
+                default: ["account", "accountId", "id", "email"],
+              },
+              healthFields: {
+                type: "array",
+                items: { type: "string", minLength: 1 },
+                default: ["health", "status", "unifiedStatus"],
+              },
+              windows: {
+                type: "array",
+                minItems: 1,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["name", "utilizationFields"],
+                  properties: {
+                    name: { type: "string", minLength: 1 },
+                    utilizationFields: {
+                      type: "array",
+                      minItems: 1,
+                      items: { type: "string", minLength: 1 },
+                    },
+                    resetFields: {
+                      type: "array",
+                      items: { type: "string", minLength: 1 },
+                      default: [],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     rule0: {

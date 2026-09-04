@@ -41,6 +41,7 @@ describe("manifest", () => {
     const schema = manifest.instanceConfigSchema as { properties: Record<string, unknown> };
     expect(Object.keys(schema.properties).sort()).toEqual([
       "budget",
+      "capacityRouting",
       "models",
       "routing",
       "rule0",

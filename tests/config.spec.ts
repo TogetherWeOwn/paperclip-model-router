@@ -110,6 +110,43 @@ describe("compatible-upstream config", () => {
     expect(validateUpstreamConfig(config.upstream)).toContain("upstream.protocol is not supported");
   });
 
+  it("accepts provider-neutral capacity mappings and defaults shadow-first", () => {
+    const raw = readFixture("company-a") as Record<string, unknown>;
+    raw.capacityRouting = {
+      enabled: true,
+      sources: [{
+        id: "capacity",
+        statusUrl: "https://capacity.example/status",
+        providers: ["subscription-a"],
+        windows: [{ name: "weekly", utilizationFields: ["used7d"], resetFields: ["resets7dAt"] }],
+      }],
+    };
+    const validate = hostValidator();
+    expect(validate(raw), JSON.stringify(validate.errors)).toBe(true);
+    expect(resolveConfig(raw).capacityRouting).toMatchObject({
+      enabled: true,
+      mode: "shadow",
+      unknownTelemetry: "fail-closed",
+      conserveUtilization: 0.6,
+      avoidUtilization: 0.8,
+    });
+  });
+
+  it("rejects raw credentials and unsafe URLs in capacity sources", () => {
+    const raw = readFixture("company-a") as Record<string, unknown>;
+    raw.capacityRouting = {
+      enabled: true,
+      sources: [{
+        id: "capacity",
+        statusUrl: "https://user:pass@capacity.example/status?token=x",
+        providers: ["subscription-a"],
+        apiKeySecretRef: "raw-secret",
+        windows: [{ name: "weekly", utilizationFields: ["used7d"] }],
+      }],
+    };
+    expect(hostValidator()(raw)).toBe(false);
+  });
+
   it("fills bounded transport defaults", () => {
     const config = resolveConfig({
       upstream: {
