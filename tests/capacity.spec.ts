@@ -228,6 +228,78 @@ describe("usage-aware selection", () => {
     });
   });
 
+  it("does not let a pin resurrect an exhausted lane in enforce mode", () => {
+    const unavailableSubscription = lanes.map((lane) =>
+      lane.provider === "teamclaude"
+        ? { ...lane, health: "exhausted" as const, posture: "unavailable" as const, utilization: 1, remainingFraction: 0 }
+        : lane,
+    );
+    const decision = selectModel({
+      config: routingConfig("enforce"),
+      descriptor: {
+        taskClass: "implementation",
+        pinnedModelId: "subscription-model",
+        pinReason: "incident override",
+      },
+      signals: { capacityLanes: unavailableSubscription },
+    });
+
+    expect(decision.modelId).toBe("available-model");
+    expect(decision.pin).toMatchObject({ modelId: "subscription-model", honored: false });
+    expect(decision.capacity.usagePosture).toBe("available");
+  });
+
+  it("does not let issue stickiness resurrect an exhausted lane in enforce mode", () => {
+    const config = resolveConfig({
+      ...routingConfig("enforce"),
+      routing: { enabled: true, mode: "advise", stickyModelWithinIssue: true },
+    });
+    const unavailableSubscription = lanes.map((lane) =>
+      lane.provider === "teamclaude"
+        ? { ...lane, health: "exhausted" as const, posture: "unavailable" as const, utilization: 1, remainingFraction: 0 }
+        : lane,
+    );
+    const decision = selectModel({
+      config,
+      descriptor: { taskClass: "implementation", issueId: "issue-1" },
+      signals: {
+        capacityLanes: unavailableSubscription,
+        stickyModelId: "subscription-model",
+      },
+    });
+
+    expect(decision.modelId).toBe("available-model");
+    expect(decision.capacity.usagePosture).toBe("available");
+    expect(decision.trace.join(" ")).toContain("switching despite the cache cost");
+  });
+
+  it("rejects candidates with no covered provider lane under fail-closed enforcement", () => {
+    const exhaustedOpenrouterOnly = [
+      {
+        ...lanes[1]!,
+        health: "exhausted" as const,
+        posture: "unavailable" as const,
+        utilization: 1,
+        remainingFraction: 0,
+      },
+    ];
+    const decision = selectModel({
+      config: routingConfig("enforce"),
+      descriptor: { taskClass: "implementation" },
+      signals: { capacityLanes: exhaustedOpenrouterOnly },
+    });
+
+    expect(decision.outcome).toBe("no-eligible-model");
+    expect(decision.modelId).toBeNull();
+    expect(decision.rejections).toContainEqual(
+      expect.objectContaining({
+        modelId: "subscription-model",
+        stage: "capacity",
+        reason: expect.stringContaining("no capacity telemetry covers"),
+      }),
+    );
+  });
+
   it("refuses rather than using a configured fallback when every lane is unavailable", () => {
     const config = resolveConfig({
       ...routingConfig("enforce"),

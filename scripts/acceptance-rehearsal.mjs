@@ -92,181 +92,77 @@ check("decision records contain no request content or credential", !JSON.stringi
 
 // --- Evidence 7: usage-aware router v2, simulated and credential-free -------
 
-console.log("\nEVIDENCE 7 — usage-aware v2 shadows and enforces across two providers");
+console.log("\nEVIDENCE 7 — usage-aware v2 shadows and enforces across two capacity lanes");
 
 const capacitySources = [
   {
     id: "simulated-subscription",
     statusUrl: "https://subscription-capacity.invalid/status",
     apiKeySecretRef: null,
-    providers: ["teamclaude"],
+    providers: ["subscription"],
     accountIdFields: ["account"],
     healthFields: ["status"],
-    windows: [{
-      name: "five-hour",
-      utilizationFields: ["used5h"],
-      resetFields: ["resets5hAt"],
-    }],
+    windows: [{ name: "five-hour", utilizationFields: ["used5h"], resetFields: ["resets5hAt"] }],
   },
   {
     id: "simulated-available",
     statusUrl: "https://available-capacity.invalid/status",
     apiKeySecretRef: null,
-    providers: ["openrouter"],
+    providers: ["available"],
     accountIdFields: ["account"],
     healthFields: ["status"],
-    windows: [{
-      name: "five-hour",
-      utilizationFields: ["used5h"],
-      resetFields: ["resets5hAt"],
-    }],
+    windows: [{ name: "five-hour", utilizationFields: ["used5h"], resetFields: ["resets5hAt"] }],
   },
 ];
 const capacityConfig = {
-  routing: { enabled: true, mode: "advise", fallbackModelId: null, stickyModelWithinIssue: false },
-  providers: {
-    permitted: ["teamclaude", "openrouter"],
-    preferenceOrder: ["teamclaude", "openrouter"],
-    claudePaygEnabled: false,
-    claudeFamilyProvider: "teamclaude",
-    claudeFamilies: ["claude"],
-  },
+  ...structuredClone(configs.get(COMPANY_A)),
+  routing: { ...configs.get(COMPANY_A).routing, stickyModelWithinIssue: false },
   models: [
-    {
-      id: "subscription-model",
-      family: "other",
-      tier: "standard",
-      quality: 80,
-      costPerMTokIn: 0,
-      costPerMTokOut: 0,
-      contextWindow: 200000,
-      providers: ["teamclaude"],
-    },
-    {
-      id: "available-model",
-      family: "other",
-      tier: "standard",
-      quality: 80,
-      costPerMTokIn: 1,
-      costPerMTokOut: 4,
-      contextWindow: 200000,
-      providers: ["openrouter"],
-    },
-    {
-      id: "cheap-below-floor",
-      family: "other",
-      tier: "small",
-      quality: 30,
-      costPerMTokIn: 0,
-      costPerMTokOut: 0,
-      contextWindow: 200000,
-      providers: ["openrouter"],
-    },
+    { id: "subscription-model", tier: "standard", quality: 80, costPerMTokIn: 0, costPerMTokOut: 0, contextWindow: 200000, capabilities: ["tools"], providers: ["subscription"], enabled: true },
+    { id: "available-model", tier: "standard", quality: 80, costPerMTokIn: 1, costPerMTokOut: 4, contextWindow: 200000, capabilities: ["tools"], providers: ["available"], enabled: true },
+    { id: "cheap-below-floor", tier: "small", quality: 30, costPerMTokIn: 0, costPerMTokOut: 0, contextWindow: 200000, capabilities: ["tools"], providers: ["available"], enabled: true },
   ],
   taskClasses: [{ key: "implementation", qualityFloor: 70 }],
-  capacityRouting: {
-    enabled: true,
-    mode: "shadow",
-    unknownTelemetry: "fail-closed",
-    sources: capacitySources,
-  },
+  capacityRouting: { enabled: true, mode: "shadow", unknownTelemetry: "fail-closed", sources: capacitySources },
 };
 const capacityPayloads = new Map([
-  [capacitySources[0].statusUrl, {
-    accounts: [{
-      account: "scarce-subscription",
-      status: "allowed",
-      used5h: 0.98,
-      resets5hAt: "2026-09-04T18:00:00Z",
-    }],
-  }],
-  [capacitySources[1].statusUrl, {
-    accounts: [{
-      account: "available-capacity",
-      status: "allowed",
-      used5h: 0.2,
-      resets5hAt: "2026-09-05T12:00:00Z",
-    }],
-  }],
+  [capacitySources[0].statusUrl, { accounts: [{ account: "scarce-subscription", status: "allowed", used5h: 0.98, resets5hAt: "2026-09-04T18:00:00Z" }] }],
+  [capacitySources[1].statusUrl, { accounts: [{ account: "available-capacity", status: "allowed", used5h: 0.2, resets5hAt: "2026-09-05T12:00:00Z" }] }],
 ]);
 const capacityConfigs = new Map([[COMPANY_A, capacityConfig]]);
 const capacityHarness = createTestHarness({ manifest, config: {} });
-capacityHarness.ctx.config = {
-  async get(companyId) {
-    return structuredClone(capacityConfigs.get(String(companyId)));
-  },
-};
+capacityHarness.ctx.config = { async get(companyId) { return structuredClone(capacityConfigs.get(String(companyId))); } };
+capacityHarness.ctx.secrets = { async resolve() { return "capacity-rehearsal-secret"; } };
+const capacityHttpCalls = [];
 capacityHarness.ctx.http = {
-  async fetch(url) {
-    const capacityPayload = capacityPayloads.get(String(url));
-    return {
-      status: 200,
-      async json() {
-        return capacityPayload ?? { accounts: [{ unified5h: 0.1, unified7d: 0.1 }] };
-      },
-    };
+  async fetch(url, init) {
+    capacityHttpCalls.push({ url: String(url), method: init?.method });
+    const payload = capacityPayloads.get(String(url));
+    if (payload) return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({ id: "chatcmpl-capacity", object: "chat.completion", model: "echo", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }] }), { status: 200, headers: { "content-type": "application/json" } });
   },
 };
-const { definition: capacityWorker } = workerModule.createPlugin();
+const { definition: capacityWorker } = createPlugin();
 await capacityWorker.setup(capacityHarness.ctx);
-const shadow = await capacityHarness.performAction("route", {
-  companyId: COMPANY_A,
-  taskClass: "implementation",
-  requestedProfile: "implementation",
-  requestedModelId: "subscription-model",
-  servingModelId: "subscription-model",
-  servingProvider: "openrouter",
-  servingAccount: "observed-lane",
-});
-check(
-  "shadow mode records normalized provider/account capacity without changing serving",
-  shadow.capacity.mode === "shadow" &&
-    shadow.capacity.telemetry === "available" &&
-    shadow.modelId === "subscription-model" &&
-    shadow.capacity.shadowModelId === "available-model" &&
-    shadow.capacity.shadowProvider !== null,
-  `selected=${shadow.modelId} shadow=${shadow.capacity.shadowModelId} lane=${shadow.capacity.shadowProvider}/${shadow.capacity.shadowAccount}`,
-);
-check(
-  "the simulated near-exhausted window is auditable and no credential is consumed or exposed",
-  shadow.capacity.shadowProvider === "openrouter" &&
-    shadow.capacity.shadowAccount === "available-capacity" &&
-    capacitySources.every((source) => source.apiKeySecretRef === null),
-  `shadow=${shadow.capacity.shadowProvider}/${shadow.capacity.shadowAccount}; source credentials are null`,
-);
+const capacityInvocation = { task: { taskClass: "implementation" }, messages: [{ role: "user", content: "hello" }], maxOutputTokens: 100 };
+const shadow = await capacityHarness.performAction("invoke", capacityInvocation, { companyId: COMPANY_A });
+check("shadow mode records a healthier alternative without changing invocation", shadow.outcome === "completed" && shadow.decision.modelId === "subscription-model" && shadow.decision.capacity.shadowModelId === "available-model", `selected=${shadow.decision.modelId} shadow=${shadow.decision.capacity.shadowModelId}`);
+check("capacity telemetry adds two GETs and inference remains exactly one POST", capacityHttpCalls.filter((call) => call.method === "GET").length === 2 && capacityHttpCalls.filter((call) => call.method === "POST").length === 1);
 
-capacityConfigs.set(COMPANY_A, {
-  ...capacityConfig,
-  capacityRouting: { ...capacityConfig.capacityRouting, mode: "enforce" },
-});
-const enforced = await capacityHarness.performAction("route", {
-  companyId: COMPANY_A,
-  taskClass: "implementation",
-});
-check(
-  "enforce mode deterministically moves eligible work to the healthier provider",
-  enforced.modelId === "available-model" && enforced.capacity.selectedProvider === "openrouter",
-  `selected=${enforced.modelId} lane=${enforced.capacity.selectedProvider}/${enforced.capacity.selectedAccount}`,
-);
+capacityConfigs.set(COMPANY_A, { ...capacityConfig, capacityRouting: { ...capacityConfig.capacityRouting, mode: "enforce" } });
+capacityHttpCalls.length = 0;
+const enforced = await capacityHarness.performAction("invoke", capacityInvocation, { companyId: COMPANY_A });
+check("enforce mode invokes the healthier quality-qualified model", enforced.outcome === "completed" && enforced.decision.modelId === "available-model" && capacityHttpCalls.filter((call) => call.method === "POST").length === 1, `selected=${enforced.decision.modelId}`);
 
 const noTelemetryHarness = createTestHarness({ manifest, config: {} });
 noTelemetryHarness.ctx.config = capacityHarness.ctx.config;
-noTelemetryHarness.ctx.http = {
-  async fetch() {
-    throw new Error("simulated telemetry outage");
-  },
-};
-const { definition: noTelemetryWorker } = workerModule.createPlugin();
+noTelemetryHarness.ctx.secrets = capacityHarness.ctx.secrets;
+let outageInferenceCalls = 0;
+noTelemetryHarness.ctx.http = { async fetch(url, init) { if (init?.method === "GET") throw new Error("simulated telemetry outage"); outageInferenceCalls += 1; return new Response("{}"); } };
+const { definition: noTelemetryWorker } = createPlugin();
 await noTelemetryWorker.setup(noTelemetryHarness.ctx);
-const noTelemetry = await noTelemetryHarness.performAction("route", {
-  companyId: COMPANY_A,
-  taskClass: "implementation",
-});
-check(
-  "enforcement fails closed when capacity telemetry is unavailable",
-  noTelemetry.outcome === "no-eligible-model" && noTelemetry.capacity.telemetry === "unavailable",
-  `outcome=${noTelemetry.outcome} reason=${noTelemetry.capacity.decisionReason}`,
-);
+const noTelemetry = await noTelemetryHarness.performAction("invoke", capacityInvocation, { companyId: COMPANY_A });
+check("enforcement fails closed before inference when telemetry is unavailable", noTelemetry.outcome === "no-eligible-model" && outageInferenceCalls === 0, `outcome=${noTelemetry.outcome}`);
 
 console.log(`\n${failures === 0 ? "REHEARSAL PASSED" : `REHEARSAL FAILED — ${failures} check(s) failed`}`);
 process.exit(failures === 0 ? 0 : 1);

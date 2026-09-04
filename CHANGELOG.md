@@ -23,8 +23,13 @@ Nothing yet.
   survivors by usable capacity. Catalogue presence is not treated as health evidence.
 - **Shadow and enforce decision records.** Shadow mode preserves the compatible-upstream
   v1 selection and records the capacity-aware alternative; enforce mode can apply that
-  alternative. Records keep requested, selected, observed serving, provider/account,
-  utilization, reset, reason, and fallback facts separate.
+  alternative. Records keep requested and selected model identities, capacity-lane/account
+  labels, utilization, reset, reason, and fallback facts separate from actual serving
+  identity, which the compatible upstream remains responsible for.
+- **Compatible-upstream v1 clarification.** The contract now distinguishes configured
+  pre-inference capacity-lane labels from the actual provider/account that serves an
+  inference. Capacity may rank quality-qualified models; it does not select an upstream
+  deployment leg, prove serving identity, retry transport, or trigger post-HTTP fallback.
 
 ### Changed
 
