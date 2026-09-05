@@ -63,7 +63,16 @@ export function selectModel(input: SelectInput): RoutingDecision {
     if (entry.utilization !== null && entry.utilization >= config.capacityRouting.conserveUtilization) return { ...entry, posture: "conserve" as const };
     return { ...entry, posture: "available" as const };
   });
-  const capacityTelemetry = capacityEnabled ? evidence.length > 0 && !runtime.capacityError ? "available" : "unavailable" : "not-configured";
+  // Contract §4: producer health is a REPORTED fact, not one inferred from the
+  // record count. Inferring it — the `evidence.length > 0` fallback below — is
+  // precisely the collapse the contract exists to prevent, because it makes a
+  // telemetry outage indistinguishable from a deployment that is healthy and
+  // simply governs nothing. The fallback is kept only for the legacy vendor
+  // path, which has no `telemetry` field to report.
+  const producerHealthy = runtime.capacityTelemetry !== undefined
+    ? runtime.capacityTelemetry === "available"
+    : evidence.length > 0;
+  const capacityTelemetry = capacityEnabled ? producerHealthy && !runtime.capacityError ? "available" : "unavailable" : "not-configured";
   const effectiveEvidence = capacityTelemetry === "available" ? evidence : [];
   const base: RoutingDecision = {
     outcome: "no-eligible-model", modelId: null, requestedTier: null, effectiveTier: null, taskClass: descriptor.taskClass ?? null, qualityFloor: null,

@@ -1,6 +1,7 @@
 import { isReservedLiteralHost } from "../config/upstream-constraints.js";
+import { evidenceFromContract, looksLikeModelUsageSnapshot } from "./contract.js";
 import { normalizeCapacityPayload } from "./normalize.js";
-import type { CapacitySnapshot, CapacitySourceConfig } from "./types.js";
+import type { CapacityReasonCode, CapacitySnapshot, CapacitySourceConfig } from "./types.js";
 
 export interface CapacityHttpClient {
   request(input: {
@@ -13,8 +14,19 @@ export interface CapacityHttpClient {
   }): Promise<{ status: number; contentType: string | null; body: unknown; responseBytes: number; redirected: boolean }>;
 }
 
-function failure(source: CapacitySourceConfig, fetchedAt: string, error: string): CapacitySnapshot {
-  return { fetchedAt, source: source.id, evidence: [], error };
+function failure(
+  source: CapacitySourceConfig,
+  fetchedAt: string,
+  reasonCode: CapacityReasonCode,
+): CapacitySnapshot {
+  return {
+    fetchedAt,
+    source: source.id,
+    evidence: [],
+    telemetry: "unavailable",
+    reasonCode,
+    error: reasonCode,
+  };
 }
 
 export async function readCapacitySource(input: {
@@ -52,5 +64,11 @@ export async function readCapacitySource(input: {
   if (response.status < 200 || response.status >= 300) return failure(input.source, fetchedAt, "capacity-http-failed");
   if (!response.contentType?.toLowerCase().split(";", 1)[0]?.trim().endsWith("/json") && !response.contentType?.toLowerCase().split(";", 1)[0]?.trim().endsWith("+json")) return failure(input.source, fetchedAt, "capacity-unexpected-media-type");
   if (response.body === null || typeof response.body !== "object") return failure(input.source, fetchedAt, "capacity-invalid-json");
-  return normalizeCapacityPayload({ payload: response.body, source: input.source, fetchedAt });
+  // A payload carrying `schemaVersion` is claiming to be a
+  // `model-usage-telemetry-v1` snapshot, so it is held to that contract —
+  // including having its version rejected if we do not implement it. Anything
+  // else is a vendor status body and goes down the legacy tree-walking path.
+  return looksLikeModelUsageSnapshot(response.body)
+    ? evidenceFromContract({ payload: response.body, source: input.source, fetchedAt })
+    : normalizeCapacityPayload({ payload: response.body, source: input.source, fetchedAt });
 }

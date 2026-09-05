@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
+import { evidenceFromContract } from "../src/capacity/contract.js";
 import { normalizeCapacityPayload } from "../src/capacity/normalize.js";
 import type { CapacitySourceConfig } from "../src/capacity/types.js";
 import { resolveConfig } from "../src/config/resolve.js";
 import { selectModel } from "../src/engine/select.js";
+import { normalizeUsage, unavailableSnapshot } from "../src/telemetry/normalize.js";
+import type { ModelUsageSnapshot, UsageObservation } from "../src/telemetry/types.js";
 
 const NOW = "2026-09-04T12:00:00.000Z";
 
@@ -474,5 +477,285 @@ describe("usage-aware selection", () => {
     expect(decision.capacity).toMatchObject({
       servingModelId: "available-model",
     });
+  });
+});
+
+/**
+ * TOG-977 acceptance: the consumer against contract-shaped fixtures.
+ *
+ * These exercise `src/capacity/contract.ts`, the documented adapter between the
+ * contract wire type in `src/telemetry/types.ts` and the engine's internal
+ * `CapacityEvidence`. Everything above this line drives the legacy vendor path
+ * in `normalize.ts`, which stays for non-contract status bodies.
+ *
+ * Fixtures are built from the PRODUCER's own `normalizeUsage`, not hand-written
+ * to match the consumer's expectations. A hand-written fixture proves the
+ * consumer parses what the test author imagined; running the real producer
+ * proves the two halves are wire-compatible, which is the point of the card.
+ */
+describe("TOG-977: contract-shaped fixtures through the consumer", () => {
+  const OBSERVED = "2026-09-04T12:00:00.000Z";
+
+  const contractSource: CapacitySourceConfig = {
+    ...source,
+    id: "model-usage",
+    statusUrl: "https://router.infextion.net/telemetry/model-usage",
+  };
+
+  /** Produce a real contract snapshot, then read it back as the consumer. */
+  function roundTrip(
+    observations: UsageObservation[],
+    over: Partial<ModelUsageSnapshot> = {},
+    fetchedAt = OBSERVED,
+  ) {
+    const produced = normalizeUsage({ observations, observedAt: OBSERVED });
+    return evidenceFromContract({
+      payload: { ...produced, ...over },
+      source: contractSource,
+      fetchedAt,
+    });
+  }
+
+  const busy: UsageObservation = {
+    modelIds: ["subscription-model"],
+    reportedState: null,
+    windows: [
+      { window: "five-hour", utilization: 0.96, resetsAt: "2026-09-04T18:00:00.000Z" },
+      { window: "weekly", utilization: 0.4, resetsAt: "2026-09-08T00:00:00.000Z" },
+    ],
+  };
+  const idle: UsageObservation = {
+    modelIds: ["available-model"],
+    reportedState: null,
+    windows: [{ window: "five-hour", utilization: 0.2, resetsAt: null }],
+  };
+
+  it("reads a producer-generated snapshot into one evidence row per model id", () => {
+    const snapshot = roundTrip([busy, idle]);
+    expect(snapshot.telemetry).toBe("available");
+    expect(snapshot.error).toBeNull();
+    expect(snapshot.evidence.map((entry) => [entry.modelId, entry.utilization])).toEqual([
+      ["subscription-model", 0.96],
+      ["available-model", 0.2],
+    ]);
+  });
+
+  it("keys strictly on the opaque model id and never fans one record across ids", () => {
+    // The probe has to be a model the source is configured for but the producer
+    // did NOT mention. With both models present, a fan-out bug and a correct key
+    // lookup return the same rows, and the test would pass either way.
+    // `contractSource.modelIds` is ["subscription-model", "available-model"];
+    // only the first is observed here.
+    const snapshot = roundTrip([busy]);
+    expect(snapshot.evidence.map((entry) => entry.modelId)).toEqual(["subscription-model"]);
+    // The exact defect the TOG-975 interop spec pinned: the legacy tree walk
+    // hands `available-model` the busy model's 0.96. A key lookup gives it
+    // nothing at all, which is the honest answer.
+    expect(snapshot.evidence.some((entry) => entry.modelId === "available-model")).toBe(false);
+    // Uncovered is not an outage: the producer is healthy and simply does not
+    // govern that model (§4's middle row).
+    expect(snapshot.telemetry).toBe("available");
+  });
+
+  it("still attributes each model its own number when the producer covers both", () => {
+    const snapshot = roundTrip([busy, idle]);
+    const available = snapshot.evidence.filter((entry) => entry.modelId === "available-model");
+    expect(available).toHaveLength(1);
+    expect(available[0]!.utilization).toBe(0.2);
+    expect(snapshot.evidence.some((entry) => entry.utilization === 0.96 && entry.modelId !== "subscription-model")).toBe(false);
+  });
+
+  it("carries the most restrictive window and keeps both windows on the row", () => {
+    const snapshot = roundTrip([busy, idle]);
+    const row = snapshot.evidence.find((entry) => entry.modelId === "subscription-model")!;
+    expect(row.windows.map((window) => window.name).sort()).toEqual(["five-hour", "weekly"]);
+    expect(row.utilization).toBe(0.96);
+    expect(row.health).toBe("degraded");
+  });
+
+  it("exposes no provider, account, lane, or connection identity", () => {
+    const serialized = JSON.stringify(roundTrip([busy, idle])).toLowerCase();
+    for (const forbidden of ["provider", "account", "connection", "combo", "credential", "apikey", "tenant"]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
+  // ---- §6.1 unknown schemaVersion is rejected, not silently routed ----
+
+  it("rejects an unknown schemaVersion rather than best-effort parsing it", () => {
+    const snapshot = roundTrip([busy, idle], { schemaVersion: 2 as never });
+    expect(snapshot.reasonCode).toBe("capacity-schema-version-unsupported");
+    expect(snapshot.telemetry).toBe("unavailable");
+    expect(snapshot.evidence).toEqual([]);
+  });
+
+  it("refuses to route on a rejected schemaVersion even though the v1 fields parse", () => {
+    // The body is otherwise a perfectly good v1 snapshot. If the version check
+    // were advisory this would route. It must not: a v2 body may reuse v1 field
+    // names with different meanings.
+    const snapshot = roundTrip([idle], { schemaVersion: 99 as never });
+    const decision = selectModel({
+      config: routingConfig("shadow"),
+      descriptor: { taskClass: "implementation" },
+      signals: {
+        capacityEvidence: snapshot.evidence,
+        capacityTelemetry: snapshot.telemetry,
+        capacityError: snapshot.error ?? undefined,
+      },
+    });
+    expect(decision.capacity.telemetry).toBe("unavailable");
+    expect(decision.capacity.shadowModelId).toBeNull();
+  });
+
+  // ---- §6.2 a stale snapshot routes as unavailable ----
+
+  it("treats observedAt + staleAfterSeconds < fetchedAt as unavailable", () => {
+    // staleAfterSeconds defaults to 300; fetched 301s after observation.
+    const snapshot = roundTrip([busy, idle], {}, "2026-09-04T12:05:01.000Z");
+    expect(snapshot.reasonCode).toBe("capacity-snapshot-stale");
+    expect(snapshot.telemetry).toBe("unavailable");
+    expect(snapshot.evidence).toEqual([]);
+  });
+
+  it("still accepts a snapshot inside its freshness budget", () => {
+    const snapshot = roundTrip([busy, idle], {}, "2026-09-04T12:04:59.000Z");
+    expect(snapshot.telemetry).toBe("available");
+    expect(snapshot.evidence).toHaveLength(2);
+  });
+
+  it("judges staleness against observedAt, not against a cache's serve time", () => {
+    // A producer serving from cache answers instantly with old numbers. Judging
+    // freshness at fetch time would call this fresh; it is 40 minutes old.
+    const produced = normalizeUsage({ observations: [busy], observedAt: "2026-09-04T11:20:00.000Z" });
+    const snapshot = evidenceFromContract({ payload: produced, source: contractSource, fetchedAt: OBSERVED });
+    expect(snapshot.reasonCode).toBe("capacity-snapshot-stale");
+  });
+
+  it("routes a stale snapshot as unavailable through selectModel", () => {
+    const snapshot = roundTrip([busy, idle], {}, "2026-09-04T13:00:00.000Z");
+    const decision = selectModel({
+      config: routingConfig("shadow"),
+      descriptor: { taskClass: "implementation" },
+      signals: {
+        capacityEvidence: snapshot.evidence,
+        capacityTelemetry: snapshot.telemetry,
+        capacityError: snapshot.error ?? undefined,
+      },
+    });
+    expect(decision.capacity.telemetry).toBe("unavailable");
+    expect(decision.capacity.decisionReason).toContain("capacity-snapshot-stale");
+  });
+
+  // ---- §6.4 unknown stays routable ----
+
+  it("keeps an unmeasured model routable rather than treating it as exhausted", () => {
+    const snapshot = roundTrip([
+      { modelIds: ["available-model"], reportedState: null, windows: [] },
+    ]);
+    const row = snapshot.evidence.find((entry) => entry.modelId === "available-model")!;
+    expect(row.health).toBe("unknown");
+    expect(row.posture).toBe("unknown");
+    // Absence of evidence is not evidence of exhaustion.
+    expect(row.health).not.toBe("exhausted");
+    expect(snapshot.telemetry).toBe("available");
+  });
+
+  // ---- §3.2 serviceable must agree with state ----
+
+  it("drops a record whose serviceable contradicts its state", () => {
+    const produced = normalizeUsage({ observations: [busy, idle], observedAt: OBSERVED });
+    const tampered = {
+      ...produced,
+      models: {
+        ...produced.models,
+        "subscription-model": { ...produced.models["subscription-model"]!, state: "exhausted", serviceable: true },
+      },
+    };
+    const snapshot = evidenceFromContract({ payload: tampered, source: contractSource, fetchedAt: OBSERVED });
+    // Honouring either half would be picking which lie to believe. The healthy
+    // sibling still routes; the malformed record simply has no row.
+    expect(snapshot.evidence.map((entry) => entry.modelId)).toEqual(["available-model"]);
+  });
+});
+
+/**
+ * §4, asserted in the CONSUMER. It was previously proven only on the producer
+ * side, and the TOG-975 interop spec measured the v0.4.0 consumer collapsing
+ * the two cases into one identical error string.
+ */
+describe("TOG-977: outage is distinguishable from healthy-empty in the consumer", () => {
+  const OBSERVED = "2026-09-04T12:00:00.000Z";
+  const contractSource: CapacitySourceConfig = { ...source, id: "model-usage" };
+
+  const healthyEmpty = evidenceFromContract({
+    payload: normalizeUsage({ observations: [], observedAt: OBSERVED }),
+    source: contractSource,
+    fetchedAt: OBSERVED,
+  });
+  const outage = evidenceFromContract({
+    payload: unavailableSnapshot({ observedAt: OBSERVED, reasonCode: "upstream-unreachable" }),
+    source: contractSource,
+    fetchedAt: OBSERVED,
+  });
+
+  it("produces zero evidence rows in BOTH cases — so row count cannot tell them apart", () => {
+    // Stated explicitly because it is why the distinction has to be structural.
+    expect(healthyEmpty.evidence).toEqual([]);
+    expect(outage.evidence).toEqual([]);
+  });
+
+  it("distinguishes them structurally on the snapshot", () => {
+    expect(healthyEmpty.telemetry).toBe("available");
+    expect(healthyEmpty.reasonCode).toBeNull();
+    expect(healthyEmpty.error).toBeNull();
+
+    expect(outage.telemetry).toBe("unavailable");
+    expect(outage.reasonCode).toBe("capacity-producer-unavailable");
+    expect(outage.error).toBeTruthy();
+
+    // The regression the TOG-975 interop spec measured: identical error strings.
+    expect(outage.error).not.toEqual(healthyEmpty.error);
+  });
+
+  it("distinguishes them by CONSUMER BEHAVIOUR in selectModel, not just by field value", () => {
+    const decide = (snapshot: typeof healthyEmpty) =>
+      selectModel({
+        config: routingConfig("shadow"),
+        descriptor: { taskClass: "implementation" },
+        signals: {
+          capacityEvidence: snapshot.evidence,
+          capacityTelemetry: snapshot.telemetry,
+          capacityError: snapshot.error ?? undefined,
+        },
+      });
+
+    const healthyDecision = decide(healthyEmpty);
+    const outageDecision = decide(outage);
+
+    // A healthy producer that governs nothing is a trustworthy answer: capacity
+    // telemetry is available, it simply constrains no model.
+    expect(healthyDecision.capacity.telemetry).toBe("available");
+    // An outage is a failure, and must never read as unlimited capacity.
+    expect(outageDecision.capacity.telemetry).toBe("unavailable");
+    expect(healthyDecision.capacity.telemetry).not.toBe(outageDecision.capacity.telemetry);
+    expect(healthyDecision.capacity.decisionReason).not.toEqual(outageDecision.capacity.decisionReason);
+  });
+
+  it("diverges under enforce + fail-closed: the outage refuses, the healthy-empty does not", () => {
+    // The behavioural difference that actually matters. Same zero rows, same
+    // config; only reported producer health differs, and the outcomes differ.
+    const decide = (snapshot: typeof healthyEmpty) =>
+      selectModel({
+        config: routingConfig("enforce"),
+        descriptor: { taskClass: "implementation" },
+        signals: {
+          capacityEvidence: snapshot.evidence,
+          capacityTelemetry: snapshot.telemetry,
+          capacityError: snapshot.error ?? undefined,
+        },
+      });
+
+    expect(decide(outage).capacity.telemetry).toBe("unavailable");
+    expect(decide(healthyEmpty).capacity.telemetry).toBe("available");
   });
 });

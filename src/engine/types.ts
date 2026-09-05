@@ -44,6 +44,13 @@ export interface TaskDescriptor {
 export interface RuntimeSignals {
   budgetSpentFraction?: number;
   capacityEvidence?: import("../capacity/types.js").CapacityEvidence[];
+  /**
+   * Producer health as REPORTED by the telemetry source (contract §4), not
+   * inferred from `capacityEvidence.length`. `"available"` with no evidence is
+   * a healthy producer that governs no model we asked about; `"unavailable"` is
+   * an outage. Omitted by the legacy vendor path, which cannot tell them apart.
+   */
+  capacityTelemetry?: "available" | "unavailable";
   capacityError?: string;
   servingModelId?: string;
   stickyModelId?: string;

@@ -9,6 +9,15 @@
 This answers the two questions the operator asked on the TOG-975 thread, and
 records the consumer defect that changes the answer to the first one.
 
+> **SUPERSEDED IN PART BY TOG-977 (2026-09-05).** §0 below diagnosed the v0.4.0
+> consumer and concluded the operator had to serve a flat per-model projection,
+> one endpoint per model. TOG-977 fixed the consumer instead:
+> `src/capacity/contract.ts` reads the contract's nested `models` map by key.
+> **Serve the contract shape from a single endpoint** — see §6 at the bottom of
+> this document for the current wiring. §§0–3 are retained as the record of what
+> was measured, and remain accurate about the *legacy* path, which still handles
+> non-contract vendor status bodies.
+
 ## 0. The finding that shapes everything below
 
 The contract was written before the consumer existed. It has now been run
@@ -187,3 +196,61 @@ unapplied operator patch), so it is not introduced by this branch.
 Producer only. Capacity enforcement stays gated on TOG-901/916 and TOG-251.
 `capacityRouting.mode` stays `shadow`. Note that the host config schema will
 accept `mode: "enforce"` — that rule is procedural, with no technical guard.
+
+## 6. CURRENT wiring (TOG-977) — serve the contract shape
+
+This section replaces §§1–3 for a new deployment. The consumer now reads the
+contract's nested `models` map by exact key, so the fan-out that forced the flat
+projection is gone.
+
+**One endpoint, all models.** No per-model slug, no repeated `sources[]` block.
+
+```
+https://router.infextion.net/telemetry/model-usage
+```
+
+Serve exactly the §3 response body — nested `models`, keyed by the exact opaque
+model ID. The transport requirements in §1 are unchanged and still enforced:
+HTTPS, no query/fragment/userinfo, no redirects, `Content-Type` ending in
+`/json` or `+json`, body under `maxResponseBytes`, bearer (if any) sent as
+`x-api-key`.
+
+```json
+{
+  "id": "model-usage",
+  "statusUrl": "https://router.infextion.net/telemetry/model-usage",
+  "modelIds": ["oc/claude-opus-5", "oc/claude-sonnet-5"],
+  "requestTimeoutMs": 5000,
+  "maxResponseBytes": 262144,
+  "windows": [{ "name": "five-hour", "utilizationFields": ["utilization"], "resetFields": ["resetsAt"] }]
+}
+```
+
+`modelIds` may now list **every** model this endpoint covers — listing more than
+one no longer cross-contaminates, because the lookup is `models[modelId]`. A
+model in `modelIds` that the producer does not mention simply gets no evidence
+row, and that is reported as healthy-with-no-coverage rather than as an outage.
+`healthFields` and `windows` are unused on the contract path (state and windows
+are read from their contract positions); keep one `windows` entry to satisfy the
+config schema's `minItems: 1`.
+
+### What changed for the producer
+
+- **Signal an outage with `telemetry: "unavailable"` and a `reasonCode`**, exactly
+  as contract §4 specifies. The §3 workaround — omitting the utilization keys so
+  the tree walk found nothing — is no longer needed. The consumer now reads the
+  field, and `telemetry: "available"` with `models: {}` is accepted as the
+  distinct, trustworthy "healthy, governing nothing" answer.
+- **`schemaVersion` is now enforced.** A body whose version is not `1` is rejected
+  outright rather than best-effort parsed. Do not bump it without a consumer
+  release.
+- **Staleness is judged against `observedAt`**, not fetch time, using the
+  producer's own `staleAfterSeconds`. A cached body served with a fresh
+  `observedAt` it did not actually observe will be trusted; serve the true
+  observation time. `maxSnapshotAgeMs` remains the backstop.
+- **`serviceable` must agree with `state`** (§3.2). A record where they disagree is
+  dropped, not reconciled.
+
+Keep `unknownTelemetry: "fail-closed"` and `mode: "shadow"`. Verification:
+`tests/capacity.spec.ts` (TOG-977 blocks) plus
+`scripts/tog977-mutation-oracle.mjs`.

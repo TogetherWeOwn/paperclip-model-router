@@ -251,19 +251,50 @@ A conforming consumer:
    than on the outage case.
 6. MUST bound its own read (§5).
 
-### 6.1 Required change to the staged Router v2 consumer
+### 6.1 Status of the Router v2 consumer — closed by TOG-977
 
-The consumer staged on `tog-943-usage-aware-router-v2` does **not** conform. Its
-`CapacityLane` (`src/capacity/types.ts`) carries required `provider: string` and
-`account: string`, and `bestLaneFor()` in `src/engine/select.ts` selects a lane by matching
-`lane.provider` against the model's provider list. That is provider identity inside the
-plugin, and it is the coupling §2 forbids.
+The original text here described a `CapacityLane` carrying required `provider` and
+`account`, and a `bestLaneFor()` that matched `lane.provider` against a model's provider
+list. **Both are gone.** The rebased Router v2 head replaced `CapacityLane` with
+`CapacityEvidence` keyed on `modelId` and deleted `bestLaneFor()` and
+`sameLaneProvider()`; a grep for provider/account under `src/capacity/` and
+`src/engine/select.ts` returns nothing. The boundary violation this section was written
+about is closed.
 
-Conforming requires re-keying the consumer from `(provider, account)` to `modelId`:
-capacity becomes a direct lookup `models[model.id]` rather than a lane search, which also
-removes `bestLaneFor` and the provider-matching helpers entirely. This is a simplification
-of the consumer, not an addition to it. Tracked separately; it is not in scope for the
-producer contract.
+TOG-977 then closed the remaining gap, which was that the two halves were
+boundary-compatible but not **wire**-compatible: the consumer had its own shape and did
+not import `ModelUsageRecord` from `src/telemetry/types.ts` at all.
+
+**`src/capacity/contract.ts` is the documented adapter**, and it is the answer to §1's
+"converge or document why two shapes coexist". Two shapes do coexist, deliberately:
+
+- `ModelUsageRecord` is a **statement about the deployment** — serviceable, state,
+  utilization, windows. It is the wire type, imported verbatim by the consumer from the
+  same declaration the producer emits.
+- `CapacityEvidence` is a **ranking input** for `selectModel`. It carries `posture`, which
+  is a function of the operator's configured `conserveUtilization` / `avoidUtilization`
+  thresholds and has no meaning on the wire.
+
+Collapsing them would push router policy into the contract and oblige every producer to
+know one deployment's thresholds. So the projection happens in exactly one file, in one
+direction, and `src/capacity/contract.ts` is the only place the two vocabularies meet.
+
+Consumer obligations 1–6 are implemented there and asserted in
+`tests/capacity.spec.ts`. Two consequences worth stating outright:
+
+- **`CapacitySnapshot` now carries `telemetry` and `reasonCode`.** §4's distinction is
+  structural in the consumer, not inferred from `evidence.length`. `RuntimeSignals`
+  carries `capacityTelemetry` for the same reason — producer health is reported, not
+  counted.
+- **The legacy tree-walking path in `normalize.ts` remains** for vendor status bodies that
+  are not contract snapshots. `read.ts` dispatches on the presence of `schemaVersion`. That
+  path cannot make §4's distinction — a vendor body has no `telemetry` field — so it
+  reports the conservative reading, and a deployment that needs the healthy-empty case
+  answered honestly must serve the contract shape.
+
+`scripts/tog977-mutation-oracle.mjs` breaks each obligation in turn and fails unless the
+suite goes red for every one, so these tests are known to be capable of failing rather than
+merely observed to pass.
 
 ## 7. Conformance
 

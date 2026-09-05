@@ -139,14 +139,25 @@ export function createPlugin() {
       const storedCapacity = async (
         companyId: string,
         config: RouterConfig,
-      ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; error: string | null }> => {
+      ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; telemetry: "available" | "unavailable" | undefined; error: string | null }> => {
         const stored = asRecord(await ctx.state.get(capacityStateKey(companyId)));
         const refreshedAt = typeof stored.refreshedAt === "string" ? Date.parse(stored.refreshedAt) : Number.NaN;
         const lastRefreshError = typeof stored.lastRefreshError === "string" ? stored.lastRefreshError : null;
         const stale = !Number.isFinite(refreshedAt) || Date.now() - refreshedAt > config.capacityRouting.maxSnapshotAgeMs;
+        const snapshots = Array.isArray(stored.snapshots) ? stored.snapshots as CapacitySnapshot[] : [];
+        // Reported producer health survives the round-trip through state, so a
+        // stored healthy-empty snapshot stays distinguishable from an outage
+        // (§4). `undefined` means the stored snapshots predate the field or came
+        // from the legacy path, and `selectModel` falls back to inference.
+        const reported = snapshots.length > 0 && snapshots.every((snapshot) => snapshot.telemetry === "available")
+          ? "available" as const
+          : snapshots.some((snapshot) => snapshot.telemetry === "unavailable")
+            ? "unavailable" as const
+            : undefined;
         return {
-          snapshots: Array.isArray(stored.snapshots) ? stored.snapshots as CapacitySnapshot[] : [],
+          snapshots,
           evidence: Array.isArray(stored.evidence) ? stored.evidence as CapacityEvidence[] : [],
+          telemetry: stale ? "unavailable" : reported,
           error: lastRefreshError ?? (stale ? "capacity-snapshot-stale" : null),
         };
       };
@@ -167,7 +178,7 @@ export function createPlugin() {
                 configPath: `capacityRouting.sources.${index}.apiKeySecretRef`,
               });
             } catch {
-              snapshots.push({ fetchedAt: new Date().toISOString(), source: source.id, evidence: [], error: "capacity-secret-unavailable" });
+              snapshots.push({ fetchedAt: new Date().toISOString(), source: source.id, evidence: [], telemetry: "unavailable", reasonCode: "capacity-secret-unavailable", error: "capacity-secret-unavailable" });
               continue;
             }
           }
@@ -178,17 +189,29 @@ export function createPlugin() {
         const malformedEvidence = evidence.some((entry) =>
           !entry.telemetryAvailable || entry.health === "unknown" || entry.posture === "unknown"
         );
-        const incompleteModelIds = config.capacityRouting.sources.flatMap((source) =>
-          source.modelIds.filter((modelId) => !evidence.some((entry) => entry.modelId === modelId))
-        );
+        // Contract §4. Every source reporting `telemetry: "available"` means the
+        // producers are healthy, whatever they did or did not say about
+        // individual models. A model they did not mention is the middle row —
+        // healthy, governing nothing — not an outage, and it is still refused
+        // per-model by the enforce gate in `selectModel`, which is where
+        // fail-closed belongs as a visible policy choice.
+        //
+        // This only widens the contract path. A legacy vendor payload fans every
+        // parsed record onto every id in `source.modelIds`, so a legacy source
+        // with any evidence at all covers all of its ids, and one with none
+        // already carries a snapshot error below.
+        const producersHealthy = snapshots.every((snapshot) => snapshot.telemetry === "available");
         const result = {
           snapshots,
           evidence,
-          error: snapshotErrors.join("; ") || (malformedEvidence || incompleteModelIds.length > 0 ? "capacity-refresh-incomplete" : null),
+          error: snapshotErrors.join("; ") || (malformedEvidence ? "capacity-refresh-incomplete" : null),
         };
         const key = capacityStateKey(companyId);
         const previous = asRecord(await ctx.state.get(key));
-        if (!result.error && result.evidence.length > 0) {
+        // A healthy-empty refresh is stored, not discarded. Discarding it would
+        // leave the last constrained snapshot in place and read as stale, which
+        // is the §4 collapse one layer down from the normalizer.
+        if (!result.error && producersHealthy) {
           await ctx.state.set(key, { ...result, refreshedAt: new Date().toISOString(), lastRefreshError: null });
         } else {
           await ctx.state.set(key, {
@@ -312,13 +335,14 @@ export function createPlugin() {
 
         const capacity = config.capacityRouting.enabled
           ? await storedCapacity(companyId, config)
-          : { snapshots: [], evidence: [], error: null };
+          : { snapshots: [], evidence: [], telemetry: undefined, error: null };
         const decision = selectModel({
           descriptor: request.task,
           config,
           signals: {
             budgetSpentFraction: request.task.signals?.budgetSpentFraction,
             capacityEvidence: capacity.evidence,
+            capacityTelemetry: capacity.telemetry,
             capacityError: capacity.error ?? undefined,
             stickyModelId: config.routing.stickyModelWithinIssue
               ? await readStickyModel(companyId, request.task.issueId)

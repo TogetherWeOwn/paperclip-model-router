@@ -129,11 +129,27 @@ describe("Variant C: producer outage", () => {
 });
 
 /**
- * The defect this projection exists to route around. If a future consumer
- * change makes the nested contract shape parse correctly, these tests fail —
- * which is the signal to simplify the projection back to one endpoint.
+ * The defect this projection existed to route around.
+ *
+ * TOG-977 UPDATE: the signal these tests were waiting for has fired, by a route
+ * they could not observe. They call `normalizeCapacityPayload` DIRECTLY, so
+ * they still measure the legacy tree-walking path, and they still pass — the
+ * legacy path is genuinely unchanged and still behaves exactly this way for
+ * vendor status bodies.
+ *
+ * What changed is the dispatch above them: `readCapacitySource` now routes any
+ * payload carrying `schemaVersion` to `evidenceFromContract`
+ * (`src/capacity/contract.ts`), which reads the nested `models` map by exact
+ * key. A real producer serving the contract shape no longer reaches this
+ * function at all.
+ *
+ * So these blocks are now a characterization of the LEGACY path, retained
+ * because that path still runs for non-contract sources. The contract path's
+ * behaviour — one row per model, no cross-contamination, outage separable from
+ * healthy-empty — is asserted in `tests/capacity.spec.ts` under TOG-977, and
+ * the flat per-model projection above is no longer the required wire shape.
  */
-describe("nested `models` map: the shape the v0.4.0 consumer cannot read", () => {
+describe("nested `models` map: the shape the LEGACY vendor path cannot read", () => {
   const nested = {
     schemaVersion: 1,
     observedAt: "2026-09-05T02:00:00.000Z",
