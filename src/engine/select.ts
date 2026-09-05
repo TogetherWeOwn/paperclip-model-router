@@ -164,7 +164,14 @@ export function selectModel(input: SelectInput): RoutingDecision {
   if (shadow) { base.capacity.shadowModelId = shadow.model.id; base.capacity.shadowSource = shadow.evidence?.source ?? null; base.capacity.shadowLaneLabel = shadow.evidence?.laneLabel ?? null; base.capacity.decisionReason = `preferred evidence ${shadow.evidence?.source}/${shadow.evidence?.laneLabel}`; }
   const pool = capacityEnabled && config.capacityRouting.mode === "enforce" ? usageAware : ranked;
   base.candidates = pool.map((entry): Candidate => ({ modelId: entry.model.id, tier: entry.model.tier, quality: entry.model.quality, expectedCostUsd: entry.cost, capacitySource: entry.evidence?.source ?? null, laneLabel: entry.evidence?.laneLabel ?? null, usagePosture: entry.evidence?.posture ?? (capacityEnabled ? "unknown" : "not-evaluated"), utilization: entry.evidence?.utilization ?? null, resetsAt: entry.evidence?.resetsAt ?? null }));
-  const capacityFor = (entry: Ranked): RoutingDecision["capacity"] => ({ ...base.capacity, selectedSource: entry.evidence?.source ?? null, selectedLaneLabel: entry.evidence?.laneLabel ?? null, usagePosture: entry.evidence?.posture ?? (capacityEnabled ? "unknown" : "not-evaluated"), utilization: entry.evidence?.utilization ?? null, resetsAt: entry.evidence?.resetsAt ?? null });
+  // TOG-1076: `degraded` announces "we served without capacity awareness". Line
+  // 102 raises it when telemetry is wholly unavailable, but under `fail-open` a
+  // model no source covers is equally uninformed — and until now reported
+  // degraded=false because the telemetry FETCH succeeded. That is the same
+  // epistemic state reported two opposite ways, and it is what would let an
+  // unmetered lane absorb fleet exhaustion invisibly. Judge the evidence behind
+  // the model actually selected, not the health of the fetch.
+  const capacityFor = (entry: Ranked): RoutingDecision["capacity"] => ({ ...base.capacity, degraded: base.capacity.degraded || (capacityEnabled && config.capacityRouting.mode === "enforce" && !covered(entry)), selectedSource: entry.evidence?.source ?? null, selectedLaneLabel: entry.evidence?.laneLabel ?? null, usagePosture: entry.evidence?.posture ?? (capacityEnabled ? "unknown" : "not-evaluated"), utilization: entry.evidence?.utilization ?? null, resetsAt: entry.evidence?.resetsAt ?? null });
   const pinnedId = descriptor.pinnedModelId ?? taskClass?.pinnedModelId ?? null;
   if (pinnedId) { const pinned = withCapacity.find((entry) => entry.model.id === pinnedId); const honored = Boolean(pinned && (!(capacityEnabled && config.capacityRouting.mode === "enforce") || usable(pinned))); const reason = descriptor.pinReason ?? "configured pin"; base.pin = { modelId: pinnedId, reason, honored }; if (honored) return { ...base, outcome: "selected", modelId: pinnedId, capacity: capacityFor(pinned!) }; trace.push(`pin refused: ${pinnedId}`); }
   if (budgetGate === "halt" && !base.pin?.honored) { trace.push("budget gate halt: refusing non-pinned model work"); return base; }

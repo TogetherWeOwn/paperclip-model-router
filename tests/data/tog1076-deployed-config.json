@@ -1,0 +1,1699 @@
+{
+  "rule0": {
+    "enabled": true,
+    "deterministicPatterns": []
+  },
+  "budget": {
+    "haltFraction": 0.95,
+    "warnFraction": 0.6,
+    "monthlyCapUsd": 400,
+    "downshiftFraction": 0.8
+  },
+  "models": [
+    {
+      "id": "cliproxy/claude-fable-5",
+      "tier": "frontier",
+      "enabled": false,
+      "quality": 100,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context",
+        "structured-output"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 10,
+      "costPerMTokOut": 50
+    },
+    {
+      "id": "cliproxy/claude-opus-5",
+      "tier": "frontier",
+      "enabled": true,
+      "quality": 95,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context",
+        "structured-output"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 5,
+      "costPerMTokOut": 25
+    },
+    {
+      "id": "cliproxy/claude-opus-4-8",
+      "tier": "strong",
+      "enabled": false,
+      "quality": 88,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context",
+        "structured-output"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 5,
+      "costPerMTokOut": 25
+    },
+    {
+      "id": "cliproxy/claude-opus-4-7",
+      "tier": "strong",
+      "enabled": false,
+      "quality": 84,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context",
+        "structured-output"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 5,
+      "costPerMTokOut": 25
+    },
+    {
+      "id": "cliproxy/claude-opus-4-6",
+      "tier": "strong",
+      "enabled": false,
+      "quality": 80,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context",
+        "structured-output"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 5,
+      "costPerMTokOut": 25
+    },
+    {
+      "id": "cliproxy/claude-opus-4-5-20251101",
+      "tier": "strong",
+      "enabled": false,
+      "quality": 76,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context",
+        "structured-output"
+      ],
+      "contextWindow": 200000,
+      "costPerMTokIn": 5,
+      "costPerMTokOut": 25
+    },
+    {
+      "id": "cliproxy/claude-sonnet-5",
+      "tier": "strong",
+      "enabled": true,
+      "quality": 72,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context",
+        "structured-output"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 3,
+      "costPerMTokOut": 15
+    },
+    {
+      "id": "cliproxy/claude-sonnet-4-6",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 66,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context",
+        "structured-output"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 3,
+      "costPerMTokOut": 15
+    },
+    {
+      "id": "cliproxy/claude-sonnet-4-5-20250929",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 60,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context",
+        "structured-output"
+      ],
+      "contextWindow": 200000,
+      "costPerMTokIn": 3,
+      "costPerMTokOut": 15
+    },
+    {
+      "id": "cliproxy/claude-haiku-4-5-20251001",
+      "tier": "small",
+      "enabled": true,
+      "quality": 40,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context",
+        "structured-output"
+      ],
+      "contextWindow": 200000,
+      "costPerMTokIn": 1,
+      "costPerMTokOut": 5
+    },
+    {
+      "id": "cliproxy/claude-sonnet-4-20250514",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 43,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 200000,
+      "costPerMTokIn": 3,
+      "costPerMTokOut": 15
+    },
+    {
+      "id": "cliproxy/claude-3-7-sonnet-20250219",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 40,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 200000,
+      "costPerMTokIn": 3,
+      "costPerMTokOut": 15
+    },
+    {
+      "id": "cliproxy/claude-3-5-haiku-20241022",
+      "tier": "small",
+      "enabled": false,
+      "quality": 23,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 200000,
+      "costPerMTokIn": 0.8,
+      "costPerMTokOut": 4
+    },
+    {
+      "id": "cliproxy/gpt-5.4",
+      "tier": "strong",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 409600,
+      "costPerMTokIn": 2.5,
+      "costPerMTokOut": 15
+    },
+    {
+      "id": "cliproxy/gpt-5.4-mini",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 64,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 409600,
+      "costPerMTokIn": 0.75,
+      "costPerMTokOut": 4.5
+    },
+    {
+      "id": "cliproxy/gpt-5.5",
+      "tier": "strong",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 1050000,
+      "costPerMTokIn": 5,
+      "costPerMTokOut": 30
+    },
+    {
+      "id": "cliproxy/gpt-5.6-luna",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 1050000,
+      "costPerMTokIn": 0.2,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "cliproxy/gpt-5.6-sol",
+      "tier": "strong",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 1050000,
+      "costPerMTokIn": 4,
+      "costPerMTokOut": 20
+    },
+    {
+      "id": "cliproxy/gpt-5.6-terra",
+      "tier": "strong",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 1050000,
+      "costPerMTokIn": 2,
+      "costPerMTokOut": 12
+    },
+    {
+      "id": "cliproxy/gpt-5.3-codex-spark",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 400000,
+      "costPerMTokIn": 1.75,
+      "costPerMTokOut": 14
+    },
+    {
+      "id": "cliproxy/gpt-oss-120b-medium",
+      "tier": "small",
+      "enabled": false,
+      "quality": 40,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 400000,
+      "costPerMTokIn": 0.15,
+      "costPerMTokOut": 0.6
+    },
+    {
+      "id": "cliproxy/gemini-3-flash",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 46,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 1048576,
+      "costPerMTokIn": 0.5,
+      "costPerMTokOut": 3
+    },
+    {
+      "id": "cliproxy/gemini-3.1-pro-low",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 1048576,
+      "costPerMTokIn": 2,
+      "costPerMTokOut": 12
+    },
+    {
+      "id": "cliproxy/gemini-3.6-flash-high",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 1048576,
+      "costPerMTokIn": 0.4,
+      "costPerMTokOut": 2.5
+    },
+    {
+      "id": "cliproxy/gemini-3.7-flash-high",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.58,
+      "costPerMTokOut": 3.48
+    },
+    {
+      "id": "cliproxy/grok-4.3",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 60,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 1.25,
+      "costPerMTokOut": 2.5
+    },
+    {
+      "id": "cliproxy/grok-4.5",
+      "tier": "strong",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 2,
+      "costPerMTokOut": 6
+    },
+    {
+      "id": "cliproxy/grok-4.6",
+      "tier": "strong",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 2,
+      "costPerMTokOut": 6
+    },
+    {
+      "id": "cliproxy/kimi-k2",
+      "tier": "small",
+      "enabled": true,
+      "quality": 34,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 0.57,
+      "costPerMTokOut": 2.3
+    },
+    {
+      "id": "cliproxy/kimi-k2-thinking",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 53,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 0.6,
+      "costPerMTokOut": 2.5
+    },
+    {
+      "id": "cliproxy/kimi-k2.5",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 57,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 0.6,
+      "costPerMTokOut": 3
+    },
+    {
+      "id": "cliproxy/kimi-k2.6",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 0.95,
+      "costPerMTokOut": 4
+    },
+    {
+      "id": "cliproxy/kimi-k3",
+      "tier": "strong",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 1048576,
+      "costPerMTokIn": 3,
+      "costPerMTokOut": 15
+    },
+    {
+      "id": "cliproxy/kimi-k3-256k",
+      "tier": "strong",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 1048576,
+      "costPerMTokIn": 3,
+      "costPerMTokOut": 15
+    },
+    {
+      "id": "cliproxy/claude-opus-4-20250514",
+      "tier": "strong",
+      "enabled": false,
+      "quality": 43,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 200000,
+      "costPerMTokIn": 15,
+      "costPerMTokOut": 75
+    },
+    {
+      "id": "cliproxy/claude-opus-4-1-20250805",
+      "tier": "strong",
+      "enabled": false,
+      "quality": 47,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 200000,
+      "costPerMTokIn": 15,
+      "costPerMTokOut": 75
+    },
+    {
+      "id": "cliproxy/gemini-3.1-flash-lite",
+      "tier": "small",
+      "enabled": true,
+      "quality": 42,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.25,
+      "costPerMTokOut": 1.5
+    },
+    {
+      "id": "cliproxy/gemini-pro-agent",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 55,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 1048576,
+      "costPerMTokIn": 2,
+      "costPerMTokOut": 12
+    },
+    {
+      "id": "cliproxy/grok-3-mini",
+      "tier": "small",
+      "enabled": false,
+      "quality": 38,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 0.5
+    },
+    {
+      "id": "cliproxy/grok-3-mini-fast",
+      "tier": "small",
+      "enabled": false,
+      "quality": 22,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 0.5
+    },
+    {
+      "id": "cliproxy/grok-4.20-0309-non-reasoning",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 38,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 2,
+      "costPerMTokOut": 6
+    },
+    {
+      "id": "cliproxy/grok-4.20-0309-reasoning",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 59,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 2,
+      "costPerMTokOut": 6
+    },
+    {
+      "id": "cliproxy/grok-4.20-multi-agent-0309",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 59,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 2,
+      "costPerMTokOut": 6
+    },
+    {
+      "id": "cliproxy/grok-build-0.1",
+      "tier": "small",
+      "enabled": false,
+      "quality": 64,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 1,
+      "costPerMTokOut": 2
+    },
+    {
+      "id": "cliproxy/grok-composer-2.5-fast",
+      "tier": "small",
+      "enabled": false,
+      "quality": 35,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 1,
+      "costPerMTokOut": 2
+    },
+    {
+      "id": "cliproxy/kimi-k2.7-code",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 1.2,
+      "costPerMTokOut": 5
+    },
+    {
+      "id": "cliproxy/kimi-k2.7-code-highspeed",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 62,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 1,
+      "costPerMTokOut": 4
+    },
+    {
+      "id": "opencode-go/qwen3.6-plus",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 63,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.5,
+      "costPerMTokOut": 3
+    },
+    {
+      "id": "opencode-go/qwen3.7-plus",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 61,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.4,
+      "costPerMTokOut": 1.6
+    },
+    {
+      "id": "opencode-go/qwen3.7-max",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 2.5,
+      "costPerMTokOut": 7.5
+    },
+    {
+      "id": "opencode-go/qwen3.8-max",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 2,
+      "costPerMTokOut": 6
+    },
+    {
+      "id": "opencode-go/deepseek-v4-flash",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.22,
+      "costPerMTokOut": 0.66
+    },
+    {
+      "id": "opencode-go/deepseek-v4-flash-vision-exp",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.22,
+      "costPerMTokOut": 0.66
+    },
+    {
+      "id": "opencode-go/deepseek-v4-pro",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.66,
+      "costPerMTokOut": 1.98
+    },
+    {
+      "id": "opencode-go/glm-5",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 64,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 202752,
+      "costPerMTokIn": 1,
+      "costPerMTokOut": 3.2
+    },
+    {
+      "id": "opencode-go/glm-5.1",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 64,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 202752,
+      "costPerMTokIn": 1.4,
+      "costPerMTokOut": 4.4
+    },
+    {
+      "id": "opencode-go/glm-5.2",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 1.4,
+      "costPerMTokOut": 4.4
+    },
+    {
+      "id": "opencode-go/glm-5.3",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 1.4,
+      "costPerMTokOut": 4.4
+    },
+    {
+      "id": "opencode-go/glm-5.3-flash",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.075,
+      "costPerMTokOut": 0.25
+    },
+    {
+      "id": "opencode-go/kimi-k2.5",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 57,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 0.57,
+      "costPerMTokOut": 2.85
+    },
+    {
+      "id": "opencode-go/kimi-k2.6",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 0.9025,
+      "costPerMTokOut": 3.8
+    },
+    {
+      "id": "opencode-go/kimi-k2.7-code",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 67,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 0.95,
+      "costPerMTokOut": 4
+    },
+    {
+      "id": "opencode-go/kimi-k3",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1048576,
+      "costPerMTokIn": 2.85,
+      "costPerMTokOut": 14.25
+    },
+    {
+      "id": "opencode-go/minimax-m2.5",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 54,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 204800,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "opencode-go/minimax-m2.7",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 61,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 204800,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "opencode-go/minimax-m3",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "opencode-go/grok-4.5",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output"
+      ],
+      "contextWindow": 500000,
+      "costPerMTokIn": 1.9,
+      "costPerMTokOut": 5.7
+    },
+    {
+      "id": "opencode-go/grok-4.6",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output"
+      ],
+      "contextWindow": 500000,
+      "costPerMTokIn": 1.9,
+      "costPerMTokOut": 5.7
+    },
+    {
+      "id": "opencode-go/gpt-5.6-luna",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1050000,
+      "costPerMTokIn": 0.19,
+      "costPerMTokOut": 1.14
+    },
+    {
+      "id": "opencode-go/qwen3.5-plus",
+      "tier": "small",
+      "enabled": false,
+      "quality": 32,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 0.2,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "cliproxy/deepseek-v4-flash",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.22,
+      "costPerMTokOut": 0.66
+    },
+    {
+      "id": "cliproxy/deepseek-v4-flash-vision-exp",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.22,
+      "costPerMTokOut": 0.66
+    },
+    {
+      "id": "cliproxy/deepseek-v4-pro",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.66,
+      "costPerMTokOut": 1.98
+    },
+    {
+      "id": "cliproxy/glm-5",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 64,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 202752,
+      "costPerMTokIn": 1,
+      "costPerMTokOut": 3.2
+    },
+    {
+      "id": "cliproxy/glm-5.1",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 64,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 202752,
+      "costPerMTokIn": 1.4,
+      "costPerMTokOut": 4.4
+    },
+    {
+      "id": "cliproxy/glm-5.2",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 1.4,
+      "costPerMTokOut": 4.4
+    },
+    {
+      "id": "cliproxy/glm-5.3",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 1.4,
+      "costPerMTokOut": 4.4
+    },
+    {
+      "id": "cliproxy/glm-5.3-flash",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.075,
+      "costPerMTokOut": 0.25
+    },
+    {
+      "id": "cliproxy/gpt-5.6-luna-go",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1050000,
+      "costPerMTokIn": 0.19,
+      "costPerMTokOut": 1.14
+    },
+    {
+      "id": "cliproxy/grok-4.5-go",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output"
+      ],
+      "contextWindow": 500000,
+      "costPerMTokIn": 1.9,
+      "costPerMTokOut": 5.7
+    },
+    {
+      "id": "cliproxy/grok-4.6-go",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output"
+      ],
+      "contextWindow": 500000,
+      "costPerMTokIn": 1.9,
+      "costPerMTokOut": 5.7
+    },
+    {
+      "id": "cliproxy/hy3",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 58,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 256000,
+      "costPerMTokIn": 0.5,
+      "costPerMTokOut": 2
+    },
+    {
+      "id": "cliproxy/hy3-preview",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 55,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 256000,
+      "costPerMTokIn": 0.5,
+      "costPerMTokOut": 2
+    },
+    {
+      "id": "cliproxy/hy4-preview",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 55,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 256000,
+      "costPerMTokIn": 0.5,
+      "costPerMTokOut": 2
+    },
+    {
+      "id": "cliproxy/kimi-k2.5-go",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 57,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 0.57,
+      "costPerMTokOut": 2.85
+    },
+    {
+      "id": "cliproxy/kimi-k2.6-go",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 0.9025,
+      "costPerMTokOut": 3.8
+    },
+    {
+      "id": "cliproxy/kimi-k2.7-code-go",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 67,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 0.95,
+      "costPerMTokOut": 4
+    },
+    {
+      "id": "cliproxy/kimi-k3-go",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1048576,
+      "costPerMTokIn": 2.85,
+      "costPerMTokOut": 14.25
+    },
+    {
+      "id": "cliproxy/longcat-2.0",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 55,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "cliproxy/mimo-v2-omni",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 50,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "cliproxy/mimo-v2-pro",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 58,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "cliproxy/mimo-v2.5",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 58,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "cliproxy/mimo-v2.5-pro",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 62,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 0.5,
+      "costPerMTokOut": 2
+    },
+    {
+      "id": "cliproxy/minimax-m2.5",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 54,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 204800,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "cliproxy/minimax-m2.7",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 61,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 204800,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "cliproxy/minimax-m3",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "cliproxy/muse-spark-1.2-contributor",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 50,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "cliproxy/muse-spark-1.3-contributor",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 50,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "cliproxy/omen-alpha",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 50,
+      "capabilities": [
+        "tools"
+      ],
+      "contextWindow": 128000,
+      "costPerMTokIn": 0.3,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "cliproxy/qwen3.5-plus",
+      "tier": "small",
+      "enabled": true,
+      "quality": 32,
+      "capabilities": [
+        "tools",
+        "vision"
+      ],
+      "contextWindow": 262144,
+      "costPerMTokIn": 0.2,
+      "costPerMTokOut": 1.2
+    },
+    {
+      "id": "cliproxy/qwen3.6-plus",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 63,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.5,
+      "costPerMTokOut": 3
+    },
+    {
+      "id": "cliproxy/qwen3.7-max",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 2.5,
+      "costPerMTokOut": 7.5
+    },
+    {
+      "id": "cliproxy/qwen3.7-plus",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 61,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.4,
+      "costPerMTokOut": 1.6
+    },
+    {
+      "id": "cliproxy/qwen3.8-flash",
+      "tier": "standard",
+      "enabled": false,
+      "quality": 58,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 0.1,
+      "costPerMTokOut": 0.4
+    },
+    {
+      "id": "cliproxy/qwen3.8-max",
+      "tier": "standard",
+      "enabled": true,
+      "quality": 69,
+      "capabilities": [
+        "tools",
+        "vision",
+        "structured-output",
+        "long-context"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 2,
+      "costPerMTokOut": 6
+    },
+    {
+      "id": "cliproxy/claude-fable-5-1",
+      "tier": "frontier",
+      "enabled": true,
+      "quality": 100,
+      "capabilities": [
+        "tools",
+        "vision",
+        "long-context",
+        "structured-output"
+      ],
+      "contextWindow": 1000000,
+      "costPerMTokIn": 10,
+      "costPerMTokOut": 50
+    }
+  ],
+  "routing": {
+    "mode": "enforce",
+    "enabled": true,
+    "fallbackModelId": "cliproxy/claude-opus-5",
+    "maxOutputTokens": 2048,
+    "stickyModelWithinIssue": true
+  },
+  "tiering": {
+    "thresholds": {
+      "small": 0,
+      "strong": 60,
+      "frontier": 85,
+      "standard": 30
+    },
+    "defaultTier": "standard",
+    "signalWeights": {}
+  },
+  "upstream": {
+    "baseUrl": "https://router.infextion.net",
+    "protocol": "openai-chat-completions",
+    "extraHeaders": {},
+    "maxResponseBytes": 8388608,
+    "requestTimeoutMs": 28000,
+    "credentialSecretRef": {
+      "type": "secret_ref",
+      "secretId": "00000000-0000-0000-0000-000000000000"
+    }
+  },
+  "taskClasses": [
+    {
+      "key": "mechanical",
+      "qualityFloor": 40
+    },
+    {
+      "key": "implementation",
+      "qualityFloor": 60
+    },
+    {
+      "key": "review",
+      "qualityFloor": 70
+    },
+    {
+      "key": "architecture",
+      "qualityFloor": 85
+    },
+    {
+      "key": "triage",
+      "qualityFloor": 40,
+      "pinnedModelId": "cliproxy/gpt-5.6-luna",
+      "requiredCapabilities": [
+        "tools"
+      ]
+    }
+  ],
+  "capacityRouting": {
+    "mode": "enforce",
+    "enabled": true,
+    "sources": [
+      {
+        "id": "cliproxy-claude",
+        "windows": [
+          {
+            "name": "five-hour",
+            "resetFields": [
+              "five_hour_resets_at"
+            ],
+            "utilizationFields": [
+              "five_hour_utilization"
+            ]
+          },
+          {
+            "name": "weekly",
+            "resetFields": [
+              "seven_day_resets_at"
+            ],
+            "utilizationFields": [
+              "seven_day_utilization"
+            ]
+          }
+        ],
+        "modelIds": [
+          "cliproxy/claude-fable-5",
+          "cliproxy/claude-opus-5",
+          "cliproxy/claude-opus-4-8",
+          "cliproxy/claude-opus-4-7",
+          "cliproxy/claude-opus-4-6",
+          "cliproxy/claude-opus-4-5-20251101",
+          "cliproxy/claude-sonnet-5",
+          "cliproxy/claude-sonnet-4-6",
+          "cliproxy/claude-sonnet-4-5-20250929",
+          "cliproxy/claude-haiku-4-5-20251001",
+          "cliproxy/claude-fable-5-1"
+        ],
+        "statusUrl": "https://router.infextion.net/telemetry/cliproxy/claude.json",
+        "healthFields": [
+          "health"
+        ],
+        "apiKeySecretRef": {
+          "type": "secret_ref",
+          "secretId": "00000000-0000-0000-0000-000000000000"
+        },
+        "maxResponseBytes": 262144,
+        "requestTimeoutMs": 5000
+      },
+      {
+        "id": "cliproxy-codex",
+        "windows": [
+          {
+            "name": "five-hour",
+            "resetFields": [
+              "five_hour_resets_at"
+            ],
+            "utilizationFields": [
+              "five_hour_utilization"
+            ]
+          },
+          {
+            "name": "weekly",
+            "resetFields": [
+              "weekly_resets_at"
+            ],
+            "utilizationFields": [
+              "weekly_utilization"
+            ]
+          },
+          {
+            "name": "monthly",
+            "resetFields": [
+              "monthly_resets_at"
+            ],
+            "utilizationFields": [
+              "monthly_utilization"
+            ]
+          }
+        ],
+        "modelIds": [
+          "cliproxy/gpt-5.4",
+          "cliproxy/gpt-5.4-mini",
+          "cliproxy/gpt-5.5",
+          "cliproxy/gpt-5.6-luna",
+          "cliproxy/gpt-5.6-sol",
+          "cliproxy/gpt-5.6-terra",
+          "cliproxy/gpt-5.3-codex-spark"
+        ],
+        "statusUrl": "https://router.infextion.net/telemetry/cliproxy/codex.json",
+        "healthFields": [
+          "health"
+        ],
+        "apiKeySecretRef": {
+          "type": "secret_ref",
+          "secretId": "00000000-0000-0000-0000-000000000000"
+        },
+        "maxResponseBytes": 262144,
+        "requestTimeoutMs": 5000
+      },
+      {
+        "id": "cliproxy-kimi",
+        "windows": [
+          {
+            "name": "weekly",
+            "resetFields": [
+              "weekly_resets_at"
+            ],
+            "utilizationFields": [
+              "weekly_utilization"
+            ]
+          }
+        ],
+        "modelIds": [
+          "cliproxy/kimi-k2",
+          "cliproxy/kimi-k2-thinking",
+          "cliproxy/kimi-k2.5",
+          "cliproxy/kimi-k2.6",
+          "cliproxy/kimi-k2.7-code",
+          "cliproxy/kimi-k2.7-code-highspeed",
+          "cliproxy/kimi-k3",
+          "cliproxy/kimi-k3-256k"
+        ],
+        "statusUrl": "https://router.infextion.net/telemetry/cliproxy/kimi.json",
+        "healthFields": [
+          "health"
+        ],
+        "apiKeySecretRef": {
+          "type": "secret_ref",
+          "secretId": "00000000-0000-0000-0000-000000000000"
+        },
+        "maxResponseBytes": 262144,
+        "requestTimeoutMs": 5000
+      },
+      {
+        "id": "cliproxy-opencode-go",
+        "windows": [
+          {
+            "name": "five-hour",
+            "resetFields": [
+              "five_hour_resets_at"
+            ],
+            "utilizationFields": [
+              "five_hour_utilization"
+            ]
+          },
+          {
+            "name": "weekly",
+            "resetFields": [
+              "weekly_resets_at"
+            ],
+            "utilizationFields": [
+              "weekly_utilization"
+            ]
+          },
+          {
+            "name": "monthly",
+            "resetFields": [
+              "monthly_resets_at"
+            ],
+            "utilizationFields": [
+              "monthly_utilization"
+            ]
+          }
+        ],
+        "modelIds": [
+          "cliproxy/deepseek-v4-flash",
+          "cliproxy/deepseek-v4-flash-vision-exp",
+          "cliproxy/deepseek-v4-pro",
+          "cliproxy/glm-5",
+          "cliproxy/glm-5.1",
+          "cliproxy/glm-5.2",
+          "cliproxy/glm-5.3",
+          "cliproxy/glm-5.3-flash",
+          "cliproxy/gpt-5.6-luna-go",
+          "cliproxy/grok-4.5-go",
+          "cliproxy/grok-4.6-go",
+          "cliproxy/hy3",
+          "cliproxy/hy3-preview",
+          "cliproxy/hy4-preview",
+          "cliproxy/kimi-k2.5-go",
+          "cliproxy/kimi-k2.6-go",
+          "cliproxy/kimi-k2.7-code-go",
+          "cliproxy/kimi-k3-go",
+          "cliproxy/longcat-2.0",
+          "cliproxy/mimo-v2-omni",
+          "cliproxy/mimo-v2-pro",
+          "cliproxy/mimo-v2.5",
+          "cliproxy/mimo-v2.5-pro",
+          "cliproxy/minimax-m2.5",
+          "cliproxy/minimax-m2.7",
+          "cliproxy/minimax-m3",
+          "cliproxy/muse-spark-1.2-contributor",
+          "cliproxy/muse-spark-1.3-contributor",
+          "cliproxy/omen-alpha",
+          "cliproxy/qwen3.5-plus",
+          "cliproxy/qwen3.6-plus",
+          "cliproxy/qwen3.7-max",
+          "cliproxy/qwen3.7-plus",
+          "cliproxy/qwen3.8-flash",
+          "cliproxy/qwen3.8-max"
+        ],
+        "statusUrl": "https://router.infextion.net/telemetry/cliproxy/opencode-go.json",
+        "healthFields": [
+          "health"
+        ],
+        "apiKeySecretRef": {
+          "type": "secret_ref",
+          "secretId": "00000000-0000-0000-0000-000000000000"
+        },
+        "maxResponseBytes": 262144,
+        "requestTimeoutMs": 5000
+      }
+    ],
+    "avoidUtilization": 0.8,
+    "maxSnapshotAgeMs": 900000,
+    "unknownTelemetry": "fail-open",
+    "conserveUtilization": 0.6
+  }
+}
