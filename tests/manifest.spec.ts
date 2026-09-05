@@ -41,6 +41,7 @@ describe("manifest", () => {
     const schema = manifest.instanceConfigSchema as { properties: Record<string, unknown> };
     expect(Object.keys(schema.properties).sort()).toEqual([
       "budget",
+      "capacityRouting",
       "models",
       "routing",
       "rule0",
@@ -57,6 +58,7 @@ describe("network and secret discipline", () => {
       "src/worker.ts",
       "src/inference/transport.ts",
       "src/inference/adapters.ts",
+      "src/capacity/read.ts",
     ].map((file) => readFileSync(join(root, file), "utf8")).join("\n");
     expect(sources).toContain("input.http.fetch");
     expect(sources).not.toMatch(/from\s+["']node:(?:http|https|net|tls)["']/);

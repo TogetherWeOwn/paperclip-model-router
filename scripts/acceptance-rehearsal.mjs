@@ -90,5 +90,68 @@ const logB = harness.getState({ scopeKind: "company", scopeId: COMPANY_B, stateK
 check("decision records are company-scoped", logA.length === 3 && logB.length === 1);
 check("decision records contain no request content or credential", !JSON.stringify([logA, logB]).includes("hello") && !JSON.stringify([logA, logB]).includes("runtime-a") && !JSON.stringify([logA, logB]).includes("runtime-b"));
 
+// --- Evidence 7: usage-aware model evidence, refreshed separately ---------
+
+console.log("\nEVIDENCE 7 — model-usage evidence refresh is separate and shadow-first");
+
+const capacitySecretRef = { type: "secret_ref", secretId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" };
+const capacitySources = [
+  {
+    id: "simulated-scarce", statusUrl: "https://scarce-capacity.invalid/status",
+    apiKeySecretRef: capacitySecretRef, modelIds: ["subscription-model"],
+    healthFields: ["status"], requestTimeoutMs: 5000,
+    maxResponseBytes: 262144, windows: [{ name: "window", utilizationFields: ["used"], resetFields: ["resetsAt"] }],
+  },
+  {
+    id: "simulated-available", statusUrl: "https://available-capacity.invalid/status",
+    apiKeySecretRef: null, modelIds: ["available-model"],
+    healthFields: ["status"], requestTimeoutMs: 5000,
+    maxResponseBytes: 262144, windows: [{ name: "window", utilizationFields: ["used"], resetFields: ["resetsAt"] }],
+  },
+];
+const capacityConfig = {
+  ...structuredClone(configs.get(COMPANY_A)),
+  routing: { ...configs.get(COMPANY_A).routing, fallbackModelId: null, stickyModelWithinIssue: false },
+  models: [
+    { id: "subscription-model", tier: "standard", quality: 80, costPerMTokIn: 0, costPerMTokOut: 0, contextWindow: 200000, capabilities: ["tools"], enabled: true },
+    { id: "available-model", tier: "standard", quality: 80, costPerMTokIn: 1, costPerMTokOut: 4, contextWindow: 200000, capabilities: ["tools"], enabled: true },
+  ],
+  taskClasses: [{ key: "implementation", qualityFloor: 70 }],
+  capacityRouting: { enabled: true, mode: "shadow", unknownTelemetry: "fail-closed", sources: capacitySources },
+};
+const capacityConfigs = new Map([[COMPANY_A, capacityConfig]]);
+const capacityHarness = createTestHarness({ manifest, config: {} });
+capacityHarness.ctx.config = { async get(companyId) { return structuredClone(capacityConfigs.get(String(companyId))); } };
+const capacitySecretCalls = [];
+capacityHarness.ctx.secrets = { async resolve(ref, options) { capacitySecretCalls.push({ ref, options }); return "runtime-capacity-secret"; } };
+const capacityHttpCalls = [];
+capacityHarness.ctx.http = {
+  async fetch(url, init) {
+    capacityHttpCalls.push({ url: String(url), method: init?.method, headers: init?.headers });
+    if (init?.method === "GET") {
+      const row = String(url).includes("scarce-capacity")
+        ? { lane: "scarce", status: "degraded", used: 0.98 }
+        : { lane: "available", status: "healthy", used: 0.2 };
+      return new Response(JSON.stringify({ rows: [row] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ id: "chatcmpl-capacity", object: "chat.completion", model: "echo", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }] }), { status: 200, headers: { "content-type": "application/json" } });
+  },
+};
+const { definition: capacityWorker } = createPlugin();
+await capacityWorker.setup(capacityHarness.ctx);
+const refreshed = await capacityHarness.performAction("refresh-capacity", { companyId: COMPANY_B }, { companyId: COMPANY_A });
+check("refresh is company scoped and uses the distinct capacity secret path", refreshed.error === null && capacitySecretCalls.length === 1 && capacitySecretCalls[0].options.companyId === COMPANY_A && capacitySecretCalls[0].options.configPath === "capacityRouting.sources.0.apiKeySecretRef");
+check("refresh output contains no credential, provider, or account serving claim", !JSON.stringify(refreshed).includes("runtime-capacity-secret") && !/provider|account/i.test(JSON.stringify(refreshed)));
+const capacityInvocation = { task: { taskClass: "implementation" }, messages: [{ role: "user", content: "hello" }], maxOutputTokens: 100 };
+const getsBeforeShadow = capacityHttpCalls.filter((call) => call.method === "GET").length;
+const shadow = await capacityHarness.performAction("invoke", capacityInvocation, { companyId: COMPANY_A });
+check("shadow preserves the v1 winner and invoke makes zero inline capacity GETs", shadow.outcome === "completed" && shadow.decision.modelId === "subscription-model" && shadow.decision.capacity.shadowModelId === "available-model" && capacityHttpCalls.filter((call) => call.method === "GET").length === getsBeforeShadow);
+check("shadow makes exactly one inference POST", capacityHttpCalls.filter((call) => call.method === "POST").length === 1);
+capacityConfigs.set(COMPANY_A, { ...capacityConfig, capacityRouting: { ...capacityConfig.capacityRouting, mode: "enforce" } });
+const postsBeforeEnforce = capacityHttpCalls.filter((call) => call.method === "POST").length;
+const enforced = await capacityHarness.performAction("invoke", capacityInvocation, { companyId: COMPANY_A });
+check("enforce changes only the opaque model ID and still makes one inference POST", enforced.outcome === "completed" && enforced.decision.modelId === "available-model" && capacityHttpCalls.filter((call) => call.method === "POST").length === postsBeforeEnforce + 1);
+check("capacity decision exposes no provider/account fields", !/Provider|Account|provider|account/.test(JSON.stringify(enforced.decision.capacity)));
+
 console.log(`\n${failures === 0 ? "REHEARSAL PASSED" : `REHEARSAL FAILED — ${failures} check(s) failed`}`);
 process.exit(failures === 0 ? 0 : 1);

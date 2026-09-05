@@ -21,7 +21,7 @@ The request path has three layers:
 2. **Protocol adaptation** encodes that model and the caller's conversation onto one of the two compatible HTTP profiles below, then decodes the response.
 3. **Deployment routing** decides which provider, account, subscription, combo, or PAYG leg serves that model. This belongs to the configured upstream and is outside this plugin.
 
-The plugin MUST NOT infer, choose, expose, or fall back between providers.
+The plugin MUST NOT infer, choose, expose, or fall back between the configured compatible upstream's deployment providers or accounts. The sole Router v2 exception is sanitized model-usage evidence: a separately refreshed snapshot may associate health, utilization, reset, source ID, and a non-secret lane label with an exact opaque model ID before selection. This evidence may rank only models that cleared all ordinary gates. It MUST NOT be represented as deployment or serving identity, and it never adds an inference attempt.
 
 ## 2. Native Paperclip shape
 
@@ -179,7 +179,7 @@ Selection remains protocol-neutral and precedes HTTP.
 4. The output is an opaque `modelId` or `no-eligible-model`.
 5. An explicit pin is audited and follows the selection policy defined by the engine contract.
 
-`protocol`, `baseUrl`, headers, credentials, upstream status, and provider identity MUST NOT affect which model is selected. The same task and model table MUST select the same model under both upstream protocols.
+`protocol`, `baseUrl`, headers, credentials, upstream status, and serving-provider/account identity MUST NOT affect which model is selected. The same task, model table, and stored model-usage evidence MUST select the same model under both upstream protocols. Optional Router v2 evidence is refreshed separately, keyed to exact opaque model IDs, and may rank only eligible models; it is neither deployment routing nor a transport retry.
 
 ### 4.1 Model fallback versus transport failure
 
@@ -500,7 +500,7 @@ For every operation, the plugin records a company-scoped decision record with:
 - bounded latency and normalized token usage;
 - upstream request ID when present.
 
-It MUST NOT record message content, tool arguments/results, system prompts, credentials, full upstream URLs, upstream error bodies, or provider/account identity.
+It MUST NOT record message content, tool arguments/results, system prompts, credentials, full upstream URLs, upstream error bodies, or provider/account serving identity. Router v2 MAY record only the exact model ID, source ID, sanitized lane label, health, posture, utilization, and reset from a separately refreshed snapshot. Those labels MUST remain semantically separate from deployment identity.
 
 Rule 0 and selection refusals are audited without any upstream entry. Company A's config, secret reference, company-scoped state, request content, and results MUST never be readable from company B. Native metrics are aggregate instance measurements only and MUST NOT carry a company identifier.
 
@@ -509,7 +509,7 @@ Rule 0 and selection refusals are audited without any upstream entry. Company A'
 The following are not part of this contract and MUST be removed rather than renamed:
 
 - `claudePaygEnabled` and any PAYG unlock environment variable;
-- router-owned provider allowlists, preference order, provider selection, provider-bearing model gates, and provider fallback;
+- router-owned allowlists or preference order for the compatible upstream's actual serving providers, post-selection provider choice, and provider fallback after inference starts; separately refreshed model-usage evidence is additive selection input, not deployment routing;
 - combo arming, combo unlocks, or model-ID prefix inspection as a containment boundary;
 - `teamclaude`, `CLIProxy`, OmniRoute, OpenRouter, or any provider name in the generic product schema or normalized result;
 - teamclaude-specific quota URLs, keys, windows, snapshots, utilization signals, actions, data keys, gates, traces, and error fields;

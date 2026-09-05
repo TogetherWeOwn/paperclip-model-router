@@ -1,12 +1,13 @@
 export const PLUGIN_ID = "togetherweown.paperclip-model-router";
 
 /** Kept in sync with package.json by `npm run verify`. */
-export const PLUGIN_VERSION = "0.2.7";
+export const PLUGIN_VERSION = "0.4.0";
 
 export const PLUGIN_API_VERSION = 1 as const;
 
 export const ACTION_KEYS = {
   invoke: "invoke",
+  refreshCapacity: "refresh-capacity",
 } as const;
 
 export const TOOL_NAMES = {
@@ -20,6 +21,7 @@ export const ROUTE_KEYS = {
 
 export const STATE_KEYS = {
   decisionLog: "decision-log",
+  capacitySnapshot: "capacity-snapshot",
   issueStickiness: "issue-stickiness",
 } as const;
 

@@ -1,6 +1,7 @@
 import type { ModelEntry } from "../engine/types.js";
 import type {
   BudgetConfig,
+  CapacityRoutingConfig,
   CompatibleUpstreamConfig,
   RouterConfig,
   RoutingConfig,
@@ -37,6 +38,16 @@ export const DEFAULT_BUDGET: BudgetConfig = {
   warnFraction: 0.6,
   downshiftFraction: 0.8,
   haltFraction: 0.95,
+};
+
+export const DEFAULT_CAPACITY_ROUTING: CapacityRoutingConfig = {
+  enabled: false,
+  mode: "shadow",
+  unknownTelemetry: "fail-closed",
+  conserveUtilization: 0.6,
+  avoidUtilization: 0.8,
+  maxSnapshotAgeMs: 300_000,
+  sources: [],
 };
 
 export const DEFAULT_RULE0: Rule0Config = {
@@ -108,6 +119,41 @@ function resolveTaskClasses(value: unknown): TaskClassConfig[] {
   return classes;
 }
 
+function resolveCapacitySources(value: unknown): CapacityRoutingConfig["sources"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw) => {
+    if (!isRecord(raw)) return [];
+    const id = pickString(raw.id, "");
+    const statusUrl = pickString(raw.statusUrl, "");
+    if (!id || !statusUrl) return [];
+    const windows = Array.isArray(raw.windows)
+      ? raw.windows.flatMap((entry) => {
+          if (!isRecord(entry)) return [];
+          const name = pickString(entry.name, "");
+          const utilizationFields = pickStringArray(entry.utilizationFields, []);
+          if (!name || utilizationFields.length === 0) return [];
+          return [{
+            name,
+            utilizationFields,
+            resetFields: pickStringArray(entry.resetFields, []),
+          }];
+        })
+      : [];
+    return [{
+      id,
+      statusUrl,
+      apiKeySecretRef: isRecord(raw.apiKeySecretRef)
+        ? (raw.apiKeySecretRef as unknown as CapacityRoutingConfig["sources"][number]["apiKeySecretRef"])
+        : null,
+      modelIds: pickStringArray(raw.modelIds, []),
+      healthFields: pickStringArray(raw.healthFields, ["health", "status", "unifiedStatus"]),
+      requestTimeoutMs: pickNumber(raw.requestTimeoutMs, 5_000),
+      maxResponseBytes: pickNumber(raw.maxResponseBytes, 262_144),
+      windows,
+    }];
+  });
+}
+
 function resolveRule0(value: unknown): Rule0Config {
   if (!isRecord(value)) return { ...DEFAULT_RULE0, deterministicPatterns: [] };
   const patterns: Rule0Config["deterministicPatterns"] = [];
@@ -132,6 +178,7 @@ export function resolveConfig(raw: unknown): RouterConfig {
   const tieringRaw = isRecord(source.tiering) ? source.tiering : {};
   const thresholdsRaw = isRecord(tieringRaw.thresholds) ? tieringRaw.thresholds : {};
   const budgetRaw = isRecord(source.budget) ? source.budget : {};
+  const capacityRaw = isRecord(source.capacityRouting) ? source.capacityRouting : {};
 
   const signalWeights: Record<string, number> = {};
   if (isRecord(tieringRaw.signalWeights)) {
@@ -200,6 +247,15 @@ export function resolveConfig(raw: unknown): RouterConfig {
       warnFraction: pickNumber(budgetRaw.warnFraction, DEFAULT_BUDGET.warnFraction),
       downshiftFraction: pickNumber(budgetRaw.downshiftFraction, DEFAULT_BUDGET.downshiftFraction),
       haltFraction: pickNumber(budgetRaw.haltFraction, DEFAULT_BUDGET.haltFraction),
+    },
+    capacityRouting: {
+      enabled: pickBoolean(capacityRaw.enabled, DEFAULT_CAPACITY_ROUTING.enabled),
+      mode: capacityRaw.mode === "enforce" ? "enforce" : "shadow",
+      unknownTelemetry: capacityRaw.unknownTelemetry === "exclude-lane" ? "exclude-lane" : "fail-closed",
+      conserveUtilization: pickNumber(capacityRaw.conserveUtilization, DEFAULT_CAPACITY_ROUTING.conserveUtilization),
+      avoidUtilization: pickNumber(capacityRaw.avoidUtilization, DEFAULT_CAPACITY_ROUTING.avoidUtilization),
+      maxSnapshotAgeMs: pickNumber(capacityRaw.maxSnapshotAgeMs, DEFAULT_CAPACITY_ROUTING.maxSnapshotAgeMs),
+      sources: resolveCapacitySources(capacityRaw.sources),
     },
     rule0: resolveRule0(source.rule0),
   };

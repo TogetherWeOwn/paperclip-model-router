@@ -1,3 +1,4 @@
+import type { CapacitySourceConfig } from "../capacity/types.js";
 import type { ModelEntry, ModelTier } from "../engine/types.js";
 
 export type CompatibleUpstreamProtocol =
@@ -11,6 +12,7 @@ export interface RouterConfig {
   taskClasses: TaskClassConfig[];
   tiering: TieringConfig;
   budget: BudgetConfig;
+  capacityRouting: CapacityRoutingConfig;
   rule0: Rule0Config;
 }
 
@@ -50,6 +52,16 @@ export interface BudgetConfig {
   warnFraction: number;
   downshiftFraction: number;
   haltFraction: number;
+}
+
+export interface CapacityRoutingConfig {
+  enabled: boolean;
+  mode: "shadow" | "enforce";
+  unknownTelemetry: "fail-closed" | "exclude-lane";
+  conserveUtilization: number;
+  avoidUtilization: number;
+  maxSnapshotAgeMs: number;
+  sources: CapacitySourceConfig[];
 }
 
 export interface Rule0Config {

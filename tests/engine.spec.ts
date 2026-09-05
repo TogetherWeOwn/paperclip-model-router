@@ -35,9 +35,9 @@ describe("protocol-neutral model selection", () => {
     expect(pinned).toMatchObject({ outcome: "selected", modelId: "minimax-m2.5", pin: { honored: true } });
   });
 
-  it("uses fallback only before transport and only from the configured table", () => {
+  it("refuses fallback models that fail capability, context, or quality qualification", () => {
     const config = fixtureConfig("company-b");
     const decision = selectModel({ descriptor: { taskClass: "implementation", requiredContextTokens: 500000 }, config });
-    expect(decision).toMatchObject({ outcome: "selected", modelId: "gpt-4.1-mini", fallbackUsed: true });
+    expect(decision).toMatchObject({ outcome: "no-eligible-model", modelId: null, fallbackUsed: false });
   });
 });

@@ -171,6 +171,87 @@ export const ROUTER_CONFIG_SCHEMA = {
         haltFraction: { type: "number", minimum: 0, maximum: 1, default: 0.95 },
       },
     },
+    capacityRouting: {
+      type: "object",
+      title: "Usage-aware capacity routing",
+      additionalProperties: false,
+      properties: {
+        enabled: { type: "boolean", default: false },
+        mode: { type: "string", enum: ["shadow", "enforce"], default: "shadow" },
+        unknownTelemetry: {
+          type: "string",
+          enum: ["fail-closed", "exclude-lane"],
+          default: "fail-closed",
+        },
+        conserveUtilization: { type: "number", minimum: 0, maximum: 1, default: 0.6 },
+        avoidUtilization: { type: "number", minimum: 0, maximum: 1, default: 0.8 },
+        maxSnapshotAgeMs: { type: "integer", minimum: 1000, maximum: 86400000, default: 300000 },
+        sources: {
+          type: "array",
+          default: [],
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "statusUrl", "modelIds", "windows"],
+            properties: {
+              id: { type: "string", minLength: 1 },
+              statusUrl: {
+                type: "string",
+                format: "uri",
+                pattern: "^https://[^/?#@]+(?:/[^?#]*)?$",
+                not: { pattern: "^https://(?:localhost|127(?:\\.[0-9]{1,3}){3}|0(?:\\.[0-9]{1,3}){3}|10(?:\\.[0-9]{1,3}){3}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?::[0-9]+)?(?:/|$)" },
+              },
+              apiKeySecretRef: SECRET_REF_SCHEMA,
+              modelIds: {
+                type: "array",
+                minItems: 1,
+                items: { type: "string", minLength: 1 },
+                description: "Opaque model ids whose selection this source may inform.",
+              },
+              requestTimeoutMs: {
+                type: "integer",
+                minimum: 1000,
+                maximum: 25000,
+                default: 5000,
+              },
+              maxResponseBytes: {
+                type: "integer",
+                minimum: 1024,
+                maximum: 16777216,
+                default: 262144,
+              },
+              healthFields: {
+                type: "array",
+                items: { type: "string", minLength: 1 },
+                default: ["health", "status", "unifiedStatus"],
+              },
+              windows: {
+                type: "array",
+                minItems: 1,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["name", "utilizationFields"],
+                  properties: {
+                    name: { type: "string", minLength: 1 },
+                    utilizationFields: {
+                      type: "array",
+                      minItems: 1,
+                      items: { type: "string", minLength: 1 },
+                    },
+                    resetFields: {
+                      type: "array",
+                      items: { type: "string", minLength: 1 },
+                      default: [],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
     rule0: {
       type: "object",
       additionalProperties: false,

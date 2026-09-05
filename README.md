@@ -12,7 +12,7 @@ The normative contract is [`docs/contracts/compatible-upstream-v1.md`](docs/cont
 ## Native surfaces
 
 - agent tool: `togetherweown.paperclip-model-router:model_router_invoke`
-- action: `invoke`
+- actions: `invoke`, `refresh-capacity`
 - `POST /api/plugins/togetherweown.paperclip-model-router/api/invoke?companyId=<uuid>`
 - `POST /api/plugins/togetherweown.paperclip-model-router/api/issues/:issueId/invoke`
 
@@ -64,6 +64,14 @@ Every surface calls the same internal implementation. Company identity comes fro
     "downshiftFraction": 0.8,
     "haltFraction": 0.95
   },
+  "capacityRouting": {
+    "enabled": false,
+    "mode": "shadow",
+    "unknownTelemetry": "fail-closed",
+    "conserveUtilization": 0.6,
+    "avoidUtilization": 0.8,
+    "sources": []
+  },
   "rule0": { "enabled": true, "deterministicPatterns": [] }
 }
 ```
@@ -71,6 +79,36 @@ Every surface calls the same internal implementation. Company identity comes fro
 `upstream.protocol` supports `openai-chat-completions` and `anthropic-messages`. The adapter appends `/v1/chat/completions` or `/v1/messages` and normalizes a duplicate terminal path to one copy.
 
 Credentials are resolved at invocation time through `ctx.secrets.resolve` using the host-authorized company ID and config path. They are never placed in config, logs, state, errors, metrics, fixtures, or returned data.
+
+### `capacityRouting` — usage-aware Router v2
+
+Capacity routing is disabled by default and defaults to `shadow`. It consumes sanitized,
+pre-inference evidence keyed to exact opaque model IDs. It does not choose or expose the
+provider or account that serves inference. Run the company-scoped `refresh-capacity` action
+to read telemetry and store a valid snapshot; canonical `invoke` reads that snapshot and
+never performs a telemetry GET inline. Inference still makes exactly one upstream attempt.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Enables capacity-aware decisions from stored evidence. |
+| `mode` | `"shadow"` \| `"enforce"` | `"shadow"` | Shadow records the alternative; enforce may choose another qualified model ID. |
+| `unknownTelemetry` | `"fail-closed"` \| `"exclude-lane"` | `"fail-closed"` | Enforcement refuses when required evidence is absent or unknown, or excludes uncovered models. |
+| `conserveUtilization` | number 0–1 | `0.6` | Marks evidence for conservation. |
+| `avoidUtilization` | number 0–1 | `0.8` | Prefers another quality-qualified model when possible. |
+| `sources` | array | `[]` | Model IDs, sanitized lane-label fields, health/utilization mappings, and bounded read controls. |
+
+Each source names exact `modelIds`, a public HTTPS status URL, optional Paperclip secret
+reference, lane-label and health fields, utilization/reset windows, a 1–25 second timeout
+(default 5 seconds), and a bounded response ceiling (default 256 KiB). Refresh uses one
+host-managed GET with redirects refused and never overwrites a valid snapshot on failure.
+Stored evidence contains only model ID, source ID, a sanitized lane label, health, posture,
+utilization, and reset facts. It contains no credential, raw body, URL, provider, account, or
+serving-identity claim.
+
+Promotion to `enforce` is an operator decision, never an automatic gate. Before changing it,
+require TOG-901/916 evidence, TOG-251 measurements, fresh evidence for every affected model,
+a clean representative shadow window, and an outage rehearsal proving fail-closed behavior.
+Disable `capacityRouting` to restore v1 selection exactly.
 
 ## Invocation
 

@@ -32,6 +32,9 @@ export interface TaskDescriptor {
   requiredContextTokens?: number;
   signals?: Record<string, number>;
   issueId?: string;
+  requestedProfile?: string;
+  requestedModelId?: string;
+  servingModelId?: string;
   pinnedModelId?: string;
   pinReason?: string;
   estimatedInputTokens?: number;
@@ -40,6 +43,9 @@ export interface TaskDescriptor {
 
 export interface RuntimeSignals {
   budgetSpentFraction?: number;
+  capacityEvidence?: import("../capacity/types.js").CapacityEvidence[];
+  capacityError?: string;
+  servingModelId?: string;
   stickyModelId?: string;
 }
 
@@ -56,6 +62,7 @@ export type RejectionStage =
   | "context-window"
   | "quality-floor"
   | "tier-ceiling"
+  | "capacity"
   | "budget-gate";
 
 export interface Rejection {
@@ -69,6 +76,11 @@ export interface Candidate {
   tier: ModelTier;
   quality: number;
   expectedCostUsd: number;
+  capacitySource: string | null;
+  laneLabel: string | null;
+  usagePosture: import("../capacity/types.js").CapacityEvidence["posture"] | "not-evaluated";
+  utilization: number | null;
+  resetsAt: string | null;
 }
 
 export interface RoutingDecision {
@@ -83,6 +95,21 @@ export interface RoutingDecision {
   candidates: Candidate[];
   pin: { modelId: string; reason: string; honored: boolean } | null;
   fallbackUsed: boolean;
+  capacity: {
+    mode: "disabled" | "shadow" | "enforce";
+    telemetry: "available" | "unavailable" | "not-configured";
+    selectedSource: string | null;
+    selectedLaneLabel: string | null;
+    usagePosture: import("../capacity/types.js").CapacityEvidence["posture"] | "not-evaluated";
+    utilization: number | null;
+    resetsAt: string | null;
+    shadowModelId: string | null;
+    shadowSource: string | null;
+    shadowLaneLabel: string | null;
+    decisionReason: string;
+    servingModelId: string | null;
+    fallbackEvents: string[];
+  };
   gates: { budget: GateLevel };
 }
 

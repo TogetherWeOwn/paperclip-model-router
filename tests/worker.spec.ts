@@ -182,6 +182,85 @@ describe("one select-invoke-normalize-record path", () => {
     expect(JSON.stringify(logB)).not.toContain(SECRET_B);
   });
 
+  it("refreshes capacity separately, preserves valid state on failure, and invoke makes zero telemetry GETs", async () => {
+    const { harness, configs, httpCalls, secretCalls } = await sharedWorker();
+    const config = structuredClone(configs.get(COMPANY_A)!);
+    config.capacityRouting = {
+      enabled: true, mode: "shadow", unknownTelemetry: "fail-closed",
+      sources: [{ id: "capacity", statusUrl: "https://capacity.example/status", modelIds: ["minimax-m2.5"], healthFields: ["status"], requestTimeoutMs: 5000, maxResponseBytes: 262144, windows: [{ name: "weekly", utilizationFields: ["used"], resetFields: [] }] }],
+    };
+    configs.set(COMPANY_A, config);
+    harness.ctx.http.fetch = async (url, init) => {
+      httpCalls.push({ url: String(url), init });
+      if (String(url).includes("capacity.example")) return new Response(JSON.stringify({ rows: [{ lane: "fresh", status: "ok", used: 0.2 }] }), { status: 200, headers: { "content-type": "application/json" } });
+      return success("openai");
+    };
+    await harness.performAction(ACTION_KEYS.refreshCapacity, { companyId: COMPANY_B }, { companyId: COMPANY_A });
+    const valid = harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.capacitySnapshot });
+    expect(valid).toMatchObject({ evidence: [expect.objectContaining({ modelId: "minimax-m2.5", laneLabel: "record-1" })] });
+    expect(harness.getState({ scopeKind: "company", scopeId: COMPANY_B, stateKey: STATE_KEYS.capacitySnapshot })).toBeUndefined();
+    const beforeInvoke = httpCalls.filter((call) => call.init?.method === "GET").length;
+    await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A });
+    expect(httpCalls.filter((call) => call.init?.method === "GET")).toHaveLength(beforeInvoke);
+    harness.ctx.http.fetch = async (url, init) => {
+      httpCalls.push({ url: String(url), init });
+      if (String(url).includes("capacity.example")) return new Response("{}", { status: 503, headers: { "content-type": "application/json" } });
+      return success("openai");
+    };
+    const failed = await harness.performAction(ACTION_KEYS.refreshCapacity, {}, { companyId: COMPANY_A });
+    expect(failed).toMatchObject({ error: "capacity-http-failed" });
+    const afterFailure = harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.capacitySnapshot });
+    expect(afterFailure).toMatchObject({ evidence: (valid as { evidence: unknown[] }).evidence, lastRefreshError: "capacity-http-failed" });
+    const getsBeforeEnforce = httpCalls.filter((call) => call.init?.method === "GET").length;
+    (config.capacityRouting as { mode: string }).mode = "enforce";
+    configs.set(COMPANY_A, config);
+    const enforced = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as { outcome: string; decision: { capacity: { telemetry: string } } };
+    expect(enforced).toMatchObject({ outcome: "no-eligible-model", decision: { capacity: { telemetry: "unavailable" } } });
+    expect(httpCalls.filter((call) => call.init?.method === "GET")).toHaveLength(getsBeforeEnforce);
+    expect(JSON.stringify([failed, afterFailure, secretCalls])).not.toContain("leaked capacity body");
+  });
+
+  it("rejects mixed valid and malformed refresh records and preserves prior evidence", async () => {
+    const { harness, configs } = await sharedWorker();
+    const config = structuredClone(configs.get(COMPANY_A)!);
+    config.capacityRouting = {
+      enabled: true, mode: "enforce", unknownTelemetry: "fail-closed",
+      sources: [{ id: "capacity", statusUrl: "https://capacity.example/status", modelIds: ["minimax-m2.5"], healthFields: ["status"], requestTimeoutMs: 5000, maxResponseBytes: 262144, windows: [{ name: "weekly", utilizationFields: ["used"], resetFields: [] }] }],
+    };
+    configs.set(COMPANY_A, config);
+    let mixed = false;
+    harness.ctx.http.fetch = async (url) => {
+      if (!String(url).includes("capacity.example")) return success("openai");
+      const rows = mixed
+        ? [{ status: "ok", used: 0.2 }, { status: "unknown", used: 0.3 }]
+        : [{ status: "ok", used: 0.2 }];
+      return new Response(JSON.stringify({ rows }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    await harness.performAction(ACTION_KEYS.refreshCapacity, {}, { companyId: COMPANY_A });
+    const valid = harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.capacitySnapshot }) as { evidence: unknown[] };
+    mixed = true;
+    const failed = await harness.performAction(ACTION_KEYS.refreshCapacity, {}, { companyId: COMPANY_A });
+    expect(failed).toMatchObject({ error: "capacity-refresh-incomplete" });
+    expect(harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.capacitySnapshot })).toMatchObject({ evidence: valid.evidence, lastRefreshError: "capacity-refresh-incomplete" });
+  });
+
+  it("fails closed on a stale stored capacity snapshot", async () => {
+    const { harness, configs, httpCalls } = await sharedWorker();
+    const config = structuredClone(configs.get(COMPANY_A)!);
+    config.capacityRouting = {
+      enabled: true, mode: "enforce", unknownTelemetry: "fail-closed", maxSnapshotAgeMs: 1000,
+      sources: [{ id: "capacity", statusUrl: "https://capacity.example/status", modelIds: ["minimax-m2.5"], healthFields: ["status"], requestTimeoutMs: 5000, maxResponseBytes: 262144, windows: [{ name: "weekly", utilizationFields: ["used"], resetFields: [] }] }],
+    };
+    configs.set(COMPANY_A, config);
+    await harness.ctx.state.set({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.capacitySnapshot }, {
+      refreshedAt: "2000-01-01T00:00:00.000Z", lastRefreshError: null, snapshots: [],
+      evidence: [{ modelId: "minimax-m2.5", source: "capacity", laneLabel: "stale", health: "healthy", posture: "available", utilization: 0.1, remainingFraction: 0.9, resetsAt: null, resetInSeconds: null, windows: [], telemetryAvailable: true, reason: "old" }],
+    });
+    const result = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as { outcome: string; decision: { capacity: { telemetry: string } } };
+    expect(result).toMatchObject({ outcome: "no-eligible-model", decision: { capacity: { telemetry: "unavailable" } } });
+    expect(httpCalls).toHaveLength(0);
+  });
+
   it("records upstream errors without replay, secret, body, or provider identity", async () => {
     const { harness } = await sharedWorker();
     const fetch = vi.fn(async () => new Response(JSON.stringify({ error: { message: `leaked ${SECRET_A}` } }), { status: 429, headers: { "content-type": "application/json", "x-request-id": "rate-1" } }));
