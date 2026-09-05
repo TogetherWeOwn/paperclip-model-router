@@ -72,6 +72,14 @@ explicitly. Be aware that is the configuration that produced the outage below.
   still cannot cross a lane that is reporting exhaustion. Covered evidence continues to
   outrank uncovered evidence, so a healthy lane is still preferred whenever one is known.
 
+- An explicit `exhausted`/`unavailable` health is honoured even when the producer sends
+  no utilization number with it (TOG-1062, found in review). The capacity normalizer only
+  reports `telemetryAvailable` when a utilization value is present, so a lane reporting
+  `status: "exhausted"` with a null percentage — what a quota API typically returns once
+  there is no quota left to express as a fraction — would otherwise have been read as
+  *absence* and served under `fail-open`. The posture check now tests the explicit health
+  signal before the absence check.
+
 ## [0.4.1] - 2026-09-05
 
 Compatibility: drop-in over 0.4.0. No config migration is required and no existing

@@ -57,8 +57,14 @@ export function selectModel(input: SelectInput): RoutingDecision {
   const budgetGate = gateLevelFor(budgetFraction, { warn: config.budget.warnFraction, downshift: config.budget.downshiftFraction, halt: config.budget.haltFraction });
   const capacityEnabled = config.capacityRouting.enabled;
   const evidence = (runtime.capacityEvidence ?? []).map((entry) => {
+    // TOG-1062: an explicit `exhausted`/`unavailable` health IS a positive signal,
+    // whether or not the producer also sent a utilization number. Test it BEFORE
+    // the absence check, which keys off `telemetryAvailable` — and the normalizer
+    // only sets that when a utilization is present (capacity/normalize.ts:152).
+    // Ordering these the other way flattened a known-exhausted lane to `unknown`,
+    // which fail-open then treats as absence and serves anyway.
+    if (entry.health === "unavailable" || entry.health === "exhausted") return { ...entry, posture: "unavailable" as const, telemetryAvailable: true };
     if (!entry.telemetryAvailable || entry.health === "unknown" || entry.posture === "unknown") return { ...entry, health: "unknown" as const, posture: "unknown" as const, telemetryAvailable: false };
-    if (entry.health === "unavailable" || entry.health === "exhausted") return { ...entry, posture: "unavailable" as const };
     if (entry.utilization !== null && entry.utilization >= config.capacityRouting.avoidUtilization) return { ...entry, posture: "avoid" as const };
     if (entry.utilization !== null && entry.utilization >= config.capacityRouting.conserveUtilization) return { ...entry, posture: "conserve" as const };
     return { ...entry, posture: "available" as const };
