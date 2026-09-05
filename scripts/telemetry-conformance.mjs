@@ -434,8 +434,14 @@ function mutants(nowIso) {
       (d) => { d.models["oc/claude-opus-5"].laneLabel = "claude-primary"; }),
     m("sk- credential in a reason string", "T7.noIdentity",
       (d) => { d.reasonDetail = "upstream said sk-ant-api03-XXXXXXXXXXXX"; }),
-    m("oma_ token", "T7.noIdentity",
-      (d) => { d.models["oc/claude-opus-5"].auth = "oma_notarealtoken"; }),
+    // Deliberately under an INNOCENT key, like the sk- mutant above. Under
+    // `auth` this mutant proved nothing: `auth` is already in
+    // FORBIDDEN_KEY_FRAGMENTS, so it was rejected on the key name and the
+    // `oma_` value pattern was never reached -- deleting that pattern
+    // outright still left the suite 30/30. `note` is not a forbidden
+    // fragment, so the rejection now depends on the value scan under test.
+    m("oma_ token in a note string", "T7.noIdentity",
+      (d) => { d.models["oc/claude-opus-5"].note = "issued oma_notarealtoken"; }),
     m("deployment UUID", "T7.noIdentity",
       (d) => { d.models["oc/claude-opus-5"].origin = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"; }),
     m("serving-route attribution", "T7.noIdentity",
