@@ -311,19 +311,42 @@ function checkDocument(body, meta, opts, findIdentityLeaks) {
   // §2.3 forbids anything whose VALUE is a count of contributing sources, even
   // under an innocent-looking key. The key-fragment scan in T7 catches names
   // like `laneCount`; this catches the shape.
+  //
+  // The scan must NOT read the model-ID keys. §2.1 makes the opaque model ID
+  // the one permitted identifier and forbids parsing or interpreting it — and
+  // a substring scan is an interpretation. Real IDs collide with this regex by
+  // coincidence: `gpt-5.4-mini` contains `min`, and `-max`/`-nano` variants are
+  // just as common. Flagging those is the checker breaking §2.1 while claiming
+  // to enforce §2.3, and no document can fix it short of renaming a model.
+  //
+  // The exemption is POSITIONAL, not an allowlist: only the direct children of
+  // `models` — the one place the contract puts a model ID in key position — are
+  // skipped. A key that merely happens to equal a model ID somewhere else is
+  // still scanned, so the exemption cannot be used to smuggle a count. The
+  // values under those keys are still walked in full; it is the key name alone
+  // that is exempt.
+  //
+  // And the exemption is conditional on the value being a record-shaped object,
+  // which closes the one hole it would otherwise open: `models.sourceCount = 3`
+  // sits in model-ID key position but is a scalar, so it is scanned and caught.
+  // A count disguised as a whole model record is beyond any checker — it is
+  // indistinguishable from a model ID by construction — and T5 already demands
+  // every child of `models` be a conforming record.
   const cardinalityKeys = [];
-  const walk = (node, path) => {
+  const isRecordShaped = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  const walk = (node, path, keysAreModelIds) => {
     if (node === null || typeof node !== "object") return;
-    if (Array.isArray(node)) return node.forEach((v, i) => walk(v, `${path}[${i}]`));
+    if (Array.isArray(node)) return node.forEach((v, i) => walk(v, `${path}[${i}]`, false));
     for (const [k, v] of Object.entries(node)) {
       const child = path === "" ? k : `${path}.${k}`;
-      if (/count|sources|accounts|legs|lanes|min|max|spread|samples|n_/i.test(k)) {
+      const exempt = keysAreModelIds && isRecordShaped(v);
+      if (!exempt && /count|sources|accounts|legs|lanes|min|max|spread|samples|n_/i.test(k)) {
         cardinalityKeys.push(child);
       }
-      walk(v, child);
+      walk(v, child, path === "" && k === "models");
     }
   };
-  walk(body, "");
+  walk(body, "", false);
   report.add("T6.noCardinality", "§2.3", cardinalityKeys.length === 0,
     "no field exposes contributing-source cardinality or spread",
     cardinalityKeys.length ? cardinalityKeys.join(", ") : null);
@@ -423,6 +446,10 @@ function mutants(nowIso) {
       (d) => { d.models["oc/claude-opus-5"].sourceCount = 3; }),
     m("per-source spread as min/max", "T6.noCardinality",
       (d) => { d.models["oc/claude-opus-5"].utilizationMax = 0.9; }),
+    // The model-ID key exemption must not become a smuggling route. A scalar
+    // in model-ID key position is not a record, so it is still scanned.
+    m("count smuggled into model-ID key position", "T6.noCardinality",
+      (d) => { d.models.sourceCount = 3; }),
     m("repeated window entry (per-lane spread)", "T5.windowUnique:oc/claude-opus-5",
       (d) => {
         d.models["oc/claude-opus-5"].windows.push(
@@ -450,6 +477,59 @@ function mutants(nowIso) {
       (d) => { d.models["oc/claude-opus-5"].windows[0].window = "anthropic-5h"; }),
     m("state outside the enum", "T5.state:oc/claude-opus-5",
       (d) => { d.models["oc/claude-opus-5"].state = "throttled"; }),
+  ];
+}
+
+/**
+ * Documents that MUST be accepted.
+ *
+ * A checker is wrong in two directions, and the mutant suite only measures one.
+ * Every false positive here costs a real deployment a real re-run and teaches
+ * the operator that a red result is probably the checker's fault — which is
+ * exactly the habit that makes T7 stop being read. These are the conforming
+ * shapes that a naive scan rejects.
+ */
+function acceptances(nowIso) {
+  const a = (label, fn) => {
+    const doc = baseline(nowIso);
+    fn(doc);
+    return { label, doc };
+  };
+  return [
+    // TOG-975, live run 2026-09-05 04:38Z: the cardinality regex matched `min`
+    // inside the opaque model ID `gpt-5.4-mini`. §2.1 forbids interpreting the
+    // ID at all, and no document can fix this short of renaming a model.
+    a("model IDs whose text collides with the cardinality regex", (d) => {
+      const rec = d.models["oc/claude-opus-5"];
+      d.models = {
+        "cliproxy/gpt-5.4-mini": rec,
+        "gpt-5.4-mini": rec,
+        "gpt-5.4-max": rec,
+        "oc/claude-opus-5": rec,
+      };
+    }),
+    // The same collision class, one level down: T7's own allowlist already
+    // permits a model ID as a VALUE, and T6 must not undo that.
+    a("model ID colliding with the regex appearing as a value", (d) => {
+      d.models["oc/claude-opus-5"].windows[0].utilization = 0.5;
+      d.models["gpt-5.4-mini"] = d.models["oc/claude-opus-5"];
+    }),
+    // §4: an empty healthy set is legal and is NOT an outage.
+    a("healthy snapshot with an empty model set", (d) => { d.models = {}; }),
+    // §4: a well-formed outage.
+    a("declared outage with a closed reason code", (d) => {
+      d.telemetry = "unavailable";
+      d.reasonCode = "upstream-unreachable";
+      d.models = {};
+    }),
+    // §3.2: exhausted is a legal state, and serviceable:false agrees with it.
+    a("exhausted model in a reset window", (d) => {
+      const rec = d.models["oc/claude-opus-5"];
+      rec.state = "exhausted";
+      rec.serviceable = false;
+      rec.utilization = 1;
+      rec.remainingFraction = 0;
+    }),
   ];
 }
 
@@ -483,11 +563,22 @@ async function runSelfTest(findIdentityLeaks, json) {
     });
   }
 
+  for (const { label, doc } of acceptances(nowIso)) {
+    const report = checkDocument(doc, null, opts, findIdentityLeaks);
+    results.push({
+      label: `conforming document accepted: ${label}`,
+      ok: report.passed,
+      detail: report.passed
+        ? null
+        : `FALSE POSITIVE — ${report.failures.map((f) => `${f.id}: ${f.detail ?? f.label}`).join("; ")}`,
+    });
+  }
+
   const passed = results.every((r) => r.ok);
   if (json) {
     console.log(JSON.stringify({ mode: "selftest", passed, results }, null, 2));
   } else {
-    console.log("Self-test — every mutant below must be REJECTED\n");
+    console.log("Self-test — every mutant must be REJECTED, every conforming document ACCEPTED\n");
     for (const r of results) {
       console.log(`  ${r.ok ? "PASS" : "FAIL"}  ${r.label}${r.detail ? `\n          ${r.detail}` : ""}`);
     }
