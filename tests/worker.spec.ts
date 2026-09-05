@@ -107,6 +107,39 @@ describe("one select-invoke-normalize-record path", () => {
     expect(secretCalls).toHaveLength(0);
   });
 
+  // TOG-1035. effectiveRequestTimeoutMs is unit-tested, but nothing asserted that the
+  // worker actually hands it the selected model's entry. Dropping that spread leaves
+  // every per-model budget silently inert and still typechecks.
+  it("applies the selected model's requestTimeoutMs to the real invocation", async () => {
+    const { harness, configs } = await sharedWorker();
+    const slow = structuredClone(configs.get(COMPANY_A)!);
+    (slow.upstream as Record<string, unknown>).requestTimeoutMs = 1_000;
+    // "implementation" selects minimax-m2.5 in this fixture.
+    const selected = (slow.models as Array<Record<string, unknown>>).find((m) => m.id === "minimax-m2.5")!;
+    selected.requestTimeoutMs = 120_000;
+    configs.set(COMPANY_A, slow);
+    harness.ctx.http.fetch = async () =>
+      await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 1_600));
+
+    const result = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as { outcome: string };
+    // Outlives the 1s upstream budget purely because the model carries its own.
+    expect(result).toMatchObject({ outcome: "completed" });
+  });
+
+  it("lets a fast model still fail fast while a long ceiling is configured", async () => {
+    const { harness, configs } = await sharedWorker();
+    const mixed = structuredClone(configs.get(COMPANY_A)!);
+    (mixed.upstream as Record<string, unknown>).requestTimeoutMs = 1_000;
+    // The 300s ceiling is configured on a *different* model; the selected one inherits.
+    (mixed.models as Array<Record<string, unknown>>).find((m) => m.id === "claude-sonnet-5")!.requestTimeoutMs = 300_000;
+    configs.set(COMPANY_A, mixed);
+    harness.ctx.http.fetch = async () =>
+      await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 1_600));
+
+    const result = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as { outcome: string; error: { code: string } };
+    expect(result).toMatchObject({ outcome: "error", error: { code: "upstream-timeout" } });
+  });
+
   it("rejects fixed semantic headers in stored config before secret resolution or HTTP", async () => {
     const { harness, httpCalls, secretCalls, configs } = await sharedWorker();
     const invalid = structuredClone(configs.get(COMPANY_A)!);
