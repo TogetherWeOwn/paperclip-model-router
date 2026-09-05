@@ -1,4 +1,5 @@
 import type { ModelEntry } from "../engine/types.js";
+import { DEFAULT_REQUEST_TIMEOUT_MS } from "./upstream-constraints.js";
 import type {
   BudgetConfig,
   CapacityRoutingConfig,
@@ -22,7 +23,7 @@ export const DEFAULT_UPSTREAM: CompatibleUpstreamConfig = {
   protocol: "openai-chat-completions",
   baseUrl: "https://example.invalid",
   credentialSecretRef: null,
-  requestTimeoutMs: 25_000,
+  requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
   maxResponseBytes: 8_388_608,
   extraHeaders: {},
 };
@@ -91,6 +92,11 @@ function resolveModels(value: unknown): ModelEntry[] {
       costPerMTokOut: pickNumber(raw.costPerMTokOut, 0),
       contextWindow: pickNumber(raw.contextWindow, 0),
       capabilities: pickStringArray(raw.capabilities, []) as ModelEntry["capabilities"],
+      // Left absent when unset, rather than defaulted here, so the transport can
+      // tell "this model wants its own budget" from "this model inherits".
+      ...(typeof raw.requestTimeoutMs === "number" && Number.isFinite(raw.requestTimeoutMs)
+        ? { requestTimeoutMs: raw.requestTimeoutMs }
+        : {}),
       enabled: pickBoolean(raw.enabled, true),
     });
   }

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { resolveConfig } from "../src/config/resolve.js";
 import { ROUTER_CONFIG_SCHEMA } from "../src/config/schema.js";
 import { validateSecretRefShape } from "../src/config/secret-ref.js";
+import { MAX_REQUEST_TIMEOUT_MS } from "../src/config/upstream-constraints.js";
 import { validateUpstreamConfig } from "../src/inference/adapters.js";
 import { readFixture } from "./helpers.js";
 
@@ -65,6 +66,32 @@ describe("compatible-upstream config", () => {
     for (const header of ["Authorization", "aNtHrOpIc-BeTa", "content-TYPE", "Accept", "Accept-Encoding"]) {
       expect(errors).toContain(header);
     }
+  });
+
+  it("accepts a timeout long enough for a thinking model, and still rejects an absurd one", () => {
+    // TOG-1035: 120s was the operator's stated floor; anything at or under the
+    // ceiling must now pass the same runtime validator that used to refuse it.
+    const config = resolveConfig(readFixture("company-a"));
+    config.upstream.requestTimeoutMs = 120_000;
+    expect(validateUpstreamConfig(config.upstream)).toEqual([]);
+    config.upstream.requestTimeoutMs = MAX_REQUEST_TIMEOUT_MS + 1;
+    expect(validateUpstreamConfig(config.upstream).join(" ")).toContain("requestTimeoutMs");
+  });
+
+  it("keeps a per-model override out of the table when it is not a number", () => {
+    const config = resolveConfig({
+      ...readFixture("company-a"),
+      models: [
+        { id: "slow-thinker", tier: "standard", quality: 50, costPerMTokIn: 1, costPerMTokOut: 1, contextWindow: 1000, requestTimeoutMs: 180_000 },
+        { id: "junk-override", tier: "standard", quality: 50, costPerMTokIn: 1, costPerMTokOut: 1, contextWindow: 1000, requestTimeoutMs: "soon" },
+        { id: "inherits", tier: "standard", quality: 50, costPerMTokIn: 1, costPerMTokOut: 1, contextWindow: 1000 },
+      ],
+    });
+    const byId = new Map(config.models.map((model) => [model.id, model]));
+    expect(byId.get("slow-thinker")?.requestTimeoutMs).toBe(180_000);
+    // Absent rather than defaulted, so the transport can tell override from inherit.
+    expect(byId.get("junk-override")?.requestTimeoutMs).toBeUndefined();
+    expect(byId.get("inherits")?.requestTimeoutMs).toBeUndefined();
   });
 
   it.each([

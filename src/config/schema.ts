@@ -1,5 +1,6 @@
 import { MODEL_TIER_ORDER } from "../engine/types.js";
 import {
+  DEFAULT_REQUEST_TIMEOUT_MS,
   FORBIDDEN_EXTRA_HEADER_NAMES,
   MAX_REQUEST_TIMEOUT_MS,
   MAX_RESPONSE_BYTES,
@@ -85,7 +86,9 @@ export const ROUTER_CONFIG_SCHEMA = {
           type: "integer",
           minimum: MIN_REQUEST_TIMEOUT_MS,
           maximum: MAX_REQUEST_TIMEOUT_MS,
-          default: MAX_REQUEST_TIMEOUT_MS,
+          default: DEFAULT_REQUEST_TIMEOUT_MS,
+          description:
+            "Wall-clock budget for one upstream generation. The default stays 25s; raise it, or set models[].requestTimeoutMs, for reasoning models that think past it.",
         },
         maxResponseBytes: {
           type: "integer",
@@ -119,6 +122,13 @@ export const ROUTER_CONFIG_SCHEMA = {
             type: "array",
             items: { type: "string", enum: MODEL_CAPABILITIES },
             default: [],
+          },
+          requestTimeoutMs: {
+            type: "integer",
+            minimum: MIN_REQUEST_TIMEOUT_MS,
+            maximum: MAX_REQUEST_TIMEOUT_MS,
+            description:
+              "Overrides upstream.requestTimeoutMs when this model is selected. Omit to inherit. Set it on reasoning models, which overrun a shared ceiling that suits the rest of the table.",
           },
           enabled: { type: "boolean", default: true },
         },

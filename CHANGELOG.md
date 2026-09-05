@@ -12,6 +12,52 @@ version is not present here.
 
 Nothing yet.
 
+## [0.4.1] - 2026-09-05
+
+Compatibility: drop-in over 0.4.0. No config migration is required and no existing
+config becomes invalid. Nothing changes for a company that edits nothing — in
+particular the default request timeout is still 25s. Both fixes below are things
+0.4.0 got *wrong*, not new capability, so an operator on 0.4.0 should take this.
+
+Caller-visible contract change, and the only reason to read further before
+upgrading: `response.content` may now be an empty array on a `completed` outcome.
+A caller that assumed at least one content block on success must handle that. It
+was previously impossible only because the router turned that reply into an error.
+
+### Fixed
+
+- **The 25s timeout ceiling discarded finished work (TOG-1035).** `requestTimeoutMs`
+  was clamped to a 25s maximum, and v1 invokes once with no retry, so any generation
+  that ran longer was abandoned. In the first hour of the enforce-mode trial this
+  killed 20 of 32 `implementation` calls to `cliproxy/glm-5.3-flash` — every one at
+  exactly 25.0s — while OmniRoute's call log showed those same completions arriving
+  upstream at ~27s. The router had hung up on work that was done and paid for. The
+  configurable ceiling is now 300s.
+
+  The **default is deliberately still 25s**. The schema's `default` used to be
+  spelled `MAX_REQUEST_TIMEOUT_MS`, so raising the ceiling would have silently moved
+  every unconfigured company to 300s; the default is now its own pinned constant and
+  a test holds it there. Raising the wall is strictly opt-in.
+
+- **An empty reply from a reasoning model was blamed on the upstream (TOG-1035).** A
+  model that spends its whole output budget on hidden thinking tokens returns a
+  well-formed success carrying nothing readable. The router reported
+  `invalid-upstream-response`, which hid a real billed generation and implicated the
+  wrong component; it accounted for 5 of the 50 trial calls, and `minimax-m3` also
+  leaks `<think>` into `content`. Such a reply now normalizes as a completion with
+  `stopReason: max-tokens`. A stop reason the upstream actually asserted — `refusal`,
+  `content-filter` — is preserved, since that is the more specific explanation for
+  the emptiness. Structurally malformed envelopes still fail as before.
+
+### Added
+
+- **Per-model `models[].requestTimeoutMs`.** Overrides `upstream.requestTimeoutMs`
+  when that model is selected; omit it to inherit. One ceiling cannot suit both a
+  reasoning model that needs minutes and a fast model that should fail quickly. The
+  value is clamped in the transport rather than trusted from config, because
+  `getConfigSchema()` is form metadata that validates nothing at runtime, and it is
+  keyed off the *selected* model so it follows capacity-enforce substitutions.
+
 ## [0.4.0] - 2026-09-04
 
 Version note: this line was briefly staged as `0.3.0`. That number was already taken by the

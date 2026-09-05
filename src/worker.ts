@@ -7,7 +7,11 @@ import { readCapacitySource, type CapacityHttpClient } from "./capacity/read.js"
 import type { CapacityEvidence, CapacitySnapshot } from "./capacity/types.js";
 import { resolveConfig } from "./config/resolve.js";
 import { validateSecretRefShape } from "./config/secret-ref.js";
-import { isReservedLiteralHost } from "./config/upstream-constraints.js";
+import {
+  isReservedLiteralHost,
+  MAX_REQUEST_TIMEOUT_MS,
+  MIN_REQUEST_TIMEOUT_MS,
+} from "./config/upstream-constraints.js";
 import type { RouterConfig } from "./config/types.js";
 import {
   ACTION_KEYS,
@@ -382,12 +386,18 @@ export function createPlugin() {
           return result;
         }
 
+        // The selected id, not the requested one: under capacity enforce those
+        // differ, and the budget has to follow the model actually being invoked.
+        const selectedEntry = config.models.find((model) => model.id === decision.modelId);
         const transport = await invokeCompatibleUpstream({
           http: ctx.http,
           config: config.upstream,
           credential,
           request,
           modelId: decision.modelId,
+          ...(selectedEntry?.requestTimeoutMs !== undefined
+            ? { modelTimeoutMs: selectedEntry.requestTimeoutMs }
+            : {}),
         });
         result = transport.error
           ? { outcome: "error", requestId, decision, response: null, error: transport.error }
@@ -447,6 +457,12 @@ export function createPlugin() {
       for (const model of config.models) {
         if (ids.has(model.id)) errors.push(`duplicate model id: ${model.id}`);
         ids.add(model.id);
+        if (model.requestTimeoutMs !== undefined &&
+            (!Number.isInteger(model.requestTimeoutMs) ||
+              model.requestTimeoutMs < MIN_REQUEST_TIMEOUT_MS ||
+              model.requestTimeoutMs > MAX_REQUEST_TIMEOUT_MS)) {
+          errors.push(`model ${model.id} requestTimeoutMs must be an integer from ${MIN_REQUEST_TIMEOUT_MS} through ${MAX_REQUEST_TIMEOUT_MS}`);
+        }
       }
       for (const entry of config.taskClasses) {
         if (entry.pinnedModelId && !ids.has(entry.pinnedModelId)) {

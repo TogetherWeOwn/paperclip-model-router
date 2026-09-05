@@ -239,6 +239,25 @@ function openAiStop(value: unknown): NormalizedStopReason {
   return "other";
 }
 
+/**
+ * What an otherwise-valid envelope carrying no content actually means.
+ *
+ * A reasoning model can spend its whole output budget on hidden thinking tokens
+ * and return a well-formed success with nothing the caller can read — glm-5.3-flash
+ * did this on 5 of 50 TOG-1035 trial calls, and minimax-m3 does it while leaking
+ * `<think>` into `content`. That is a completion that ran out of room, not a broken
+ * upstream, and calling it `invalid-upstream-response` both hid a real (billed)
+ * generation and implicated the wrong component.
+ *
+ * A stop reason the upstream actually asserted is kept: a refusal or a content
+ * filter is *why* the content is empty and is the more specific fact. Only the
+ * reasons claiming the model finished saying its piece are corrected, because an
+ * empty end-turn is the one combination that cannot be true on its face.
+ */
+function stopReasonForEmptyContent(reported: NormalizedStopReason): NormalizedStopReason {
+  return reported === "end-turn" || reported === "other" ? "max-tokens" : reported;
+}
+
 function anthropicStop(value: unknown): NormalizedStopReason {
   if (value === "end_turn") return "end-turn";
   if (value === "max_tokens") return "max-tokens";
@@ -276,7 +295,6 @@ export function normalizeOpenAiSuccess(
       content.push({ type: "tool_call", id: call.id, name: fn.name, arguments: parsed });
     }
   }
-  if (content.length === 0) throw new Error("assistant response is empty");
   const usage = body.usage === undefined ? null : objectOrThrow(body.usage, "usage is invalid");
   const inputTokens = usage ? optionalNonNegativeInteger(usage.prompt_tokens, "prompt_tokens") : null;
   const outputTokens = usage ? optionalNonNegativeInteger(usage.completion_tokens, "completion_tokens") : null;
@@ -285,7 +303,9 @@ export function normalizeOpenAiSuccess(
     id: boundedId(body.id),
     modelId: selectedModelId,
     content,
-    stopReason: openAiStop(choice.finish_reason),
+    stopReason: content.length === 0
+      ? stopReasonForEmptyContent(openAiStop(choice.finish_reason))
+      : openAiStop(choice.finish_reason),
     stopSequence: null,
     usage: { inputTokens, outputTokens, totalTokens },
     upstream: {
@@ -317,7 +337,10 @@ export function normalizeAnthropicSuccess(
       content.push({ type: "tool_call", id: rawBlock.id, name: rawBlock.name, arguments: rawBlock.input });
     }
   }
-  if (content.length === 0) throw new Error("assistant response has no recognized content");
+  // No recognized content is a real outcome, not a malformed envelope: a
+  // `thinking`-only reply is exactly what a reasoning model returns when the
+  // output budget went entirely on hidden tokens. Structurally invalid blocks
+  // still throw above; only the empty result is tolerated.
   const usage = body.usage === undefined ? null : objectOrThrow(body.usage, "usage is invalid");
   const inputTokens = usage ? optionalNonNegativeInteger(usage.input_tokens, "input_tokens") : null;
   const outputTokens = usage ? optionalNonNegativeInteger(usage.output_tokens, "output_tokens") : null;
@@ -325,7 +348,9 @@ export function normalizeAnthropicSuccess(
     id: boundedId(body.id),
     modelId: selectedModelId,
     content,
-    stopReason: anthropicStop(body.stop_reason),
+    stopReason: content.length === 0
+      ? stopReasonForEmptyContent(anthropicStop(body.stop_reason))
+      : anthropicStop(body.stop_reason),
     stopSequence: typeof body.stop_sequence === "string" ? body.stop_sequence : null,
     usage: {
       inputTokens,
