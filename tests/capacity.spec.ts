@@ -458,6 +458,94 @@ describe("usage-aware selection", () => {
     expect(decision.trace.join(" ")).toContain("secondary telemetry endpoint unavailable");
   });
 
+  // TOG-1040: enforce mode was denying service whenever capacity telemetry was
+  // absent or unparseable. Losing capacity-awareness must degrade routing
+  // quality, not deny service. These reproduce the two live failure shapes seen
+  // in the v0.4.0 decision log.
+  describe("TOG-1040: absent telemetry fails open to the static policy", () => {
+    const failOpen = () => resolveConfig({
+      ...routingConfig("enforce"),
+      capacityRouting: { ...routingConfig("enforce").capacityRouting, unknownTelemetry: "fail-open" },
+    });
+
+    it("serves on the static policy when the payload carries no recognizable records", () => {
+      // Shape 1: `capacityLane: null`, posture `not-evaluated`, error
+      // "capacity payload carried no recognizable telemetry records".
+      const decision = selectModel({
+        config: failOpen(),
+        descriptor: { taskClass: "implementation" },
+        signals: { capacityEvidence: [], capacityError: "capacity payload carried no recognizable telemetry records" },
+      });
+      expect(decision.outcome).toBe("selected");
+      expect(decision.modelId).toBe("subscription-model"); // cheapest qualifier — the static v1 answer
+      expect(decision.capacity).toMatchObject({ telemetry: "unavailable", degraded: true });
+      expect(decision.trace.join(" ")).toContain("WARNING");
+      expect(decision.trace.join(" ")).toContain("no recognizable telemetry records");
+    });
+
+    it("serves a covered model when only some qualified models are uncovered", () => {
+      // Shape 2: the records that logged "capacity telemetry available" and
+      // still selected nothing — one uncovered model vetoed every covered one.
+      const onlyAvailableCovered = [lanes[1]!];
+      const decision = selectModel({
+        config: failOpen(),
+        descriptor: { taskClass: "implementation" },
+        signals: { capacityEvidence: onlyAvailableCovered },
+      });
+      expect(decision.outcome).toBe("selected");
+      expect(decision.capacity.telemetry).toBe("available");
+      // Not degraded: telemetry arrived, it just did not cover everything.
+      expect(decision.capacity.degraded).toBe(false);
+      // The covered, healthy lane outranks the uncovered one.
+      expect(decision.modelId).toBe("available-model");
+    });
+
+    it("still refuses a model whose evidence positively reports exhaustion", () => {
+      // Fail-open relaxes ABSENCE only. A real exhaustion signal must still bite,
+      // otherwise this fix would reintroduce the overspend TOG-972 closed.
+      const decision = selectModel({
+        config: failOpen(),
+        descriptor: { taskClass: "implementation" },
+        signals: {
+          capacityEvidence: lanes.map((lane) => ({
+            ...lane, health: "exhausted" as const, posture: "unavailable" as const, utilization: 1, remainingFraction: 0,
+          })),
+        },
+      });
+      expect(decision.outcome).toBe("no-eligible-model");
+      expect(decision.modelId).toBeNull();
+    });
+
+    it("prefers a healthy lane over an uncovered model rather than merely tolerating it", () => {
+      const decision = selectModel({
+        config: failOpen(),
+        descriptor: { taskClass: "implementation" },
+        signals: { capacityEvidence: [{ ...lanes[1]!, utilization: 0.1 }] },
+      });
+      expect(decision.modelId).toBe("available-model");
+      expect(decision.capacity).toMatchObject({ usagePosture: "available", selectedLaneLabel: "available-capacity" });
+    });
+
+    it("leaves fail-closed refusing, so the strict posture stays available", () => {
+      const decision = selectModel({
+        config: routingConfig("enforce"), // pinned fail-closed
+        descriptor: { taskClass: "implementation" },
+        signals: { capacityEvidence: [], capacityError: "capacity payload carried no recognizable telemetry records" },
+      });
+      expect(decision.outcome).toBe("no-eligible-model");
+    });
+
+    it("does not mark a fully covered decision as degraded", () => {
+      const decision = selectModel({
+        config: failOpen(),
+        descriptor: { taskClass: "implementation" },
+        signals: { capacityEvidence: lanes },
+      });
+      expect(decision.outcome).toBe("selected");
+      expect(decision.capacity.degraded).toBe(false);
+    });
+  });
+
   it("records requested and serving identities without treating catalogue presence as health", () => {
     const decision = selectModel({
       config: routingConfig("shadow"),

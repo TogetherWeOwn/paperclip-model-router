@@ -44,7 +44,7 @@ export const DEFAULT_BUDGET: BudgetConfig = {
 export const DEFAULT_CAPACITY_ROUTING: CapacityRoutingConfig = {
   enabled: false,
   mode: "shadow",
-  unknownTelemetry: "fail-closed",
+  unknownTelemetry: "fail-open",
   conserveUtilization: 0.6,
   avoidUtilization: 0.8,
   maxSnapshotAgeMs: 300_000,
@@ -257,7 +257,9 @@ export function resolveConfig(raw: unknown): RouterConfig {
     capacityRouting: {
       enabled: pickBoolean(capacityRaw.enabled, DEFAULT_CAPACITY_ROUTING.enabled),
       mode: capacityRaw.mode === "enforce" ? "enforce" : "shadow",
-      unknownTelemetry: capacityRaw.unknownTelemetry === "exclude-lane" ? "exclude-lane" : "fail-closed",
+      unknownTelemetry: capacityRaw.unknownTelemetry === "exclude-lane" || capacityRaw.unknownTelemetry === "fail-closed"
+        ? capacityRaw.unknownTelemetry
+        : DEFAULT_CAPACITY_ROUTING.unknownTelemetry,
       conserveUtilization: pickNumber(capacityRaw.conserveUtilization, DEFAULT_CAPACITY_ROUTING.conserveUtilization),
       avoidUtilization: pickNumber(capacityRaw.avoidUtilization, DEFAULT_CAPACITY_ROUTING.avoidUtilization),
       maxSnapshotAgeMs: pickNumber(capacityRaw.maxSnapshotAgeMs, DEFAULT_CAPACITY_ROUTING.maxSnapshotAgeMs),

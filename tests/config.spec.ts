@@ -153,10 +153,35 @@ describe("compatible-upstream config", () => {
     expect(resolveConfig(raw).capacityRouting).toMatchObject({
       enabled: true,
       mode: "shadow",
-      unknownTelemetry: "fail-closed",
+      // TOG-1040: absent telemetry must degrade routing, not deny service.
+      unknownTelemetry: "fail-open",
       conserveUtilization: 0.6,
       avoidUtilization: 0.8,
     });
+  });
+
+  it("keeps fail-closed and exclude-lane available as explicit opt-ins, and ignores junk", () => {
+    const raw = readFixture("company-a") as Record<string, unknown>;
+    const withPolicy = (unknownTelemetry: unknown) => ({
+      ...raw,
+      capacityRouting: {
+        enabled: true,
+        unknownTelemetry,
+        sources: [{
+          id: "capacity",
+          statusUrl: "https://capacity.example/status",
+          modelIds: ["minimax-m2.5"],
+          windows: [{ name: "weekly", utilizationFields: ["used7d"], resetFields: ["resets7dAt"] }],
+        }],
+      },
+    });
+    expect(resolveConfig(withPolicy("fail-closed")).capacityRouting.unknownTelemetry).toBe("fail-closed");
+    expect(resolveConfig(withPolicy("exclude-lane")).capacityRouting.unknownTelemetry).toBe("exclude-lane");
+    expect(resolveConfig(withPolicy("nonsense")).capacityRouting.unknownTelemetry).toBe("fail-open");
+    expect(resolveConfig(withPolicy(undefined)).capacityRouting.unknownTelemetry).toBe("fail-open");
+    // fail-closed remains a legal config value at the host boundary, not just in the resolver.
+    expect(hostValidator()(withPolicy("fail-closed"))).toBe(true);
+    expect(hostValidator()(withPolicy("nonsense"))).toBe(false);
   });
 
   it("rejects raw credentials and unsafe URLs in capacity sources", () => {

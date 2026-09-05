@@ -68,7 +68,7 @@ Every surface calls the same internal implementation. Company identity comes fro
   "capacityRouting": {
     "enabled": false,
     "mode": "shadow",
-    "unknownTelemetry": "fail-closed",
+    "unknownTelemetry": "fail-open",
     "conserveUtilization": 0.6,
     "avoidUtilization": 0.8,
     "sources": []
@@ -93,7 +93,7 @@ never performs a telemetry GET inline. Inference still makes exactly one upstrea
 |---|---|---|---|
 | `enabled` | boolean | `false` | Enables capacity-aware decisions from stored evidence. |
 | `mode` | `"shadow"` \| `"enforce"` | `"shadow"` | Shadow records the alternative; enforce may choose another qualified model ID. |
-| `unknownTelemetry` | `"fail-closed"` \| `"exclude-lane"` | `"fail-closed"` | Enforcement refuses when required evidence is absent or unknown, or excludes uncovered models. |
+| `unknownTelemetry` | `"fail-open"` \| `"exclude-lane"` \| `"fail-closed"` | `"fail-open"` | What **absent** evidence means under `enforce`. See below. |
 | `conserveUtilization` | number 0–1 | `0.6` | Marks evidence for conservation. |
 | `avoidUtilization` | number 0–1 | `0.8` | Prefers another quality-qualified model when possible. |
 | `sources` | array | `[]` | Model IDs, sanitized lane-label fields, health/utilization mappings, and bounded read controls. |
@@ -105,6 +105,21 @@ host-managed GET with redirects refused and never overwrites a valid snapshot on
 Stored evidence contains only model ID, source ID, a sanitized lane label, health, posture,
 utilization, and reset facts. It contains no credential, raw body, URL, provider, account, or
 serving-identity claim.
+
+#### `unknownTelemetry` — absence of a signal is not a signal (TOG-1040)
+
+The three values differ only in how they treat **missing** evidence. All three treat evidence
+that positively reports `unavailable`/`exhausted` identically: that model is never selected.
+
+- **`fail-open` (default)** — losing capacity-awareness degrades routing quality, it does not
+  deny service. A model with missing or unknown evidence sorts *last* but stays selectable, and
+  a payload the router cannot parse falls through to the static routing policy. The decision
+  carries `capacity.degraded: true` and a `WARNING` trace line, and the decision record carries
+  `capacityDegraded: true`, so a telemetry outage is loud without being fatal.
+- **`exclude-lane`** — drop uncovered models, refuse only if none remain.
+- **`fail-closed`** — refuse the whole decision if telemetry is unavailable, or if *any*
+  qualified model is uncovered. This denies service during a telemetry outage; it is now
+  strictly opt-in. It was the default up to v0.4.1 and caused the TOG-1040 incident.
 
 Promotion to `enforce` is an operator decision, never an automatic gate. Before changing it,
 require TOG-901/916 evidence, TOG-251 measurements, fresh evidence for every affected model,

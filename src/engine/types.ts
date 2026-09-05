@@ -114,6 +114,12 @@ export interface RoutingDecision {
     shadowSource: string | null;
     shadowLaneLabel: string | null;
     decisionReason: string;
+    /**
+     * True when capacity telemetry was expected but missing or unparseable and
+     * the router served anyway on the static routing policy (TOG-1040). The
+     * decision is real; it is simply not capacity-aware.
+     */
+    degraded: boolean;
     servingModelId: string | null;
     fallbackEvents: string[];
   };

@@ -73,6 +73,7 @@ export function selectModel(input: SelectInput): RoutingDecision {
       selectedSource: null, selectedLaneLabel: null, usagePosture: "not-evaluated", utilization: null, resetsAt: null,
       shadowModelId: null, shadowSource: null, shadowLaneLabel: null,
       decisionReason: capacityEnabled ? capacityTelemetry === "available" ? "capacity telemetry available" : `capacity telemetry unavailable${runtime.capacityError ? `: ${runtime.capacityError}` : ""}` : "capacity routing disabled",
+      degraded: false,
       servingModelId: runtime.servingModelId ?? descriptor.servingModelId ?? null, fallbackEvents: [],
     }, gates: { budget: budgetGate },
   };
@@ -80,7 +81,21 @@ export function selectModel(input: SelectInput): RoutingDecision {
   const rule0 = matchRule0(descriptor.summary, config);
   if (rule0) { trace.push(`rule 0: summary matches /${rule0.pattern}/i — ${rule0.tool} answers this, no model call`); return { ...base, outcome: "no-model-needed" }; }
   trace.push("rule 0: no deterministic tool matched");
-  if (capacityEnabled && config.capacityRouting.mode === "enforce" && config.capacityRouting.unknownTelemetry === "fail-closed" && capacityTelemetry === "unavailable") { trace.push(`capacity routing is enforcing and telemetry is unavailable${runtime.capacityError ? ` (${runtime.capacityError})` : ""} — refusing`); return base; }
+  // TOG-1040: absence of a capacity signal is not a signal that capacity is
+  // gone. Losing capacity-awareness must degrade routing quality, not deny
+  // service, so only an explicit `fail-closed` refuses here. Under the default
+  // `fail-open` we fall through to the static routing policy with a warning:
+  // every model then carries `null` evidence, ranks last under capacityOrder,
+  // and is still selectable.
+  if (capacityEnabled && capacityTelemetry === "unavailable") {
+    const detail = runtime.capacityError ? ` (${runtime.capacityError})` : "";
+    if (config.capacityRouting.mode === "enforce" && config.capacityRouting.unknownTelemetry === "fail-closed") {
+      trace.push(`capacity routing is enforcing and telemetry is unavailable${detail} — refusing`);
+      return base;
+    }
+    base.capacity.degraded = true;
+    trace.push(`WARNING: capacity telemetry is unavailable${detail} — falling back to the static routing policy without capacity awareness`);
+  }
   const taskClass = descriptor.taskClass ? config.taskClasses.find((entry) => entry.key === descriptor.taskClass) : undefined;
   if (descriptor.taskClass && !taskClass) { trace.push(`task class "${descriptor.taskClass}" is not configured — refusing`); return base; }
   const qualityFloor = taskClass?.qualityFloor ?? 0;
@@ -112,10 +127,29 @@ export function selectModel(input: SelectInput): RoutingDecision {
   const withCapacity = qualified.map((entry): Ranked => ({ ...entry, evidence: capacityEnabled ? aggregateEvidenceFor(entry.model.id, effectiveEvidence) : null }));
   const survivorIds = new Set(survivors.map((entry) => entry.model.id));
   const ranked = withCapacity.filter((entry) => survivorIds.has(entry.model.id)).sort(baselineOrder);
-  const usable = (entry: Ranked): boolean => !capacityEnabled || Boolean(entry.evidence?.telemetryAvailable && entry.evidence.health !== "unknown" && entry.evidence.posture !== "unknown" && entry.evidence.posture !== "unavailable");
+  // Evidence that positively reports exhaustion. This is the only capacity fact
+  // that may deny a model under any policy — it is a real signal, not an absence.
+  const positivelyUnavailable = (entry: Ranked): boolean =>
+    Boolean(entry.evidence?.telemetryAvailable && entry.evidence.health !== "unknown" && entry.evidence.posture === "unavailable");
+  // Evidence good enough to route ON: present, fresh, and not exhausted.
+  const covered = (entry: Ranked): boolean =>
+    Boolean(entry.evidence?.telemetryAvailable && entry.evidence.health !== "unknown" && entry.evidence.posture !== "unknown" && entry.evidence.posture !== "unavailable");
+  // TOG-1040: under `fail-open`, missing/unknown evidence no longer excludes a
+  // model — it only sorts it last. Under the stricter policies, absence excludes
+  // exactly as before.
+  const usable = (entry: Ranked): boolean => {
+    if (!capacityEnabled) return true;
+    if (config.capacityRouting.unknownTelemetry === "fail-open") return !positivelyUnavailable(entry);
+    return covered(entry);
+  };
   const unusableSurvivors = ranked.filter((candidate) => !usable(candidate));
   const usageAware = ranked.filter(usable).sort(capacityOrder);
   if (capacityEnabled && config.capacityRouting.mode === "enforce") for (const entry of unusableSurvivors) rejections.push({ modelId: entry.model.id, stage: "capacity", reason: entry.evidence ? `capacity evidence ${entry.evidence.source}/${entry.evidence.laneLabel} is ${entry.evidence.telemetryAvailable ? entry.evidence.posture : "unknown"}` : "no capacity evidence covers this model" });
+  // TOG-1040: this used to refuse whenever ANY qualified model had missing or
+  // unknown evidence — even when another model had healthy evidence and was
+  // ready to serve. That is what produced `no-eligible-model` on records that
+  // report `capacity telemetry available`. One uncovered model must not veto a
+  // covered one, so only explicit `fail-closed` still refuses.
   if (capacityEnabled && config.capacityRouting.mode === "enforce" && config.capacityRouting.unknownTelemetry === "fail-closed" && unusableSurvivors.length > 0) {
     trace.push("capacity routing fail-closed: at least one qualified model has missing, unknown, or unavailable evidence");
     return base;
