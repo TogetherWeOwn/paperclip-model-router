@@ -12,6 +12,83 @@ version is not present here.
 
 Nothing yet.
 
+## [0.4.2] - 2026-09-05
+
+Compatibility: drop-in over 0.4.1. No config migration is required and no existing
+config becomes invalid. `capacityRouting.unknownTelemetry` gains a third value,
+`fail-open`, and **the default changes from `fail-closed` to `fail-open`**. A company
+that has set the field explicitly keeps exactly its current behavior; a company that
+never set it changes behavior, which is the point of this release.
+
+This only affects companies running `capacityRouting.enabled: true` with
+`mode: "enforce"`. Capacity routing is still disabled by default, so a company that
+has not opted in is unaffected either way.
+
+To keep the old strict posture, set `capacityRouting.unknownTelemetry: "fail-closed"`
+explicitly. Be aware that is the configuration that produced the outage below.
+
+### Fixed
+
+- **Enforce mode denied service when capacity telemetry was absent or unparseable
+  (TOG-1040).** Under `capacityMode: "enforce"` the router returned `no-eligible-model`
+  — no model at all — rather than falling back to the static routing policy. 15 such
+  records accumulated on the live v0.4.0 fleet, 9 of them on 2026-09-05, all with
+  `capacityLane: null` and `capacityPosture: "not-evaluated"`. This was never lane
+  exhaustion: `fallbackUsed` was `false` in all 200 records, so the fallback path had
+  never once fired.
+
+  There were two distinct fail-closed paths, matching the two shapes in the log:
+
+  1. `src/engine/select.ts` refused outright when telemetry was globally unavailable.
+     These are the records carrying `capacity telemetry unavailable: capacity payload
+     carried no recognizable telemetry records`.
+  2. `src/engine/select.ts` also refused when *any* qualified model lacked usable
+     evidence — even when another qualified model had healthy evidence and was ready
+     to serve. One uncovered model vetoed every covered one. These are the records
+     that reported `capacity telemetry available` and still selected nothing.
+
+  Both now fail open by default: absence of a capacity signal is not a signal that
+  capacity is gone. A model with missing or unknown evidence sorts last but stays
+  selectable, and an unparseable payload degrades to the static routing policy.
+
+### Changed
+
+- `capacityRouting.unknownTelemetry` accepts `fail-open` (new default), `exclude-lane`,
+  and `fail-closed`. An unrecognized value now resolves to `fail-open` rather than
+  `fail-closed`, so a typo degrades routing instead of halting it.
+
+### Added
+
+- `capacity.degraded` on the routing decision and `capacityDegraded` on the decision
+  record: `true` when the router served without capacity awareness because telemetry
+  was absent. A telemetry outage stays loud and countable without denying service, and
+  the trace carries an explicit `WARNING` line.
+
+### Safety
+
+- Fail-open relaxes **absence** only. Evidence that positively reports `unavailable` or
+  `exhausted` still excludes that model under every policy, so the capacity-enforcement
+  guarantees closed in TOG-972 are intact: pins, stickiness, and the configured fallback
+  still cannot cross a lane that is reporting exhaustion. Covered evidence continues to
+  outrank uncovered evidence, so a healthy lane is still preferred whenever one is known.
+
+- An explicit `exhausted`/`unavailable` health is honoured even when the producer sends
+  no utilization number with it (TOG-1062, found in review). The capacity normalizer only
+  reports `telemetryAvailable` when a utilization value is present, so a lane reporting
+  `status: "exhausted"` with a null percentage — what a quota API typically returns once
+  there is no quota left to express as a fraction — would otherwise have been read as
+  *absence* and served under `fail-open`. The posture check now tests the explicit health
+  signal before the absence check.
+
+- The same precedence now applies at the **capacity refresh gate**, one layer earlier
+  (TOG-1064, found merging this PR). That gate decides whether a snapshot is persisted at
+  all, and it used the pre-TOG-1062 predicate: a status-only `exhausted` lane made the
+  whole refresh `capacity-refresh-incomplete`, so the evidence was never written to state.
+  Because `invoke` reads *stored* capacity, the engine then saw absence rather than
+  exhaustion and served the lane anyway — the engine-level fix above could not save it,
+  since the engine never received the evidence. Both layers now agree that an explicit
+  `exhausted`/`unavailable` health is a positive signal.
+
 ## [0.4.1] - 2026-09-05
 
 Compatibility: drop-in over 0.4.0. No config migration is required and no existing

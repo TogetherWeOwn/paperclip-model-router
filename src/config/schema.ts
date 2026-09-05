@@ -190,8 +190,10 @@ export const ROUTER_CONFIG_SCHEMA = {
         mode: { type: "string", enum: ["shadow", "enforce"], default: "shadow" },
         unknownTelemetry: {
           type: "string",
-          enum: ["fail-closed", "exclude-lane"],
-          default: "fail-closed",
+          enum: ["fail-open", "fail-closed", "exclude-lane"],
+          default: "fail-open",
+          description:
+            "What ABSENT capacity evidence means in enforce mode. fail-open (default) never denies service for missing or unparseable telemetry: uncovered models rank last but stay selectable, and only evidence positively reporting 'unavailable' excludes a model. exclude-lane drops uncovered models and refuses only if none remain. fail-closed refuses the decision outright and can deny service during a telemetry outage.",
         },
         conserveUtilization: { type: "number", minimum: 0, maximum: 1, default: 0.6 },
         avoidUtilization: { type: "number", minimum: 0, maximum: 1, default: 0.8 },

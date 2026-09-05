@@ -57,7 +57,17 @@ export interface BudgetConfig {
 export interface CapacityRoutingConfig {
   enabled: boolean;
   mode: "shadow" | "enforce";
-  unknownTelemetry: "fail-closed" | "exclude-lane";
+  /**
+   * What absent capacity evidence means in `enforce` mode.
+   *
+   * - `fail-open` (default): absence of evidence never denies service. A model
+   *   with missing or unknown evidence ranks last but stays selectable, and a
+   *   payload the router cannot parse degrades routing to the static policy.
+   *   Only evidence that positively reports `unavailable` excludes a model.
+   * - `exclude-lane`: drop models without usable evidence, refuse only if none remain.
+   * - `fail-closed`: refuse the decision outright. Strictly opt-in since TOG-1040.
+   */
+  unknownTelemetry: "fail-open" | "fail-closed" | "exclude-lane";
   conserveUtilization: number;
   avoidUtilization: number;
   maxSnapshotAgeMs: number;

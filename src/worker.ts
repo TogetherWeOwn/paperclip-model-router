@@ -51,6 +51,8 @@ interface DecisionRecord {
   capacityLaneLabel: string | null;
   capacityPosture: RoutingDecision["capacity"]["usagePosture"] | null;
   capacityReason: string | null;
+  /** Served without capacity awareness because telemetry was absent (TOG-1040). */
+  capacityDegraded: boolean;
   shadowModelId: string | null;
 }
 
@@ -180,7 +182,8 @@ export function createPlugin() {
         const evidence = snapshots.flatMap((snapshot) => snapshot.evidence);
         const snapshotErrors = snapshots.map((snapshot) => snapshot.error).filter((value): value is string => Boolean(value));
         const malformedEvidence = evidence.some((entry) =>
-          !entry.telemetryAvailable || entry.health === "unknown" || entry.posture === "unknown"
+          entry.health !== "unavailable" && entry.health !== "exhausted" &&
+          (!entry.telemetryAvailable || entry.health === "unknown" || entry.posture === "unknown")
         );
         const incompleteModelIds = config.capacityRouting.sources.flatMap((source) =>
           source.modelIds.filter((modelId) => !evidence.some((entry) => entry.modelId === modelId))
@@ -244,6 +247,7 @@ export function createPlugin() {
           capacityLaneLabel: decision?.capacity.selectedLaneLabel ?? null,
           capacityPosture: decision?.capacity.usagePosture ?? null,
           capacityReason: decision?.capacity.decisionReason ?? null,
+          capacityDegraded: decision?.capacity.degraded ?? false,
           shadowModelId: decision?.capacity.shadowModelId ?? null,
         });
         await ctx.state.set(key, log.slice(0, DECISION_LOG_LIMIT));
