@@ -49,6 +49,7 @@ Every surface calls the same internal implementation. Company identity comes fro
       "costPerMTokOut": 5,
       "contextWindow": 200000,
       "capabilities": ["tools", "structured-output"],
+      "requestTimeoutMs": 180000,
       "enabled": true
     }
   ],
@@ -140,6 +141,24 @@ The request cannot override the selected model, compatible protocol, base URL, c
 - upstream status codes remain inside the normalized result rather than becoming the outer route status;
 - response bodies are measured after the stock host returns its buffered response;
 - caller-visible timeout is bounded by company configuration and does not start a replacement request.
+
+### Timeouts, and reasoning models
+
+One upstream attempt is made and there is no retry, so a timeout is a discarded
+generation rather than a delayed one — the upstream usually finishes the work and
+bills for it after the router has stopped listening.
+
+`upstream.requestTimeoutMs` defaults to **25s** and may be raised to **300s**. Set
+`models[].requestTimeoutMs` to give one model its own budget; it overrides the
+upstream value whenever that model is selected, and is omitted to inherit. Prefer
+the per-model form: a reasoning model needs minutes, and lifting the shared ceiling
+to suit it also stops every fast model from failing fast.
+
+A reasoning model may also spend its entire output budget on hidden thinking tokens
+and return a valid success carrying nothing readable. That is reported as a normal
+completion with `stopReason: "max-tokens"` and an **empty `content` array**, so a
+caller must not assume a completed result has at least one content block. A
+`refusal` or `content-filter` stop reason is preserved rather than rewritten.
 
 ## Development
 

@@ -22,6 +22,13 @@ export interface ModelEntry {
   costPerMTokOut: number;
   contextWindow: number;
   capabilities: ModelCapability[];
+  /**
+   * Per-model wall-clock budget for one generation, overriding
+   * `upstream.requestTimeoutMs` when this model is selected. Absent means
+   * inherit. A reasoning model needs minutes where the rest of the table needs
+   * seconds, and one shared ceiling cannot be right for both (TOG-1035).
+   */
+  requestTimeoutMs?: number;
   enabled: boolean;
 }
 

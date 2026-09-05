@@ -20,7 +20,12 @@ import {
   requestHeaders,
   upstreamUrl,
 } from "../src/inference/adapters.js";
-import { invokeCompatibleUpstream } from "../src/inference/transport.js";
+import {
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  MAX_REQUEST_TIMEOUT_MS,
+  MIN_REQUEST_TIMEOUT_MS,
+} from "../src/config/upstream-constraints.js";
+import { effectiveRequestTimeoutMs, invokeCompatibleUpstream } from "../src/inference/transport.js";
 import type { InvokeRequest } from "../src/inference/types.js";
 import { InvocationValidationError, parseInvokeRequest } from "../src/inference/validate.js";
 import { fixtureConfig } from "./helpers.js";
@@ -203,7 +208,127 @@ describe("response normalization", () => {
   it("rejects malformed arguments and malformed 2xx envelopes", () => {
     expect(() => normalizeOpenAiSuccess({ object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: "x", type: "function", function: { name: "x", arguments: "not-json" } }] } }] }, "m", null)).toThrow();
     expect(() => normalizeOpenAiSuccess({ object: "wrong", choices: [{ index: 0, message: { role: "assistant", content: "text" } }] }, "m", null)).toThrow("chat.completion");
-    expect(() => normalizeAnthropicSuccess({ type: "message", role: "assistant", content: [{ type: "image", source: {} }] }, "m", null)).toThrow();
+    // A structurally broken block still throws. An *unrecognized* block no longer
+    // does — see the empty-content group below for why those two differ.
+    expect(() => normalizeAnthropicSuccess({ type: "message", role: "assistant", content: [{ type: "tool_use", id: "toolu-1", name: "lookup", input: "not-an-object" }] }, "m", null)).toThrow();
+    expect(() => normalizeAnthropicSuccess({ type: "message", role: "assistant", content: "not-an-array" }, "m", null)).toThrow("message envelope is invalid");
+  });
+});
+
+/**
+ * TOG-1035. A reasoning model can burn its entire output budget on hidden
+ * thinking tokens and return a well-formed success carrying nothing readable.
+ * The router used to call that `invalid-upstream-response`, which blamed the
+ * upstream for a generation that had in fact happened and been paid for — 5 of
+ * 50 calls in the first enforce-mode hour. It is a completion that ran out of
+ * room, and it must normalize as one.
+ */
+describe("empty-content success envelopes", () => {
+  it("completes an OpenAI reply whose content and tool calls are both absent", () => {
+    const result = normalizeOpenAiSuccess({
+      object: "chat.completion",
+      id: "chatcmpl-empty",
+      model: "glm-5.3-flash",
+      choices: [{ index: 0, message: { role: "assistant", content: "" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 900, completion_tokens: 1500, total_tokens: 2400 },
+    }, "selected-model", "req-empty");
+    expect(result.content).toEqual([]);
+    // Reported "stop", but a turn that ended with nothing said did not end willingly.
+    expect(result.stopReason).toBe("max-tokens");
+    // The tokens were spent and must still be billed and recorded.
+    expect(result.usage).toEqual({ inputTokens: 900, outputTokens: 1500, totalTokens: 2400 });
+  });
+
+  it("completes an Anthropic reply that carries only thinking blocks", () => {
+    const result = normalizeAnthropicSuccess({
+      id: "msg-empty",
+      type: "message",
+      role: "assistant",
+      model: "minimax-m3",
+      content: [{ type: "thinking", thinking: "<think>...</think>" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 12, output_tokens: 2048 },
+    }, "selected-model", "req-empty");
+    expect(result.content).toEqual([]);
+    expect(result.stopReason).toBe("max-tokens");
+    expect(result.usage).toMatchObject({ outputTokens: 2048 });
+  });
+
+  it("keeps a stop reason that explains the emptiness instead of overwriting it", () => {
+    // A refusal or a filter is *why* there is no content, and is the more
+    // specific fact. Only an unbelievable "it finished" gets corrected.
+    expect(normalizeAnthropicSuccess({
+      type: "message", role: "assistant", model: "m", content: [], stop_reason: "refusal",
+    }, "m", null).stopReason).toBe("refusal");
+    expect(normalizeOpenAiSuccess({
+      object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: null }, finish_reason: "content_filter" }],
+    }, "m", null).stopReason).toBe("content-filter");
+    expect(normalizeOpenAiSuccess({
+      object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: null }, finish_reason: "length" }],
+    }, "m", null).stopReason).toBe("max-tokens");
+  });
+
+  it("still reports content when the model did produce some", () => {
+    // The correction is scoped to empty replies; a normal end-turn is untouched.
+    expect(normalizeOpenAiSuccess({
+      object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+    }, "m", null).stopReason).toBe("end-turn");
+  });
+});
+
+/**
+ * TOG-1035. The 25s ceiling was a wall, not a budget: 20 of 32 implementation
+ * calls died at exactly 25.0s while the same generations landed upstream at
+ * ~27s. v1 invokes once with no retry, so each was a paid generation discarded.
+ */
+describe("request timeout budget", () => {
+  it("allows an operator to configure well past the old 25s wall", () => {
+    expect(MAX_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
+  });
+
+  it("keeps the default at 25s so raising the ceiling changes nobody silently", () => {
+    // The schema publishes the default, so for an unconfigured company this value
+    // *is* the timeout. It once read MAX_REQUEST_TIMEOUT_MS; had it stayed that
+    // way, this release would have moved every such company 25s -> 300s as a side
+    // effect of a bounds change. Opt-in only.
+    expect(DEFAULT_REQUEST_TIMEOUT_MS).toBe(25_000);
+    expect(fixtureConfig("company-a").upstream.requestTimeoutMs).toBe(25_000);
+  });
+
+  it("prefers the selected model's override and inherits when it is absent", () => {
+    expect(effectiveRequestTimeoutMs(25_000, 180_000)).toBe(180_000);
+    expect(effectiveRequestTimeoutMs(25_000, undefined)).toBe(25_000);
+  });
+
+  it("clamps a stored override, because the config schema validates nothing at runtime", () => {
+    expect(effectiveRequestTimeoutMs(25_000, 10 * MAX_REQUEST_TIMEOUT_MS)).toBe(MAX_REQUEST_TIMEOUT_MS);
+    expect(effectiveRequestTimeoutMs(25_000, 1)).toBe(MIN_REQUEST_TIMEOUT_MS);
+    // Garbage falls back rather than failing the call outright.
+    expect(effectiveRequestTimeoutMs(25_000, Number.NaN)).toBe(25_000);
+  });
+
+  it("gives a slow model the longer budget its own entry asks for", async () => {
+    const config = fixtureConfig("company-a").upstream;
+    config.requestTimeoutMs = 5;
+    const slowReply = response({
+      object: "chat.completion",
+      choices: [{ index: 0, message: { role: "assistant", content: "thought about it" }, finish_reason: "stop" }],
+    });
+    const fetch = vi.fn(() => new Promise<Response>((resolve) => setTimeout(() => resolve(slowReply), 25)));
+    // Same upstream that timed out above, rescued purely by the per-model override.
+    const result = await invokeCompatibleUpstream({
+      http: { fetch }, config, credential: "resolved-value", request, modelId: "m", modelTimeoutMs: 1_000,
+    });
+    expect(result.error).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    // ...and without the override the very same call is still lost, which is what
+    // makes the override the cause of the rescue rather than the fixture.
+    const withoutOverride = await invokeCompatibleUpstream({
+      http: { fetch: () => new Promise<Response>((resolve) => setTimeout(() => resolve(slowReply), 25)) },
+      config, credential: "resolved-value", request, modelId: "m",
+    });
+    expect(withoutOverride.error?.code).toBe("upstream-timeout");
   });
 });
 

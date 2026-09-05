@@ -2,6 +2,7 @@ import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
 import type { PluginHttpClient } from "@paperclipai/plugin-sdk";
 
 import type { CompatibleUpstreamConfig } from "../config/types.js";
+import { MAX_REQUEST_TIMEOUT_MS, MIN_REQUEST_TIMEOUT_MS } from "../config/upstream-constraints.js";
 import {
   buildAnthropicRequest,
   buildOpenAiRequest,
@@ -53,12 +54,32 @@ async function readBoundedJson(response: Response, maxBytes: number): Promise<{ 
   }
 }
 
+/**
+ * The wall-clock budget this one generation actually gets.
+ *
+ * A per-model override wins over the shared upstream value, but it is clamped
+ * here rather than trusted: `getConfigSchema()` is form metadata that validates
+ * nothing at runtime, so a stored row can carry any number at all. Clamping in
+ * the execution path is what makes the bound real. A malformed or absent
+ * override falls back to the upstream value instead of failing the call.
+ */
+export function effectiveRequestTimeoutMs(
+  upstreamTimeoutMs: number,
+  modelTimeoutMs?: number,
+): number {
+  if (modelTimeoutMs === undefined || !Number.isFinite(modelTimeoutMs)) return upstreamTimeoutMs;
+  const requested = Math.trunc(modelTimeoutMs);
+  return Math.min(Math.max(requested, MIN_REQUEST_TIMEOUT_MS), MAX_REQUEST_TIMEOUT_MS);
+}
+
 export async function invokeCompatibleUpstream(input: {
   http: PluginHttpClient;
   config: CompatibleUpstreamConfig;
   credential: string;
   request: InvokeRequest;
   modelId: string;
+  /** Per-model override from the selected model's table entry; absent means inherit. */
+  modelTimeoutMs?: number;
 }): Promise<TransportResult> {
   let url: string;
   let headers: Record<string, string>;
@@ -88,7 +109,10 @@ export async function invokeCompatibleUpstream(input: {
     response = await Promise.race([
       request,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("router-request-timeout")), input.config.requestTimeoutMs);
+        timer = setTimeout(
+          () => reject(new Error("router-request-timeout")),
+          effectiveRequestTimeoutMs(input.config.requestTimeoutMs, input.modelTimeoutMs),
+        );
       }),
     ]);
   } catch (cause) {
