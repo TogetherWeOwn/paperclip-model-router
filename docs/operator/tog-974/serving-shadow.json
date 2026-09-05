@@ -1,0 +1,153 @@
+{
+  "pluginId": "f4ae898a-f839-4f64-9ff9-cf2e6287acc8",
+  "cases": {
+    "default-no-signals": {
+      "http": 200,
+      "serving": {
+        "outcome": "completed",
+        "modelId": "cliproxy/gpt-5.6-luna",
+        "effectiveTier": "standard"
+      },
+      "capacity": {
+        "mode": "shadow",
+        "telemetry": "unavailable",
+        "selectedSource": null,
+        "selectedLaneLabel": null,
+        "usagePosture": "unknown",
+        "utilization": null,
+        "resetsAt": null,
+        "shadowModelId": null,
+        "shadowSource": null,
+        "shadowLaneLabel": null,
+        "decisionReason": "capacity telemetry unavailable: capacity-snapshot-stale",
+        "servingModelId": null,
+        "fallbackEvents": []
+      },
+      "hasCapacityKey": true
+    },
+    "small-cheap": {
+      "http": 200,
+      "serving": {
+        "outcome": "completed",
+        "modelId": "cliproxy/gemini-3.1-flash-lite",
+        "effectiveTier": "small"
+      },
+      "capacity": {
+        "mode": "shadow",
+        "telemetry": "unavailable",
+        "selectedSource": null,
+        "selectedLaneLabel": null,
+        "usagePosture": "unknown",
+        "utilization": null,
+        "resetsAt": null,
+        "shadowModelId": null,
+        "shadowSource": null,
+        "shadowLaneLabel": null,
+        "decisionReason": "capacity telemetry unavailable: capacity-snapshot-stale",
+        "servingModelId": null,
+        "fallbackEvents": []
+      },
+      "hasCapacityKey": true
+    },
+    "standard-mid": {
+      "http": 200,
+      "serving": {
+        "outcome": "completed",
+        "modelId": "cliproxy/gemini-3.1-flash-lite",
+        "effectiveTier": "small"
+      },
+      "capacity": {
+        "mode": "shadow",
+        "telemetry": "unavailable",
+        "selectedSource": null,
+        "selectedLaneLabel": null,
+        "usagePosture": "unknown",
+        "utilization": null,
+        "resetsAt": null,
+        "shadowModelId": null,
+        "shadowSource": null,
+        "shadowLaneLabel": null,
+        "decisionReason": "capacity telemetry unavailable: capacity-snapshot-stale",
+        "servingModelId": null,
+        "fallbackEvents": []
+      },
+      "hasCapacityKey": true
+    },
+    "large-complex": {
+      "http": 200,
+      "serving": {
+        "outcome": "completed",
+        "modelId": "cliproxy/gemini-3.1-flash-lite",
+        "effectiveTier": "small"
+      },
+      "capacity": {
+        "mode": "shadow",
+        "telemetry": "unavailable",
+        "selectedSource": null,
+        "selectedLaneLabel": null,
+        "usagePosture": "unknown",
+        "utilization": null,
+        "resetsAt": null,
+        "shadowModelId": null,
+        "shadowSource": null,
+        "shadowLaneLabel": null,
+        "decisionReason": "capacity telemetry unavailable: capacity-snapshot-stale",
+        "servingModelId": null,
+        "fallbackEvents": []
+      },
+      "hasCapacityKey": true
+    },
+    "long-context": {
+      "http": 200,
+      "serving": {
+        "outcome": "completed",
+        "modelId": "cliproxy/gpt-5.6-luna",
+        "effectiveTier": "standard"
+      },
+      "capacity": {
+        "mode": "shadow",
+        "telemetry": "unavailable",
+        "selectedSource": null,
+        "selectedLaneLabel": null,
+        "usagePosture": "unknown",
+        "utilization": null,
+        "resetsAt": null,
+        "shadowModelId": null,
+        "shadowSource": null,
+        "shadowLaneLabel": null,
+        "decisionReason": "capacity telemetry unavailable: capacity-snapshot-stale",
+        "servingModelId": null,
+        "fallbackEvents": []
+      },
+      "hasCapacityKey": true
+    },
+    "rule0-deterministic": {
+      "http": 200,
+      "serving": {
+        "outcome": "completed",
+        "modelId": "cliproxy/gpt-5.6-luna",
+        "effectiveTier": "standard"
+      },
+      "capacity": {
+        "mode": "shadow",
+        "telemetry": "unavailable",
+        "selectedSource": null,
+        "selectedLaneLabel": null,
+        "usagePosture": "unknown",
+        "utilization": null,
+        "resetsAt": null,
+        "shadowModelId": null,
+        "shadowSource": null,
+        "shadowLaneLabel": null,
+        "decisionReason": "capacity telemetry unavailable: capacity-snapshot-stale",
+        "servingModelId": null,
+        "fallbackEvents": []
+      },
+      "hasCapacityKey": true
+    }
+  },
+  "secretScan": {
+    "patternsMatched": [],
+    "clean": true
+  }
+}
