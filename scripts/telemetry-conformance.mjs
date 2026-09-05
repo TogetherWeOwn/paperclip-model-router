@@ -450,6 +450,12 @@ function mutants(nowIso) {
     // in model-ID key position is not a record, so it is still scanned.
     m("count smuggled into model-ID key position", "T6.noCardinality",
       (d) => { d.models.sourceCount = 3; }),
+    // The exemption is positional — only the DIRECT children of the top-level
+    // `models` map. A nested re-use of the name `models` must not re-arm it,
+    // or a count hides one level down. The key here is deliberately one T7's
+    // identity scan does not also catch, so this measures T6 alone.
+    m("count under a nested map that re-uses the name `models`", "T6.noCardinality",
+      (d) => { d.models["oc/claude-opus-5"].detail = { models: { samples: { v: 3 } } }; }),
     m("repeated window entry (per-lane spread)", "T5.windowUnique:oc/claude-opus-5",
       (d) => {
         d.models["oc/claude-opus-5"].windows.push(
