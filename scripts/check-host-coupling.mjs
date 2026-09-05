@@ -71,28 +71,72 @@ const executableFiles = EXECUTABLE_GLOBS.flatMap((glob) => walk(glob)).filter((f
 // 1. No host patch in the install or verification path
 // ---------------------------------------------------------------------------
 
-const patchReferences = executableFiles.filter((file) => {
-  const content = readFileSync(join(root, file), "utf8");
-  return /\bgit\s+apply\b/.test(content) || /[\w./-]+\.patch\b/.test(content);
-});
+/**
+ * `git apply --check` asks whether a patch *would* apply and mutates nothing.
+ * That is how `check:workflows` reports which operator patches are still
+ * queued, and reporting on a patch is the opposite of depending on one — so the
+ * check-only form is not a coupling. A real `git apply` (no `--check`) is.
+ *
+ * Both spellings are scanned: the shell form (`git apply foo.patch`) and the
+ * argv form (`git(["apply", ...])`), because the argv form is what this
+ * repository's own scripts use and a scanner that only knew the shell form
+ * would read as passing while missing every real case.
+ */
+const SHELL_APPLY = /\bgit\s+apply\b[^\n]*/g;
+const ARGV_APPLY = /\[\s*["']apply["'][^\]]*\]/g;
+
+function appliesAPatch(content) {
+  // Prose in a comment is not an execution path; require a real invocation.
+  const invocations = [
+    ...(content.match(SHELL_APPLY) ?? []).filter((line) => /\.patch\b|\$\{|\bpatchPath\b/.test(line)),
+    ...(content.match(ARGV_APPLY) ?? []),
+  ];
+  return invocations.some((invocation) => !invocation.includes("--check"));
+}
+
+const patchReferences = executableFiles.filter((file) =>
+  appliesAPatch(readFileSync(join(root, file), "utf8")),
+);
 report(
   patchReferences.length === 0,
-  "nothing that runs applies or references a host patch",
+  "nothing that runs applies a host patch",
   patchReferences.length
     ? `${patchReferences.join(", ")} — a patch may be documented under ${PATCH_QUARANTINE}, never executed`
     : `checked ${executableFiles.length} files under ${EXECUTABLE_GLOBS.join(", ")}`,
 );
 
+/**
+ * A patch under `docs/operator/` is a HOST patch only if it edits the host
+ * source tree. Two of the queued patches edit *this repository's own*
+ * `.github/workflows/ci.yml`, which no more couples the plugin to a modified
+ * host than any other CI change does. Classify by what the diff targets, not by
+ * the fact that it is a `.patch`.
+ */
+const HOST_TREES = ["server/", "packages/", "apps/", "src/server/"];
+
+function isHostPatch(patchFile) {
+  const diff = readFileSync(join(root, patchFile), "utf8");
+  const targets = [...diff.matchAll(/^\+\+\+ b\/(\S+)/gm)].map((m) => m[1]);
+  return targets.some((target) => HOST_TREES.some((tree) => target.startsWith(tree)));
+}
+
+const hostPatches = walk(PATCH_QUARANTINE)
+  .filter((file) => file.endsWith(".patch"))
+  .filter(isHostPatch);
+
 // README is the document making the stock-host claim, and the install runbook
-// is what an operator follows. Neither may route through a patch.
+// is what an operator follows. Neither may route through a HOST patch.
 const installDocs = ["README.md", "docs/OPERATIONS.md"].filter((file) => existsSync(join(root, file)));
-const docsCitingPatch = installDocs.filter((file) =>
-  /\bgit\s+apply\b|[\w./-]+\.patch\b/.test(readFileSync(join(root, file), "utf8")),
-);
+const docsCitingPatch = installDocs.filter((file) => {
+  const content = readFileSync(join(root, file), "utf8");
+  return hostPatches.some((patch) => content.includes(patch));
+});
 report(
   docsCitingPatch.length === 0,
   "the install path documentation does not route through a host patch",
-  docsCitingPatch.length ? docsCitingPatch.join(", ") : installDocs.join(", "),
+  docsCitingPatch.length
+    ? `${docsCitingPatch.join(", ")} — cites a host patch`
+    : `${installDocs.join(", ")}; ${hostPatches.length} host patch(es) quarantined in ${PATCH_QUARANTINE}`,
 );
 
 // ---------------------------------------------------------------------------

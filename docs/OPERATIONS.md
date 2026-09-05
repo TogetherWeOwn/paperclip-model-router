@@ -168,6 +168,56 @@ release existing does not make it an authorized or compatible rollback target.
 The private preparation itself is undone by deleting the local `artifacts/private`
 directory and reverting the version/docs commit; it changes no instance.
 
+## Applying an operator-only change
+
+Some changes cannot be pushed by any agent in this company and need a human with
+a wider credential. Today that is exactly one category: **files under
+`.github/workflows/`**. The App the agents use has no `workflows` permission and
+the token broker will not mint it, on purpose — see
+[`docs/decisions/0008`](decisions/0008-workflow-files-are-operator-applied.md).
+
+These changes are prepared as patches under `docs/operator/`, already reviewed
+and merged as part of a normal PR. **The patch being in `main` does not mean it
+has been applied** — that is the whole hazard of this arrangement, and the check
+below is how you tell the two apart.
+
+**Blast radius:** this repository's CI only. It changes no running instance and
+no company's config. It is not a maintenance-window action.
+
+```bash
+# 1. See what is queued and why it is red.
+npm run check:workflows
+
+# 2. Apply. Patches are generated against main; if one does not apply, STOP —
+#    do not resolve a conflict in a file the authors cannot test against.
+#    Kick it back to the issue and ask for the patch to be regenerated.
+git apply docs/operator/tog-488-ci-secret-scan.patch
+
+# 3. Re-run the same check. This is the acceptance test, not `git diff`.
+#    It must now report "workflow guard passed".
+npm run check:workflows
+
+# 4. Push on a branch and open a PR, with a token carrying `workflows: write`.
+git checkout -b operator/tog-488-ci-secret-scan
+git commit -am "TOG-488: verify the gitleaks download, and run the scanner self-test"
+git push -u origin operator/tog-488-ci-secret-scan
+```
+
+Then **look at a real CI run** on that PR. Reading the file back is not the
+acceptance test: the point of these patches so far has been to make a job that
+was quietly doing nothing start doing something, and only a run shows that. For
+the TOG-488 patch specifically, the `secret scan` job should gain a
+`Self-test the scanner config` step that prints ten `PASS` lines. If that step is
+absent the patch did not take, whatever the diff says.
+
+Once the PR is merged, delete the applied patch in a follow-up PR — an applied
+patch left in `docs/operator/` reads as still-queued to the next person.
+`check:workflows` reports it as "already applied" until then, which is correct
+but easy to skim past.
+
+**Rollback** is `git revert` on the merge commit, with the same credential.
+Nothing else depends on it.
+
 ## Public-option hygiene
 
 The package has a public-package-compatible shape—declared runtime dependencies,

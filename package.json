@@ -33,6 +33,7 @@
     "verify:host": "node scripts/verify-against-host.mjs && node scripts/verify-stock-host-controls.mjs",
     "rehearse": "node scripts/acceptance-rehearsal.mjs",
     "check:pin": "node scripts/release-pin-check.mjs",
+    "check:workflows": "node scripts/check-workflows.mjs",
     "preflight:tog178": "node scripts/tog178-catalogue-revalidate.mjs",
     "check:host-coupling": "node scripts/check-host-coupling.mjs"
   },
