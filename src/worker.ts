@@ -182,7 +182,8 @@ export function createPlugin() {
         const evidence = snapshots.flatMap((snapshot) => snapshot.evidence);
         const snapshotErrors = snapshots.map((snapshot) => snapshot.error).filter((value): value is string => Boolean(value));
         const malformedEvidence = evidence.some((entry) =>
-          !entry.telemetryAvailable || entry.health === "unknown" || entry.posture === "unknown"
+          entry.health !== "unavailable" && entry.health !== "exhausted" &&
+          (!entry.telemetryAvailable || entry.health === "unknown" || entry.posture === "unknown")
         );
         const incompleteModelIds = config.capacityRouting.sources.flatMap((source) =>
           source.modelIds.filter((modelId) => !evidence.some((entry) => entry.modelId === modelId))

@@ -80,6 +80,15 @@ explicitly. Be aware that is the configuration that produced the outage below.
   *absence* and served under `fail-open`. The posture check now tests the explicit health
   signal before the absence check.
 
+- The same precedence now applies at the **capacity refresh gate**, one layer earlier
+  (TOG-1064, found merging this PR). That gate decides whether a snapshot is persisted at
+  all, and it used the pre-TOG-1062 predicate: a status-only `exhausted` lane made the
+  whole refresh `capacity-refresh-incomplete`, so the evidence was never written to state.
+  Because `invoke` reads *stored* capacity, the engine then saw absence rather than
+  exhaustion and served the lane anyway — the engine-level fix above could not save it,
+  since the engine never received the evidence. Both layers now agree that an explicit
+  `exhausted`/`unavailable` health is a positive signal.
+
 ## [0.4.1] - 2026-09-05
 
 Compatibility: drop-in over 0.4.0. No config migration is required and no existing
