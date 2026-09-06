@@ -37,6 +37,7 @@ export interface CapacitySnapshot {
 
 export interface CapacitySourceConfig {
   id: string;
+  kind?: "http" | "antigravity-auth-files";
   statusUrl: string;
   apiKeySecretRef: import("../config/types.js").SecretRef | null;
   /** Opaque model ids whose selection this source may inform. */

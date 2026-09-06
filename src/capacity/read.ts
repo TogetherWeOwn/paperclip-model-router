@@ -1,4 +1,5 @@
 import { isReservedLiteralHost } from "../config/upstream-constraints.js";
+import { normalizeAntigravityAuthFiles } from "./antigravity.js";
 import { normalizeCapacityPayload } from "./normalize.js";
 import type { CapacitySnapshot, CapacitySourceConfig } from "./types.js";
 
@@ -52,5 +53,7 @@ export async function readCapacitySource(input: {
   if (response.status < 200 || response.status >= 300) return failure(input.source, fetchedAt, "capacity-http-failed");
   if (!response.contentType?.toLowerCase().split(";", 1)[0]?.trim().endsWith("/json") && !response.contentType?.toLowerCase().split(";", 1)[0]?.trim().endsWith("+json")) return failure(input.source, fetchedAt, "capacity-unexpected-media-type");
   if (response.body === null || typeof response.body !== "object") return failure(input.source, fetchedAt, "capacity-invalid-json");
-  return normalizeCapacityPayload({ payload: response.body, source: input.source, fetchedAt });
+  return input.source.kind === "antigravity-auth-files"
+    ? normalizeAntigravityAuthFiles({ payload: response.body, source: input.source, fetchedAt })
+    : normalizeCapacityPayload({ payload: response.body, source: input.source, fetchedAt });
 }

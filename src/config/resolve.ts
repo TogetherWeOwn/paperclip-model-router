@@ -147,6 +147,7 @@ function resolveCapacitySources(value: unknown): CapacityRoutingConfig["sources"
       : [];
     return [{
       id,
+      kind: raw.kind === "antigravity-auth-files" ? "antigravity-auth-files" : "http",
       statusUrl,
       apiKeySecretRef: isRecord(raw.apiKeySecretRef)
         ? (raw.apiKeySecretRef as unknown as CapacityRoutingConfig["sources"][number]["apiKeySecretRef"])

@@ -207,6 +207,7 @@ export const ROUTER_CONFIG_SCHEMA = {
             required: ["id", "statusUrl", "modelIds", "windows"],
             properties: {
               id: { type: "string", minLength: 1 },
+              kind: { type: "string", enum: ["http", "antigravity-auth-files"], default: "http" },
               statusUrl: {
                 type: "string",
                 format: "uri",

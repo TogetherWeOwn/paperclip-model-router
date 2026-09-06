@@ -9,6 +9,7 @@ const NOW = "2026-09-04T12:00:00.000Z";
 
 const source: CapacitySourceConfig = {
   id: "subscriptions",
+  kind: "http",
   statusUrl: "https://capacity.example.test/status",
   apiKeySecretRef: null,
   modelIds: ["subscription-model", "available-model"],
