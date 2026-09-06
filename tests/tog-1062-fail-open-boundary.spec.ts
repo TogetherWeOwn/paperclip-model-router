@@ -5,10 +5,9 @@ import { normalizeCapacityPayload } from "../src/capacity/normalize.js";
 import type { CapacitySourceConfig } from "../src/capacity/types.js";
 import { resolveConfig } from "../src/config/resolve.js";
 import { selectModel } from "../src/engine/select.js";
-import { STATE_KEYS } from "../src/constants.js";
 import manifest from "../src/manifest.js";
 import { createPlugin } from "../src/worker.js";
-import { readFixture } from "./helpers.js";
+import { companyDecisionRecords, readFixture } from "./helpers.js";
 
 // TOG-1062 review of PR #37 (TOG-1040 fail-open).
 //
@@ -178,9 +177,7 @@ describe("TOG-1062: capacityDegraded actually reaches the persisted decision rec
       maxOutputTokens: 100,
     }, { companyId: COMPANY });
 
-    const log = harness.getState({
-      scopeKind: "company", scopeId: COMPANY, stateKey: STATE_KEYS.decisionLog,
-    }) as Array<Record<string, unknown>>;
+    const log = companyDecisionRecords(harness, COMPANY);
 
     expect(log).toHaveLength(1);
     // This is the assertion the engine-only tests cannot make: the flag survives

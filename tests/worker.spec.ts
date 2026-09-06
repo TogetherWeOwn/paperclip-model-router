@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ACTION_KEYS, ROUTE_KEYS, STATE_KEYS, TOOL_NAMES } from "../src/constants.js";
 import manifest from "../src/manifest.js";
 import { createPlugin } from "../src/worker.js";
-import { readFixture } from "./helpers.js";
+import { companyDecisionRecords, readFixture } from "./helpers.js";
 
 const COMPANY_A = "11111111-1111-4111-8111-111111111111";
 const COMPANY_B = "22222222-2222-4222-8222-222222222222";
@@ -56,6 +56,89 @@ const invocation = {
   maxOutputTokens: 100,
 };
 
+describe("durable decision records", () => {
+  it("migrates the legacy ring buffer once and keeps appending after 200 records", async () => {
+    const { harness } = await sharedWorker();
+    const legacy = Array.from({ length: 200 }, (_, index) => ({
+      at: new Date(Date.now() - index * 1_000).toISOString(),
+      requestId: `legacy-${index}`,
+      runId: null,
+      issueId: null,
+      taskClass: "implementation",
+      selectionOutcome: "selected",
+      modelId: "minimax-m2.5",
+      fallbackUsed: false,
+      upstreamProtocol: "openai-chat-completions",
+      outcome: "completed",
+      errorCode: null,
+      upstreamStatus: null,
+      latencyMs: 10,
+      inputTokens: 1,
+      outputTokens: 1,
+      upstreamRequestId: null,
+      capacityMode: "disabled",
+      capacityTelemetry: "not-evaluated",
+      capacityLane: null,
+      capacityLaneLabel: null,
+      capacityPosture: "not-evaluated",
+      capacityReason: null,
+      capacityDegraded: false,
+      shadowModelId: null,
+    }));
+    await harness.ctx.state.set({
+      scopeKind: "company",
+      scopeId: COMPANY_A,
+      stateKey: STATE_KEYS.legacyDecisionLog,
+    }, legacy);
+
+    await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A });
+    await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A });
+
+    const records = companyDecisionRecords(harness, COMPANY_A);
+    expect(records).toHaveLength(202);
+    expect(records.filter((record) => String(record.requestId).startsWith("legacy-"))).toHaveLength(200);
+    expect(harness.getState({
+      scopeKind: "company",
+      scopeId: COMPANY_A,
+      stateKey: STATE_KEYS.legacyDecisionLog,
+    })).toEqual(legacy);
+    expect(harness.getState({
+      scopeKind: "company",
+      scopeId: COMPANY_A,
+      stateKey: STATE_KEYS.decisionLogMigration,
+    })).toMatchObject({ migratedAt: expect.any(String) });
+  });
+
+  it("does not import legacy records outside the 90-day retention window", async () => {
+    const { harness } = await sharedWorker();
+    await harness.ctx.state.set({
+      scopeKind: "company",
+      scopeId: COMPANY_A,
+      stateKey: STATE_KEYS.legacyDecisionLog,
+    }, [{
+      at: "2000-01-01T00:00:00.000Z",
+      requestId: "expired",
+      outcome: "completed",
+    }]);
+
+    await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A });
+
+    expect(companyDecisionRecords(harness, COMPANY_A)).toHaveLength(1);
+    expect(companyDecisionRecords(harness, COMPANY_A)[0]?.requestId).not.toBe("expired");
+  });
+
+  it("prunes the explicit 90-day retention window at worker startup", async () => {
+    const harness = createTestHarness({ manifest, config: {} });
+    const { definition } = createPlugin();
+    await definition.setup(harness.ctx);
+    expect(harness.dbExecutes[0]).toMatchObject({
+      params: [90],
+    });
+    expect(harness.dbExecutes[0]?.sql).toContain("DELETE FROM");
+    expect(harness.dbExecutes[0]?.sql).toContain("recorded_at < now()");
+  });
+});
+
 describe("one select-invoke-normalize-record path", () => {
   it("uses and records the tool run context", async () => {
     const { harness, httpCalls, secretCalls } = await sharedWorker();
@@ -69,11 +152,7 @@ describe("one select-invoke-normalize-record path", () => {
     expect(result.data).toMatchObject({ outcome: "completed", response: { modelId: "minimax-m2.5" } });
     expect(httpCalls[0]?.url).toBe("https://company-a.example/api/v1/chat/completions");
     expect(secretCalls).toEqual([{ secretId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: COMPANY_A, configPath: "upstream.credentialSecretRef" }]);
-    expect(harness.getState({
-      scopeKind: "company",
-      scopeId: COMPANY_A,
-      stateKey: STATE_KEYS.decisionLog,
-    })).toMatchObject([{
+    expect(companyDecisionRecords(harness, COMPANY_A)).toMatchObject([{
       agentId: "agent-a",
       runId: "run-a",
       stopReason: "end-turn",
@@ -98,11 +177,7 @@ describe("one select-invoke-normalize-record path", () => {
     }) as { outcome: string; response: { modelId: string } };
     expect(result).toMatchObject({ outcome: "completed", response: { modelId: "gpt-4.1" } });
     expect(httpCalls[0]?.url).toBe("https://company-b.example/compatible/v1/messages");
-    expect(harness.getState({
-      scopeKind: "company",
-      scopeId: COMPANY_B,
-      stateKey: STATE_KEYS.decisionLog,
-    })).toMatchObject([{
+    expect(companyDecisionRecords(harness, COMPANY_B)).toMatchObject([{
       agentId: "agent-b",
       runId: "run-b",
       stopReason: "end-turn",
@@ -129,11 +204,7 @@ describe("one select-invoke-normalize-record path", () => {
       outcome: "completed",
       response: { stopReason: "max-tokens" },
     });
-    expect(harness.getState({
-      scopeKind: "company",
-      scopeId: COMPANY_A,
-      stateKey: STATE_KEYS.decisionLog,
-    })).toMatchObject([{
+    expect(companyDecisionRecords(harness, COMPANY_A)).toMatchObject([{
       agentId: "agent-max",
       runId: "run-max",
       outcome: "completed",
@@ -257,8 +328,8 @@ describe("one select-invoke-normalize-record path", () => {
       ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", COMPANY_A],
       ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", COMPANY_B],
     ]);
-    const logA = harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.decisionLog }) as unknown[];
-    const logB = harness.getState({ scopeKind: "company", scopeId: COMPANY_B, stateKey: STATE_KEYS.decisionLog }) as unknown[];
+    const logA = companyDecisionRecords(harness, COMPANY_A);
+    const logB = companyDecisionRecords(harness, COMPANY_B);
     expect(logA).toHaveLength(1);
     expect(logB).toHaveLength(1);
     expect(JSON.stringify(logA)).not.toContain(SECRET_A);
@@ -386,11 +457,7 @@ describe("scoped routes", () => {
     });
     expect(completed.status).toBe(200);
     expect(completed.body).toMatchObject({ outcome: "completed", decision: { taskClass: "implementation" } });
-    expect(harness.getState({
-      scopeKind: "company",
-      scopeId: COMPANY_A,
-      stateKey: STATE_KEYS.decisionLog,
-    })).toMatchObject([
+    expect(companyDecisionRecords(harness, COMPANY_A)).toMatchObject([
       { agentId: "agent-a", runId: "run-a", stopReason: "end-turn" },
       { agentId: "agent-a", runId: "run-a", stopReason: null },
     ]);

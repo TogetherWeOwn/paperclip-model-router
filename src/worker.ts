@@ -15,7 +15,7 @@ import {
 import type { RouterConfig } from "./config/types.js";
 import {
   ACTION_KEYS,
-  DECISION_LOG_LIMIT,
+  DECISION_LOG_RETENTION_DAYS,
   PLUGIN_VERSION,
   ROUTE_KEYS,
   STATE_KEYS,
@@ -29,6 +29,8 @@ import type { InferenceResult, InvokeRequest, NormalizedStopReason } from "./inf
 import { InvocationValidationError, parseInvokeRequest } from "./inference/validate.js";
 
 interface DecisionRecord {
+  id: string;
+  companyId: string;
   at: string;
   requestId: string;
   agentId: string | null;
@@ -62,6 +64,103 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function decisionTable(namespace: string): string {
+  return `${namespace}.decision_records`;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function nullableNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function legacyDecisionRecord(companyId: string, value: unknown): DecisionRecord | null {
+  const row = asRecord(value);
+  const requestId = nullableString(row.requestId);
+  const at = nullableString(row.at);
+  const outcome = nullableString(row.outcome);
+  if (!requestId || !at || !outcome) return null;
+  return {
+    id: randomUUID(),
+    companyId,
+    at,
+    requestId,
+    agentId: nullableString(row.agentId),
+    runId: nullableString(row.runId),
+    issueId: nullableString(row.issueId),
+    taskClass: nullableString(row.taskClass),
+    selectionOutcome: nullableString(row.selectionOutcome) as DecisionRecord["selectionOutcome"],
+    modelId: nullableString(row.modelId),
+    fallbackUsed: row.fallbackUsed === true,
+    upstreamProtocol: nullableString(row.upstreamProtocol) as DecisionRecord["upstreamProtocol"],
+    outcome: outcome as DecisionRecord["outcome"],
+    errorCode: nullableString(row.errorCode),
+    upstreamStatus: nullableNumber(row.upstreamStatus),
+    latencyMs: nullableNumber(row.latencyMs) ?? 0,
+    inputTokens: nullableNumber(row.inputTokens),
+    outputTokens: nullableNumber(row.outputTokens),
+    stopReason: nullableString(row.stopReason) as DecisionRecord["stopReason"],
+    upstreamRequestId: nullableString(row.upstreamRequestId),
+    capacityMode: nullableString(row.capacityMode) as DecisionRecord["capacityMode"],
+    capacityTelemetry: nullableString(row.capacityTelemetry) as DecisionRecord["capacityTelemetry"],
+    capacityLane: nullableString(row.capacityLane),
+    capacityLaneLabel: nullableString(row.capacityLaneLabel),
+    capacityPosture: nullableString(row.capacityPosture) as DecisionRecord["capacityPosture"],
+    capacityReason: nullableString(row.capacityReason),
+    capacityDegraded: row.capacityDegraded === true,
+    shadowModelId: nullableString(row.shadowModelId),
+  };
+}
+
+async function persistDecisionRecord(ctx: PluginContext, record: DecisionRecord): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${decisionTable(ctx.db.namespace)} (
+       id, company_id, recorded_at, request_id, agent_id, run_id, issue_id, task_class,
+       selection_outcome, model_id, fallback_used, upstream_protocol, outcome, error_code,
+       upstream_status, latency_ms, input_tokens, output_tokens, stop_reason,
+       upstream_request_id, capacity_mode, capacity_telemetry, capacity_lane,
+       capacity_lane_label, capacity_posture, capacity_reason, capacity_degraded,
+       shadow_model_id
+     ) VALUES (
+       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+       $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+     )
+     ON CONFLICT (company_id, request_id) DO NOTHING`,
+    [
+      record.id,
+      record.companyId,
+      record.at,
+      record.requestId,
+      record.agentId,
+      record.runId,
+      record.issueId,
+      record.taskClass,
+      record.selectionOutcome,
+      record.modelId,
+      record.fallbackUsed,
+      record.upstreamProtocol,
+      record.outcome,
+      record.errorCode,
+      record.upstreamStatus,
+      record.latencyMs,
+      record.inputTokens,
+      record.outputTokens,
+      record.stopReason,
+      record.upstreamRequestId,
+      record.capacityMode,
+      record.capacityTelemetry,
+      record.capacityLane,
+      record.capacityLaneLabel,
+      record.capacityPosture,
+      record.capacityReason,
+      record.capacityDegraded,
+      record.shadowModelId,
+    ],
+  );
 }
 
 function capacityHttp(ctx: PluginContext): CapacityHttpClient {
@@ -117,6 +216,44 @@ export function createPlugin() {
       context = ctx;
       const companyConfig = async (companyId: string): Promise<RouterConfig> =>
         resolveConfig(await ctx.config.get(companyId));
+      const migratedDecisionLogs = new Set<string>();
+
+      const migrateLegacyDecisionLog = async (companyId: string): Promise<void> => {
+        if (migratedDecisionLogs.has(companyId)) return;
+        const migrationKey = {
+          scopeKind: "company" as const,
+          scopeId: companyId,
+          stateKey: STATE_KEYS.decisionLogMigration,
+        };
+        if (await ctx.state.get(migrationKey)) {
+          migratedDecisionLogs.add(companyId);
+          return;
+        }
+        const legacy = await ctx.state.get({
+          scopeKind: "company",
+          scopeId: companyId,
+          stateKey: STATE_KEYS.legacyDecisionLog,
+        });
+        if (Array.isArray(legacy)) {
+          const cutoff = Date.now() - DECISION_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
+          for (const value of legacy) {
+            const record = legacyDecisionRecord(companyId, value);
+            if (record && Date.parse(record.at) >= cutoff) {
+              await persistDecisionRecord(ctx, record);
+            }
+          }
+        }
+        await ctx.state.set(migrationKey, { migratedAt: new Date().toISOString() });
+        migratedDecisionLogs.add(companyId);
+      };
+
+      const pruneDecisionRecords = async (): Promise<void> => {
+        await ctx.db.execute(
+          `DELETE FROM ${decisionTable(ctx.db.namespace)}
+           WHERE recorded_at < now() - ($1 * interval '1 day')`,
+          [DECISION_LOG_RETENTION_DAYS],
+        );
+      };
 
       const stickyKey = (companyId: string) => ({
         scopeKind: "company" as const,
@@ -221,16 +358,12 @@ export function createPlugin() {
         latencyMs: number,
       ) => {
         const decision = result.decision;
-        const key = {
-          scopeKind: "company" as const,
-          scopeId: companyId,
-          stateKey: STATE_KEYS.decisionLog,
-        };
-        const current = await ctx.state.get(key);
-        const log: DecisionRecord[] = Array.isArray(current) ? (current as DecisionRecord[]) : [];
         const response = result.outcome === "completed" ? result.response : null;
         const failure = result.outcome === "error" ? result.error : null;
-        log.unshift({
+        await migrateLegacyDecisionLog(companyId);
+        await persistDecisionRecord(ctx, {
+          id: randomUUID(),
+          companyId,
           at: new Date().toISOString(),
           requestId: result.requestId,
           agentId: actor.agentId,
@@ -258,7 +391,6 @@ export function createPlugin() {
           capacityDegraded: decision?.capacity.degraded ?? false,
           shadowModelId: decision?.capacity.shadowModelId ?? null,
         });
-        await ctx.state.set(key, log.slice(0, DECISION_LOG_LIMIT));
         await ctx.metrics.write(`model_router.invoke.${result.outcome}`, 1);
       };
 
@@ -422,6 +554,7 @@ export function createPlugin() {
         return result;
       };
       invoke = invokeFor;
+      await pruneDecisionRecords();
 
       ctx.tools.register(
         TOOL_NAMES.invoke,
