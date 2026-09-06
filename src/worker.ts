@@ -25,12 +25,13 @@ import { selectModel } from "./engine/select.js";
 import type { RoutingDecision } from "./engine/types.js";
 import { validateUpstreamConfig } from "./inference/adapters.js";
 import { invokeCompatibleUpstream } from "./inference/transport.js";
-import type { InferenceResult, InvokeRequest } from "./inference/types.js";
+import type { InferenceResult, InvokeRequest, NormalizedStopReason } from "./inference/types.js";
 import { InvocationValidationError, parseInvokeRequest } from "./inference/validate.js";
 
 interface DecisionRecord {
   at: string;
   requestId: string;
+  agentId: string | null;
   runId: string | null;
   issueId: string | null;
   taskClass: string | null;
@@ -44,6 +45,7 @@ interface DecisionRecord {
   latencyMs: number;
   inputTokens: number | null;
   outputTokens: number | null;
+  stopReason: NormalizedStopReason | null;
   upstreamRequestId: string | null;
   capacityMode: RoutingDecision["capacity"]["mode"] | null;
   capacityTelemetry: RoutingDecision["capacity"]["telemetry"] | null;
@@ -102,7 +104,11 @@ function summary(result: InferenceResult): string {
 
 export function createPlugin() {
   let context: PluginContext | null = null;
-  let invoke: ((companyId: string, raw: unknown, runId?: string | null) => Promise<InferenceResult>) | null = null;
+  let invoke: ((
+    companyId: string,
+    raw: unknown,
+    actor?: { agentId?: string | null; runId?: string | null },
+  ) => Promise<InferenceResult>) | null = null;
 
   return definePlugin({
     multiCompanyConfig: true,
@@ -209,7 +215,7 @@ export function createPlugin() {
 
       const record = async (
         companyId: string,
-        runId: string | null,
+        actor: { agentId: string | null; runId: string | null },
         request: InvokeRequest | null,
         result: InferenceResult,
         latencyMs: number,
@@ -227,7 +233,8 @@ export function createPlugin() {
         log.unshift({
           at: new Date().toISOString(),
           requestId: result.requestId,
-          runId,
+          agentId: actor.agentId,
+          runId: actor.runId,
           issueId: request?.task.issueId ?? null,
           taskClass: decision?.taskClass ?? null,
           selectionOutcome: decision?.outcome ?? null,
@@ -240,6 +247,7 @@ export function createPlugin() {
           latencyMs: Math.max(0, Math.min(Math.round(latencyMs), 60_000)),
           inputTokens: response?.usage.inputTokens ?? null,
           outputTokens: response?.usage.outputTokens ?? null,
+          stopReason: response?.stopReason ?? null,
           upstreamRequestId: response?.upstream.requestId ?? failure?.upstreamRequestId ?? null,
           capacityMode: decision?.capacity.mode ?? null,
           capacityTelemetry: decision?.capacity.telemetry ?? null,
@@ -257,8 +265,12 @@ export function createPlugin() {
       const invokeFor = async (
         companyId: string,
         raw: unknown,
-        runId: string | null = null,
+        actorContext: { agentId?: string | null; runId?: string | null } = {},
       ): Promise<InferenceResult> => {
+        const actor = {
+          agentId: actorContext.agentId ?? null,
+          runId: actorContext.runId ?? null,
+        };
         const requestId = randomUUID();
         const startedAt = Date.now();
         let request: InvokeRequest | null = null;
@@ -285,7 +297,7 @@ export function createPlugin() {
               upstreamRequestId: null,
             },
           };
-          await record(companyId, runId, request, result, Date.now() - startedAt);
+          await record(companyId, actor, request, result, Date.now() - startedAt);
           return result;
         }
         try {
@@ -314,7 +326,7 @@ export function createPlugin() {
               upstreamRequestId: null,
             },
           };
-          await record(companyId, runId, request, result, Date.now() - startedAt);
+          await record(companyId, actor, request, result, Date.now() - startedAt);
           return result;
         }
 
@@ -343,7 +355,7 @@ export function createPlugin() {
             response: null,
             error: null,
           };
-          await record(companyId, runId, request, result, Date.now() - startedAt);
+          await record(companyId, actor, request, result, Date.now() - startedAt);
           return result;
         }
 
@@ -362,7 +374,7 @@ export function createPlugin() {
               upstreamRequestId: null,
             },
           };
-          await record(companyId, runId, request, result, Date.now() - startedAt);
+          await record(companyId, actor, request, result, Date.now() - startedAt);
           return result;
         }
 
@@ -386,7 +398,7 @@ export function createPlugin() {
               upstreamRequestId: null,
             },
           };
-          await record(companyId, runId, request, result, Date.now() - startedAt);
+          await record(companyId, actor, request, result, Date.now() - startedAt);
           return result;
         }
 
@@ -406,7 +418,7 @@ export function createPlugin() {
         result = transport.error
           ? { outcome: "error", requestId, decision, response: null, error: transport.error }
           : { outcome: "completed", requestId, decision, response: transport.response, error: null };
-        await record(companyId, runId, request, result, Date.now() - startedAt);
+        await record(companyId, actor, request, result, Date.now() - startedAt);
         return result;
       };
       invoke = invokeFor;
@@ -419,7 +431,7 @@ export function createPlugin() {
           parametersSchema: { type: "object" },
         },
         async (params, runCtx): Promise<ToolResult> => {
-          const result = await invokeFor(runCtx.companyId, params, runCtx.runId);
+          const result = await invokeFor(runCtx.companyId, params, runCtx);
           return { content: summary(result), data: result };
         },
       );
@@ -427,7 +439,7 @@ export function createPlugin() {
       ctx.actions.register(ACTION_KEYS.invoke, async (params, actionCtx) => {
         if (!actionCtx.companyId) throw new Error("host-authorized company context is required");
         const { companyId: _hostInjectedCompanyId, ...request } = params;
-        return invokeFor(actionCtx.companyId, request, actionCtx.actor.runId);
+        return invokeFor(actionCtx.companyId, request, actionCtx.actor);
       });
 
       ctx.actions.register(ACTION_KEYS.refreshCapacity, async (_params, actionCtx) => {
@@ -522,7 +534,10 @@ export function createPlugin() {
       const request = input.routeKey === ROUTE_KEYS.invokeIssue
         ? { ...body, task: { ...asRecord(body.task), issueId: input.params.issueId } }
         : body;
-      const result = await invoke(input.companyId, request, input.actor.runId ?? null);
+      const result = await invoke(input.companyId, request, {
+        agentId: input.actor.agentId ?? (input.actor.actorType === "agent" ? input.actor.actorId : null),
+        runId: input.actor.runId ?? null,
+      });
       return { status: result.outcome === "error" && result.error.code === "invalid-request" ? 400 : 200, body: result };
     },
   });

@@ -57,7 +57,7 @@ const invocation = {
 };
 
 describe("one select-invoke-normalize-record path", () => {
-  it("uses the tool run context company", async () => {
+  it("uses and records the tool run context", async () => {
     const { harness, httpCalls, secretCalls } = await sharedWorker();
     const result = await harness.executeTool(TOOL_NAMES.invoke, invocation, {
       companyId: COMPANY_A,
@@ -69,6 +69,15 @@ describe("one select-invoke-normalize-record path", () => {
     expect(result.data).toMatchObject({ outcome: "completed", response: { modelId: "minimax-m2.5" } });
     expect(httpCalls[0]?.url).toBe("https://company-a.example/api/v1/chat/completions");
     expect(secretCalls).toEqual([{ secretId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: COMPANY_A, configPath: "upstream.credentialSecretRef" }]);
+    expect(harness.getState({
+      scopeKind: "company",
+      scopeId: COMPANY_A,
+      stateKey: STATE_KEYS.decisionLog,
+    })).toMatchObject([{
+      agentId: "agent-a",
+      runId: "run-a",
+      stopReason: "end-turn",
+    }]);
   });
 
   it("resolves the secret again for every invocation without caching", async () => {
@@ -81,7 +90,7 @@ describe("one select-invoke-normalize-record path", () => {
     ]);
   });
 
-  it("uses the action host context and returns the same InferenceResult", async () => {
+  it("uses and records the action host context", async () => {
     const { harness, httpCalls } = await sharedWorker();
     const result = await harness.performAction(ACTION_KEYS.invoke, invocation, {
       companyId: COMPANY_B,
@@ -89,6 +98,48 @@ describe("one select-invoke-normalize-record path", () => {
     }) as { outcome: string; response: { modelId: string } };
     expect(result).toMatchObject({ outcome: "completed", response: { modelId: "gpt-4.1" } });
     expect(httpCalls[0]?.url).toBe("https://company-b.example/compatible/v1/messages");
+    expect(harness.getState({
+      scopeKind: "company",
+      scopeId: COMPANY_B,
+      stateKey: STATE_KEYS.decisionLog,
+    })).toMatchObject([{
+      agentId: "agent-b",
+      runId: "run-b",
+      stopReason: "end-turn",
+    }]);
+  });
+
+  it("records max-token completions without classifying them as errors", async () => {
+    const { harness } = await sharedWorker();
+    harness.ctx.http.fetch = async () => new Response(JSON.stringify({
+      id: "chatcmpl-max",
+      object: "chat.completion",
+      model: "echo-a",
+      choices: [{ index: 0, message: { role: "assistant", content: "partial" }, finish_reason: "length" }],
+      usage: { prompt_tokens: 2, completion_tokens: 100, total_tokens: 102 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    const result = await harness.executeTool(TOOL_NAMES.invoke, invocation, {
+      companyId: COMPANY_A,
+      runId: "run-max",
+      agentId: "agent-max",
+      projectId: "project-a",
+    });
+    expect(result.data).toMatchObject({
+      outcome: "completed",
+      response: { stopReason: "max-tokens" },
+    });
+    expect(harness.getState({
+      scopeKind: "company",
+      scopeId: COMPANY_A,
+      stateKey: STATE_KEYS.decisionLog,
+    })).toMatchObject([{
+      agentId: "agent-max",
+      runId: "run-max",
+      outcome: "completed",
+      errorCode: null,
+      stopReason: "max-tokens",
+    }]);
   });
 
   it.each([
@@ -308,7 +359,7 @@ describe("one select-invoke-normalize-record path", () => {
 
 describe("scoped routes", () => {
   it("returns HTTP 200 for completed upstream failures and HTTP 400 only for invalid native requests", async () => {
-    const { definition } = await sharedWorker();
+    const { definition, harness } = await sharedWorker();
     const invalid = await definition.onApiRequest!({
       routeKey: ROUTE_KEYS.invoke,
       method: "POST",
@@ -335,5 +386,13 @@ describe("scoped routes", () => {
     });
     expect(completed.status).toBe(200);
     expect(completed.body).toMatchObject({ outcome: "completed", decision: { taskClass: "implementation" } });
+    expect(harness.getState({
+      scopeKind: "company",
+      scopeId: COMPANY_A,
+      stateKey: STATE_KEYS.decisionLog,
+    })).toMatchObject([
+      { agentId: "agent-a", runId: "run-a", stopReason: "end-turn" },
+      { agentId: "agent-a", runId: "run-a", stopReason: null },
+    ]);
   });
 });
