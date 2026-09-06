@@ -487,7 +487,7 @@ Because v1 is non-streaming and the stock worker/HTTP ceilings are bounded, `req
 
 ## 11. Audit, state, and observability
 
-For every operation, the plugin records a company-scoped decision record with:
+For every operation, the plugin appends a company-scoped decision record to its durable database namespace with:
 
 - Paperclip request/run identifier;
 - issue ID when present;
@@ -502,7 +502,7 @@ For every operation, the plugin records a company-scoped decision record with:
 
 It MUST NOT record message content, tool arguments/results, system prompts, credentials, full upstream URLs, upstream error bodies, or provider/account serving identity. Router v2 MAY record only the exact model ID, source ID, sanitized lane label, health, posture, utilization, and reset from a separately refreshed snapshot. Those labels MUST remain semantically separate from deployment identity.
 
-Rule 0 and selection refusals are audited without any upstream entry. Company A's config, secret reference, company-scoped state, request content, and results MUST never be readable from company B. Native metrics are aggregate instance measurements only and MUST NOT carry a company identifier.
+Rule 0 and selection refusals are audited without any upstream entry. Decision records MUST NOT be capped by a rolling in-memory or plugin-state buffer; this implementation retains 90 days and prunes older rows at worker startup. Company A's config, secret reference, company-scoped state, request content, and results MUST never be readable from company B. Native metrics are aggregate instance measurements only and MUST NOT carry a company identifier.
 
 ## 12. Explicit non-goals and removed vocabulary
 

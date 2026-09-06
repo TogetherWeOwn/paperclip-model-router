@@ -1,10 +1,10 @@
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { describe, expect, it } from "vitest";
 
-import { ACTION_KEYS, STATE_KEYS } from "../src/constants.js";
+import { ACTION_KEYS } from "../src/constants.js";
 import manifest from "../src/manifest.js";
 import { createPlugin } from "../src/worker.js";
-import { readFixture } from "./helpers.js";
+import { companyDecisionRecords, readFixture } from "./helpers.js";
 
 // TOG-1064, found merging PR #37.
 //
@@ -92,9 +92,7 @@ describe("TOG-1064: the refresh gate must persist a status-only exhausted lane",
       maxOutputTokens: 100,
     }, { companyId: COMPANY });
 
-    const log = harness.getState({
-      scopeKind: "company", scopeId: COMPANY, stateKey: STATE_KEYS.decisionLog,
-    }) as Array<Record<string, unknown>>;
+    const log = companyDecisionRecords(harness, COMPANY);
 
     expect(log).toHaveLength(1);
     // Regression guard: on 2fb83ea AND on a612488 this served `minimax-m2.5`.
@@ -116,9 +114,7 @@ describe("TOG-1064: the refresh gate must persist a status-only exhausted lane",
       maxOutputTokens: 100,
     }, { companyId: COMPANY });
 
-    const log = harness.getState({
-      scopeKind: "company", scopeId: COMPANY, stateKey: STATE_KEYS.decisionLog,
-    }) as Array<Record<string, unknown>>;
+    const log = companyDecisionRecords(harness, COMPANY);
 
     expect(log[0]!.selectionOutcome).toBe("selected");
     expect(log[0]!.capacityDegraded).toBe(true);

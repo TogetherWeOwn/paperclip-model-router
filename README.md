@@ -5,7 +5,7 @@ A stock Paperclip plugin that performs one audited operation:
 1. select an opaque model ID under company capability, quality, cost, and budget rules;
 2. invoke the company's configured compatible upstream exactly once;
 3. normalize the response into one protocol-neutral result;
-4. record a bounded company-scoped audit row.
+4. append a company-scoped audit row to durable plugin storage.
 
 The normative contract is [`docs/contracts/compatible-upstream-v1.md`](docs/contracts/compatible-upstream-v1.md).
 

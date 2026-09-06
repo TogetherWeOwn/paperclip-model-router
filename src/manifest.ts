@@ -63,6 +63,9 @@ const manifest: PaperclipPluginManifestV1 = {
   capabilities: [
     "plugin.state.read",
     "plugin.state.write",
+    "database.namespace.migrate",
+    "database.namespace.read",
+    "database.namespace.write",
     "http.outbound",
     "secrets.read-ref",
     "metrics.write",
@@ -70,6 +73,11 @@ const manifest: PaperclipPluginManifestV1 = {
     "api.routes.register",
   ],
   entrypoints: { worker: "./dist/worker.js" },
+  database: {
+    namespaceSlug: "model_router",
+    migrationsDir: "migrations",
+    coreReadTables: [],
+  },
   instanceConfigSchema: ROUTER_CONFIG_SCHEMA as unknown as Record<string, unknown>,
   tools: [
     {

@@ -25,10 +25,23 @@ describe("manifest", () => {
     ]);
   });
 
+  it("declares durable decision-record storage", () => {
+    expect(manifest.database).toEqual({
+      namespaceSlug: "model_router",
+      migrationsDir: "migrations",
+      coreReadTables: [],
+    });
+    expect(readFileSync(join(root, "migrations/001_decision_records.sql"), "utf8"))
+      .toContain("plugin_model_router_4dc1d582dd.decision_records");
+  });
+
   it("requests only the published capabilities it uses", () => {
     expect([...manifest.capabilities].sort()).toEqual([
       "agent.tools.register",
       "api.routes.register",
+      "database.namespace.migrate",
+      "database.namespace.read",
+      "database.namespace.write",
       "http.outbound",
       "metrics.write",
       "plugin.state.read",

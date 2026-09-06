@@ -7,7 +7,7 @@ const watch = process.argv.includes("--watch");
 
 /** @type {import("esbuild").BuildOptions} */
 const options = {
-  entryPoints: ["src/manifest.ts", "src/worker.ts"],
+  entryPoints: ["src/manifest.ts", "src/worker.ts", "src/decision-records.ts"],
   outdir: "dist",
   bundle: true,
   platform: "node",

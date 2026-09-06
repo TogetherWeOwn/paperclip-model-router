@@ -20,9 +20,10 @@ export const ROUTE_KEYS = {
 } as const;
 
 export const STATE_KEYS = {
-  decisionLog: "decision-log",
   capacitySnapshot: "capacity-snapshot",
   issueStickiness: "issue-stickiness",
+  legacyDecisionLog: "decision-log",
+  decisionLogMigration: "decision-log-database-migration-v1",
 } as const;
 
-export const DECISION_LOG_LIMIT = 200;
+export const DECISION_LOG_RETENTION_DAYS = 90;
