@@ -91,6 +91,7 @@ try {
     "disabled", "not-evaluated", null, null, "not-evaluated", null, false, null,
   ];
   await sql.unsafe(insertSql, base);
+  await sql.unsafe(insertSql, base);
   await sql.unsafe(insertSql, ["22222222-2222-4222-8222-222222222222", base[1], new Date(now.getTime() - 90 * 86_400_000 - 1).toISOString(), "outside", ...base.slice(4)]);
   await sql.unsafe(pruneSql, [now.toISOString(), 90]);
   const rows = await sql.unsafe(`SELECT request_id FROM ${namespace}.decision_records ORDER BY request_id`);
