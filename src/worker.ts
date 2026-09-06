@@ -15,51 +15,81 @@ import {
 import type { RouterConfig } from "./config/types.js";
 import {
   ACTION_KEYS,
-  DECISION_LOG_LIMIT,
+  DECISION_LOG_RETENTION_DAYS,
   PLUGIN_VERSION,
   ROUTE_KEYS,
   STATE_KEYS,
   TOOL_NAMES,
 } from "./constants.js";
+import {
+  decisionInsertSql,
+  decisionPruneSql,
+  decisionRecordParams,
+  type DecisionRecord,
+} from "./decision-records.js";
 import { selectModel } from "./engine/select.js";
-import type { RoutingDecision } from "./engine/types.js";
 import { validateUpstreamConfig } from "./inference/adapters.js";
 import { invokeCompatibleUpstream } from "./inference/transport.js";
 import type { InferenceResult, InvokeRequest } from "./inference/types.js";
 import { InvocationValidationError, parseInvokeRequest } from "./inference/validate.js";
 
-interface DecisionRecord {
-  at: string;
-  requestId: string;
-  runId: string | null;
-  issueId: string | null;
-  taskClass: string | null;
-  selectionOutcome: RoutingDecision["outcome"] | null;
-  modelId: string | null;
-  fallbackUsed: boolean;
-  upstreamProtocol: RouterConfig["upstream"]["protocol"] | null;
-  outcome: InferenceResult["outcome"];
-  errorCode: string | null;
-  upstreamStatus: number | null;
-  latencyMs: number;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  upstreamRequestId: string | null;
-  capacityMode: RoutingDecision["capacity"]["mode"] | null;
-  capacityTelemetry: RoutingDecision["capacity"]["telemetry"] | null;
-  capacityLane: string | null;
-  capacityLaneLabel: string | null;
-  capacityPosture: RoutingDecision["capacity"]["usagePosture"] | null;
-  capacityReason: string | null;
-  /** Served without capacity awareness because telemetry was absent (TOG-1040). */
-  capacityDegraded: boolean;
-  shadowModelId: string | null;
-}
-
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function nullableNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function legacyDecisionRecord(companyId: string, value: unknown): DecisionRecord | null {
+  const row = asRecord(value);
+  const requestId = nullableString(row.requestId);
+  const at = nullableString(row.at);
+  const outcome = nullableString(row.outcome);
+  if (!requestId || !at || !outcome) return null;
+  return {
+    id: randomUUID(),
+    companyId,
+    at,
+    requestId,
+    agentId: nullableString(row.agentId),
+    runId: nullableString(row.runId),
+    issueId: nullableString(row.issueId),
+    taskClass: nullableString(row.taskClass),
+    selectionOutcome: nullableString(row.selectionOutcome) as DecisionRecord["selectionOutcome"],
+    modelId: nullableString(row.modelId),
+    fallbackUsed: row.fallbackUsed === true,
+    upstreamProtocol: nullableString(row.upstreamProtocol) as DecisionRecord["upstreamProtocol"],
+    outcome: outcome as DecisionRecord["outcome"],
+    errorCode: nullableString(row.errorCode),
+    upstreamStatus: nullableNumber(row.upstreamStatus),
+    latencyMs: nullableNumber(row.latencyMs) ?? 0,
+    inputTokens: nullableNumber(row.inputTokens),
+    outputTokens: nullableNumber(row.outputTokens),
+    stopReason: nullableString(row.stopReason) as DecisionRecord["stopReason"],
+    upstreamRequestId: nullableString(row.upstreamRequestId),
+    capacityMode: nullableString(row.capacityMode) as DecisionRecord["capacityMode"],
+    capacityTelemetry: nullableString(row.capacityTelemetry) as DecisionRecord["capacityTelemetry"],
+    capacityLane: nullableString(row.capacityLane),
+    capacityLaneLabel: nullableString(row.capacityLaneLabel),
+    capacityPosture: nullableString(row.capacityPosture) as DecisionRecord["capacityPosture"],
+    capacityReason: nullableString(row.capacityReason),
+    capacityDegraded: row.capacityDegraded === true,
+    shadowModelId: nullableString(row.shadowModelId),
+  };
+}
+
+async function persistDecisionRecord(ctx: PluginContext, record: DecisionRecord): Promise<void> {
+  await ctx.db.execute(
+    decisionInsertSql(ctx.db.namespace),
+    decisionRecordParams(record),
+  );
 }
 
 function capacityHttp(ctx: PluginContext): CapacityHttpClient {
@@ -102,7 +132,11 @@ function summary(result: InferenceResult): string {
 
 export function createPlugin() {
   let context: PluginContext | null = null;
-  let invoke: ((companyId: string, raw: unknown, runId?: string | null) => Promise<InferenceResult>) | null = null;
+  let invoke: ((
+    companyId: string,
+    raw: unknown,
+    actor?: { agentId?: string | null; runId?: string | null },
+  ) => Promise<InferenceResult>) | null = null;
 
   return definePlugin({
     multiCompanyConfig: true,
@@ -111,6 +145,39 @@ export function createPlugin() {
       context = ctx;
       const companyConfig = async (companyId: string): Promise<RouterConfig> =>
         resolveConfig(await ctx.config.get(companyId));
+      const migratedDecisionLogs = new Set<string>();
+
+      const migrateLegacyDecisionLog = async (companyId: string): Promise<void> => {
+        if (migratedDecisionLogs.has(companyId)) return;
+        const migrationKey = {
+          scopeKind: "company" as const,
+          scopeId: companyId,
+          stateKey: STATE_KEYS.decisionLogMigration,
+        };
+        const legacy = await ctx.state.get({
+          scopeKind: "company",
+          scopeId: companyId,
+          stateKey: STATE_KEYS.legacyDecisionLog,
+        });
+        if (Array.isArray(legacy)) {
+          const cutoff = Date.now() - DECISION_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
+          for (const value of legacy) {
+            const record = legacyDecisionRecord(companyId, value);
+            if (record && Date.parse(record.at) >= cutoff) {
+              await persistDecisionRecord(ctx, record);
+            }
+          }
+        }
+        await ctx.state.set(migrationKey, { reconciledAt: new Date().toISOString() });
+        migratedDecisionLogs.add(companyId);
+      };
+
+      const pruneDecisionRecords = async (): Promise<void> => {
+        await ctx.db.execute(
+          decisionPruneSql(ctx.db.namespace),
+          [new Date().toISOString(), DECISION_LOG_RETENTION_DAYS],
+        );
+      };
 
       const stickyKey = (companyId: string) => ({
         scopeKind: "company" as const,
@@ -209,25 +276,22 @@ export function createPlugin() {
 
       const record = async (
         companyId: string,
-        runId: string | null,
+        actor: { agentId: string | null; runId: string | null },
         request: InvokeRequest | null,
         result: InferenceResult,
         latencyMs: number,
       ) => {
         const decision = result.decision;
-        const key = {
-          scopeKind: "company" as const,
-          scopeId: companyId,
-          stateKey: STATE_KEYS.decisionLog,
-        };
-        const current = await ctx.state.get(key);
-        const log: DecisionRecord[] = Array.isArray(current) ? (current as DecisionRecord[]) : [];
         const response = result.outcome === "completed" ? result.response : null;
         const failure = result.outcome === "error" ? result.error : null;
-        log.unshift({
+        await migrateLegacyDecisionLog(companyId);
+        await persistDecisionRecord(ctx, {
+          id: randomUUID(),
+          companyId,
           at: new Date().toISOString(),
           requestId: result.requestId,
-          runId,
+          agentId: actor.agentId,
+          runId: actor.runId,
           issueId: request?.task.issueId ?? null,
           taskClass: decision?.taskClass ?? null,
           selectionOutcome: decision?.outcome ?? null,
@@ -240,6 +304,7 @@ export function createPlugin() {
           latencyMs: Math.max(0, Math.min(Math.round(latencyMs), 60_000)),
           inputTokens: response?.usage.inputTokens ?? null,
           outputTokens: response?.usage.outputTokens ?? null,
+          stopReason: response?.stopReason ?? null,
           upstreamRequestId: response?.upstream.requestId ?? failure?.upstreamRequestId ?? null,
           capacityMode: decision?.capacity.mode ?? null,
           capacityTelemetry: decision?.capacity.telemetry ?? null,
@@ -250,15 +315,18 @@ export function createPlugin() {
           capacityDegraded: decision?.capacity.degraded ?? false,
           shadowModelId: decision?.capacity.shadowModelId ?? null,
         });
-        await ctx.state.set(key, log.slice(0, DECISION_LOG_LIMIT));
         await ctx.metrics.write(`model_router.invoke.${result.outcome}`, 1);
       };
 
       const invokeFor = async (
         companyId: string,
         raw: unknown,
-        runId: string | null = null,
+        actorContext: { agentId?: string | null; runId?: string | null } = {},
       ): Promise<InferenceResult> => {
+        const actor = {
+          agentId: actorContext.agentId ?? null,
+          runId: actorContext.runId ?? null,
+        };
         const requestId = randomUUID();
         const startedAt = Date.now();
         let request: InvokeRequest | null = null;
@@ -285,7 +353,7 @@ export function createPlugin() {
               upstreamRequestId: null,
             },
           };
-          await record(companyId, runId, request, result, Date.now() - startedAt);
+          await record(companyId, actor, request, result, Date.now() - startedAt);
           return result;
         }
         try {
@@ -314,7 +382,7 @@ export function createPlugin() {
               upstreamRequestId: null,
             },
           };
-          await record(companyId, runId, request, result, Date.now() - startedAt);
+          await record(companyId, actor, request, result, Date.now() - startedAt);
           return result;
         }
 
@@ -343,7 +411,7 @@ export function createPlugin() {
             response: null,
             error: null,
           };
-          await record(companyId, runId, request, result, Date.now() - startedAt);
+          await record(companyId, actor, request, result, Date.now() - startedAt);
           return result;
         }
 
@@ -362,7 +430,7 @@ export function createPlugin() {
               upstreamRequestId: null,
             },
           };
-          await record(companyId, runId, request, result, Date.now() - startedAt);
+          await record(companyId, actor, request, result, Date.now() - startedAt);
           return result;
         }
 
@@ -386,7 +454,7 @@ export function createPlugin() {
               upstreamRequestId: null,
             },
           };
-          await record(companyId, runId, request, result, Date.now() - startedAt);
+          await record(companyId, actor, request, result, Date.now() - startedAt);
           return result;
         }
 
@@ -406,10 +474,11 @@ export function createPlugin() {
         result = transport.error
           ? { outcome: "error", requestId, decision, response: null, error: transport.error }
           : { outcome: "completed", requestId, decision, response: transport.response, error: null };
-        await record(companyId, runId, request, result, Date.now() - startedAt);
+        await record(companyId, actor, request, result, Date.now() - startedAt);
         return result;
       };
       invoke = invokeFor;
+      await pruneDecisionRecords();
 
       ctx.tools.register(
         TOOL_NAMES.invoke,
@@ -419,7 +488,7 @@ export function createPlugin() {
           parametersSchema: { type: "object" },
         },
         async (params, runCtx): Promise<ToolResult> => {
-          const result = await invokeFor(runCtx.companyId, params, runCtx.runId);
+          const result = await invokeFor(runCtx.companyId, params, runCtx);
           return { content: summary(result), data: result };
         },
       );
@@ -427,7 +496,7 @@ export function createPlugin() {
       ctx.actions.register(ACTION_KEYS.invoke, async (params, actionCtx) => {
         if (!actionCtx.companyId) throw new Error("host-authorized company context is required");
         const { companyId: _hostInjectedCompanyId, ...request } = params;
-        return invokeFor(actionCtx.companyId, request, actionCtx.actor.runId);
+        return invokeFor(actionCtx.companyId, request, actionCtx.actor);
       });
 
       ctx.actions.register(ACTION_KEYS.refreshCapacity, async (_params, actionCtx) => {
@@ -522,7 +591,10 @@ export function createPlugin() {
       const request = input.routeKey === ROUTE_KEYS.invokeIssue
         ? { ...body, task: { ...asRecord(body.task), issueId: input.params.issueId } }
         : body;
-      const result = await invoke(input.companyId, request, input.actor.runId ?? null);
+      const result = await invoke(input.companyId, request, {
+        agentId: input.actor.agentId ?? (input.actor.actorType === "agent" ? input.actor.actorId : null),
+        runId: input.actor.runId ?? null,
+      });
       return { status: result.outcome === "error" && result.error.code === "invalid-request" ? 400 : 200, body: result };
     },
   });

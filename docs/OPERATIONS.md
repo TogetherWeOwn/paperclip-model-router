@@ -16,10 +16,24 @@ npm run typecheck
 npm test
 npm run build
 PAPERCLIP_HOST=/app npm run verify:host
+PAPERCLIP_HOST=/app npm run verify:migrations
 npm run rehearse
 ```
 
-`verify:host` validates the built manifest and both shipped config fixtures through Paperclip's install-time validators. `rehearse` loads one built worker, configures two companies with different compatible protocols and secret references, invokes both, and checks state isolation.
+`verify:host` validates the built manifest and both shipped config fixtures through Paperclip's install-time validators. `verify:migrations` runs the bundled SQL and runtime write shapes through the target host checkout's database validators. `rehearse` loads one built worker, configures two companies with different compatible protocols and secret references, invokes both, and checks database-write isolation.
+
+## Capability-escalating upgrade
+
+The durable ledger adds `database.namespace.migrate`, `database.namespace.read`, and
+`database.namespace.write`. The current stock host's ordinary upgrade endpoint stops the
+worker and then rejects that capability escalation before updating the installed manifest.
+Do **not** use `POST /api/plugins/:pluginId/upgrade` for this transition: it leaves the old
+plugin record in place and the router offline.
+
+Use the operator's capability-approval install path for the new artifact, then enable it and
+verify the migration before resuming traffic. Preserve the old artifact and config first.
+The exact operator command depends on the deployment's approved plugin installer; refusing
+this transition is safer than improvising a direct database edit around the capability gate.
 
 ## Configure a company
 

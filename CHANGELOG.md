@@ -10,7 +10,18 @@ version is not present here.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **Decision telemetry is no longer a 200-record ring buffer (TOG-1038).** Every
+  decision now appends to a namespaced database table instead of rewriting
+  `plugin_state` and silently discarding the oldest row. The table is indexed by
+  company and timestamp and prunes records older than 90 days at worker startup.
+  Existing installations gain the table through the bundled migration; each
+  company's old bounded state row is copied into it on the company's next invoke,
+  left untouched as recovery data, and no longer written. This release adds three
+  database capabilities, so the stock host's ordinary upgrade endpoint is not a
+  valid transition: use the reviewed capability-approval install path documented
+  in `docs/OPERATIONS.md` or the host stops the old worker and rejects the upgrade.
 
 ## [0.4.2] - 2026-09-05
 

@@ -13,10 +13,10 @@
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { describe, expect, it } from "vitest";
 
-import { ACTION_KEYS, STATE_KEYS } from "../src/constants.js";
+import { ACTION_KEYS } from "../src/constants.js";
 import manifest from "../src/manifest.js";
 import { createPlugin } from "../src/worker.js";
-import { readFixture } from "./helpers.js";
+import { companyDecisionRecords, readFixture } from "./helpers.js";
 
 const COMPANY = "11111111-1111-4111-8111-111111111111";
 
@@ -88,9 +88,7 @@ describe("TOG-1080: the uncovered-winner degradation reaches the persisted recor
       maxOutputTokens: 100,
     }, { companyId: COMPANY });
 
-    const log = harness.getState({
-      scopeKind: "company", scopeId: COMPANY, stateKey: STATE_KEYS.decisionLog,
-    }) as Array<Record<string, unknown>>;
+    const log = companyDecisionRecords(harness, COMPANY);
 
     expect(log).toHaveLength(1);
     expect(log[0]!.selectionOutcome).toBe("selected");

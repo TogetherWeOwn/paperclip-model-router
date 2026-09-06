@@ -85,9 +85,10 @@ const rule0 = await harness.performAction("invoke", {
 }, { companyId: COMPANY_A });
 check("Rule 0 makes no upstream or secret request", rule0.outcome === "no-model-needed" && httpCalls.length === 3 && secretCalls.length === 3);
 
-const logA = harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: "decision-log" }) ?? [];
-const logB = harness.getState({ scopeKind: "company", scopeId: COMPANY_B, stateKey: "decision-log" }) ?? [];
-check("decision records are company-scoped", logA.length === 3 && logB.length === 1);
+const decisionWrites = harness.dbExecutes.filter((entry) => entry.sql.includes("INSERT INTO") && entry.sql.includes(".decision_records"));
+const logA = decisionWrites.filter((entry) => entry.params?.[1] === COMPANY_A);
+const logB = decisionWrites.filter((entry) => entry.params?.[1] === COMPANY_B);
+check("decision records are company-scoped durable inserts", logA.length === 3 && logB.length === 1);
 check("decision records contain no request content or credential", !JSON.stringify([logA, logB]).includes("hello") && !JSON.stringify([logA, logB]).includes("runtime-a") && !JSON.stringify([logA, logB]).includes("runtime-b"));
 
 // --- Evidence 7: usage-aware model evidence, refreshed separately ---------
