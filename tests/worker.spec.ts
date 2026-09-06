@@ -57,7 +57,7 @@ const invocation = {
 };
 
 describe("durable decision records", () => {
-  it("migrates the legacy ring buffer once and keeps appending after 200 records", async () => {
+  it("reconciles the legacy ring buffer and keeps appending after 200 records", async () => {
     const { harness } = await sharedWorker();
     const legacy = Array.from({ length: 200 }, (_, index) => ({
       at: new Date(Date.now() - index * 1_000).toISOString(),
@@ -106,7 +106,39 @@ describe("durable decision records", () => {
       scopeKind: "company",
       scopeId: COMPANY_A,
       stateKey: STATE_KEYS.decisionLogMigration,
-    })).toMatchObject({ migratedAt: expect.any(String) });
+    })).toMatchObject({ reconciledAt: expect.any(String) });
+  });
+
+  it("reconciles records written by the legacy worker during an artifact rollback", async () => {
+    const first = await sharedWorker();
+    await first.harness.ctx.state.set({
+      scopeKind: "company",
+      scopeId: COMPANY_A,
+      stateKey: STATE_KEYS.legacyDecisionLog,
+    }, [{
+      at: new Date().toISOString(),
+      requestId: "before-rollback",
+      outcome: "completed",
+    }]);
+    await first.harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A });
+
+    const second = await sharedWorker();
+    for (const key of [STATE_KEYS.decisionLogMigration, STATE_KEYS.legacyDecisionLog]) {
+      const state = first.harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: key });
+      if (key === STATE_KEYS.legacyDecisionLog) {
+        (state as Array<Record<string, unknown>>).unshift({
+          at: new Date().toISOString(),
+          requestId: "during-rollback",
+          outcome: "completed",
+        });
+      }
+      await second.harness.ctx.state.set({ scopeKind: "company", scopeId: COMPANY_A, stateKey: key }, state);
+    }
+
+    await second.harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A });
+
+    expect(companyDecisionRecords(second.harness, COMPANY_A).map((record) => record.requestId))
+      .toContain("during-rollback");
   });
 
   it("does not import legacy records outside the 90-day retention window", async () => {
@@ -128,14 +160,32 @@ describe("durable decision records", () => {
   });
 
   it("prunes the explicit 90-day retention window at worker startup", async () => {
-    const harness = createTestHarness({ manifest, config: {} });
-    const { definition } = createPlugin();
-    await definition.setup(harness.ctx);
-    expect(harness.dbExecutes[0]).toMatchObject({
-      params: [90],
-    });
-    expect(harness.dbExecutes[0]?.sql).toContain("DELETE FROM");
-    expect(harness.dbExecutes[0]?.sql).toContain("recorded_at < now()");
+    const now = new Date("2026-09-06T12:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const harness = createTestHarness({ manifest, config: {} });
+      const retained = [
+        { requestId: "outside", recordedAt: new Date(now.getTime() - 90 * 24 * 60 * 60 * 1_000 - 1) },
+        { requestId: "inside", recordedAt: new Date(now.getTime() - 90 * 24 * 60 * 60 * 1_000 + 1) },
+      ];
+      harness.ctx.db.execute = async (sql, params) => {
+        const cutoff = new Date(String(params?.[0])).getTime() - Number(params?.[1]) * 24 * 60 * 60 * 1_000;
+        for (let index = retained.length - 1; index >= 0; index -= 1) {
+          if (retained[index]!.recordedAt.getTime() < cutoff) retained.splice(index, 1);
+        }
+        harness.dbExecutes.push({ sql, params });
+        return { rowCount: 1 };
+      };
+      const { definition } = createPlugin();
+      await definition.setup(harness.ctx);
+
+      expect(harness.dbExecutes[0]).toMatchObject({ params: [now.toISOString(), 90] });
+      expect(harness.dbExecutes[0]?.sql).toContain("$2 * interval '1 day'");
+      expect(retained.map((record) => record.requestId)).toEqual(["inside"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

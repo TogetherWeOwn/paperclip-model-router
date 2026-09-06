@@ -21,53 +21,22 @@ import {
   STATE_KEYS,
   TOOL_NAMES,
 } from "./constants.js";
+import {
+  decisionInsertSql,
+  decisionPruneSql,
+  decisionRecordParams,
+  type DecisionRecord,
+} from "./decision-records.js";
 import { selectModel } from "./engine/select.js";
-import type { RoutingDecision } from "./engine/types.js";
 import { validateUpstreamConfig } from "./inference/adapters.js";
 import { invokeCompatibleUpstream } from "./inference/transport.js";
-import type { InferenceResult, InvokeRequest, NormalizedStopReason } from "./inference/types.js";
+import type { InferenceResult, InvokeRequest } from "./inference/types.js";
 import { InvocationValidationError, parseInvokeRequest } from "./inference/validate.js";
-
-interface DecisionRecord {
-  id: string;
-  companyId: string;
-  at: string;
-  requestId: string;
-  agentId: string | null;
-  runId: string | null;
-  issueId: string | null;
-  taskClass: string | null;
-  selectionOutcome: RoutingDecision["outcome"] | null;
-  modelId: string | null;
-  fallbackUsed: boolean;
-  upstreamProtocol: RouterConfig["upstream"]["protocol"] | null;
-  outcome: InferenceResult["outcome"];
-  errorCode: string | null;
-  upstreamStatus: number | null;
-  latencyMs: number;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  stopReason: NormalizedStopReason | null;
-  upstreamRequestId: string | null;
-  capacityMode: RoutingDecision["capacity"]["mode"] | null;
-  capacityTelemetry: RoutingDecision["capacity"]["telemetry"] | null;
-  capacityLane: string | null;
-  capacityLaneLabel: string | null;
-  capacityPosture: RoutingDecision["capacity"]["usagePosture"] | null;
-  capacityReason: string | null;
-  /** Served without capacity awareness because telemetry was absent (TOG-1040). */
-  capacityDegraded: boolean;
-  shadowModelId: string | null;
-}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
-}
-
-function decisionTable(namespace: string): string {
-  return `${namespace}.decision_records`;
 }
 
 function nullableString(value: unknown): string | null {
@@ -118,48 +87,8 @@ function legacyDecisionRecord(companyId: string, value: unknown): DecisionRecord
 
 async function persistDecisionRecord(ctx: PluginContext, record: DecisionRecord): Promise<void> {
   await ctx.db.execute(
-    `INSERT INTO ${decisionTable(ctx.db.namespace)} (
-       id, company_id, recorded_at, request_id, agent_id, run_id, issue_id, task_class,
-       selection_outcome, model_id, fallback_used, upstream_protocol, outcome, error_code,
-       upstream_status, latency_ms, input_tokens, output_tokens, stop_reason,
-       upstream_request_id, capacity_mode, capacity_telemetry, capacity_lane,
-       capacity_lane_label, capacity_posture, capacity_reason, capacity_degraded,
-       shadow_model_id
-     ) VALUES (
-       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-       $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
-     )
-     ON CONFLICT (company_id, request_id) DO NOTHING`,
-    [
-      record.id,
-      record.companyId,
-      record.at,
-      record.requestId,
-      record.agentId,
-      record.runId,
-      record.issueId,
-      record.taskClass,
-      record.selectionOutcome,
-      record.modelId,
-      record.fallbackUsed,
-      record.upstreamProtocol,
-      record.outcome,
-      record.errorCode,
-      record.upstreamStatus,
-      record.latencyMs,
-      record.inputTokens,
-      record.outputTokens,
-      record.stopReason,
-      record.upstreamRequestId,
-      record.capacityMode,
-      record.capacityTelemetry,
-      record.capacityLane,
-      record.capacityLaneLabel,
-      record.capacityPosture,
-      record.capacityReason,
-      record.capacityDegraded,
-      record.shadowModelId,
-    ],
+    decisionInsertSql(ctx.db.namespace),
+    decisionRecordParams(record),
   );
 }
 
@@ -225,10 +154,6 @@ export function createPlugin() {
           scopeId: companyId,
           stateKey: STATE_KEYS.decisionLogMigration,
         };
-        if (await ctx.state.get(migrationKey)) {
-          migratedDecisionLogs.add(companyId);
-          return;
-        }
         const legacy = await ctx.state.get({
           scopeKind: "company",
           scopeId: companyId,
@@ -243,15 +168,14 @@ export function createPlugin() {
             }
           }
         }
-        await ctx.state.set(migrationKey, { migratedAt: new Date().toISOString() });
+        await ctx.state.set(migrationKey, { reconciledAt: new Date().toISOString() });
         migratedDecisionLogs.add(companyId);
       };
 
       const pruneDecisionRecords = async (): Promise<void> => {
         await ctx.db.execute(
-          `DELETE FROM ${decisionTable(ctx.db.namespace)}
-           WHERE recorded_at < now() - ($1 * interval '1 day')`,
-          [DECISION_LOG_RETENTION_DAYS],
+          decisionPruneSql(ctx.db.namespace),
+          [new Date().toISOString(), DECISION_LOG_RETENTION_DAYS],
         );
       };
 

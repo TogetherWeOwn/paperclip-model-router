@@ -28,7 +28,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify": "npm run typecheck && npm run test && npm run build && npm run verify:host && npm run rehearse",
+    "verify": "npm run typecheck && npm run test && npm run build && npm run verify:host && npm run verify:migrations && npm run rehearse",
     "verify:host": "node scripts/verify-against-host.mjs && node scripts/verify-stock-host-controls.mjs",
     "verify:migrations": "node scripts/validate-migrations-against-host.mjs",
     "rehearse": "node scripts/acceptance-rehearsal.mjs",
