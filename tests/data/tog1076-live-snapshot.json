@@ -1,0 +1,3376 @@
+{
+  "evidence": [
+    {
+      "health": "healthy",
+      "reason": "healthy; 56% utilized; resets 2026-09-11T19:00:00.383Z",
+      "source": "cliproxy-claude",
+      "modelId": "cliproxy/claude-fable-5",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T16:00:00.383Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-11T19:00:00.383Z",
+          "sourcePath": "seven_day_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        }
+      ],
+      "resetsAt": "2026-09-11T19:00:00.383Z",
+      "laneLabel": "record-1",
+      "utilization": 0.56,
+      "resetInSeconds": 539152,
+      "remainingFraction": 0.43999999999999995,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 56% utilized; resets 2026-09-11T19:00:00.383Z",
+      "source": "cliproxy-claude",
+      "modelId": "cliproxy/claude-opus-5",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T16:00:00.383Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-11T19:00:00.383Z",
+          "sourcePath": "seven_day_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        }
+      ],
+      "resetsAt": "2026-09-11T19:00:00.383Z",
+      "laneLabel": "record-1",
+      "utilization": 0.56,
+      "resetInSeconds": 539152,
+      "remainingFraction": 0.43999999999999995,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 56% utilized; resets 2026-09-11T19:00:00.383Z",
+      "source": "cliproxy-claude",
+      "modelId": "cliproxy/claude-opus-4-8",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T16:00:00.383Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-11T19:00:00.383Z",
+          "sourcePath": "seven_day_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        }
+      ],
+      "resetsAt": "2026-09-11T19:00:00.383Z",
+      "laneLabel": "record-1",
+      "utilization": 0.56,
+      "resetInSeconds": 539152,
+      "remainingFraction": 0.43999999999999995,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 56% utilized; resets 2026-09-11T19:00:00.383Z",
+      "source": "cliproxy-claude",
+      "modelId": "cliproxy/claude-opus-4-7",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T16:00:00.383Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-11T19:00:00.383Z",
+          "sourcePath": "seven_day_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        }
+      ],
+      "resetsAt": "2026-09-11T19:00:00.383Z",
+      "laneLabel": "record-1",
+      "utilization": 0.56,
+      "resetInSeconds": 539152,
+      "remainingFraction": 0.43999999999999995,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 56% utilized; resets 2026-09-11T19:00:00.383Z",
+      "source": "cliproxy-claude",
+      "modelId": "cliproxy/claude-opus-4-6",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T16:00:00.383Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-11T19:00:00.383Z",
+          "sourcePath": "seven_day_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        }
+      ],
+      "resetsAt": "2026-09-11T19:00:00.383Z",
+      "laneLabel": "record-1",
+      "utilization": 0.56,
+      "resetInSeconds": 539152,
+      "remainingFraction": 0.43999999999999995,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 56% utilized; resets 2026-09-11T19:00:00.383Z",
+      "source": "cliproxy-claude",
+      "modelId": "cliproxy/claude-opus-4-5-20251101",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T16:00:00.383Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-11T19:00:00.383Z",
+          "sourcePath": "seven_day_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        }
+      ],
+      "resetsAt": "2026-09-11T19:00:00.383Z",
+      "laneLabel": "record-1",
+      "utilization": 0.56,
+      "resetInSeconds": 539152,
+      "remainingFraction": 0.43999999999999995,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 56% utilized; resets 2026-09-11T19:00:00.383Z",
+      "source": "cliproxy-claude",
+      "modelId": "cliproxy/claude-sonnet-5",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T16:00:00.383Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-11T19:00:00.383Z",
+          "sourcePath": "seven_day_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        }
+      ],
+      "resetsAt": "2026-09-11T19:00:00.383Z",
+      "laneLabel": "record-1",
+      "utilization": 0.56,
+      "resetInSeconds": 539152,
+      "remainingFraction": 0.43999999999999995,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 56% utilized; resets 2026-09-11T19:00:00.383Z",
+      "source": "cliproxy-claude",
+      "modelId": "cliproxy/claude-sonnet-4-6",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T16:00:00.383Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-11T19:00:00.383Z",
+          "sourcePath": "seven_day_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        }
+      ],
+      "resetsAt": "2026-09-11T19:00:00.383Z",
+      "laneLabel": "record-1",
+      "utilization": 0.56,
+      "resetInSeconds": 539152,
+      "remainingFraction": 0.43999999999999995,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 56% utilized; resets 2026-09-11T19:00:00.383Z",
+      "source": "cliproxy-claude",
+      "modelId": "cliproxy/claude-sonnet-4-5-20250929",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T16:00:00.383Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-11T19:00:00.383Z",
+          "sourcePath": "seven_day_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        }
+      ],
+      "resetsAt": "2026-09-11T19:00:00.383Z",
+      "laneLabel": "record-1",
+      "utilization": 0.56,
+      "resetInSeconds": 539152,
+      "remainingFraction": 0.43999999999999995,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 56% utilized; resets 2026-09-11T19:00:00.383Z",
+      "source": "cliproxy-claude",
+      "modelId": "cliproxy/claude-haiku-4-5-20251001",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T16:00:00.383Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-11T19:00:00.383Z",
+          "sourcePath": "seven_day_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        }
+      ],
+      "resetsAt": "2026-09-11T19:00:00.383Z",
+      "laneLabel": "record-1",
+      "utilization": 0.56,
+      "resetInSeconds": 539152,
+      "remainingFraction": 0.43999999999999995,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 56% utilized; resets 2026-09-11T19:00:00.383Z",
+      "source": "cliproxy-claude",
+      "modelId": "cliproxy/claude-fable-5-1",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T16:00:00.383Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-11T19:00:00.383Z",
+          "sourcePath": "seven_day_utilization",
+          "utilization": 0.56,
+          "remainingFraction": 0.43999999999999995
+        }
+      ],
+      "resetsAt": "2026-09-11T19:00:00.383Z",
+      "laneLabel": "record-1",
+      "utilization": 0.56,
+      "resetInSeconds": 539152,
+      "remainingFraction": 0.43999999999999995,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-12T12:15:26.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.4",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T17:15:26.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-12T12:15:26.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-12T12:15:26.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0,
+      "resetInSeconds": 601277,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-12T12:15:26.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.4-mini",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T17:15:26.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-12T12:15:26.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-12T12:15:26.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0,
+      "resetInSeconds": 601277,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-12T12:15:26.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.5",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T17:15:26.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-12T12:15:26.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-12T12:15:26.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0,
+      "resetInSeconds": 601277,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-12T12:15:26.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.6-luna",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T17:15:26.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-12T12:15:26.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-12T12:15:26.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0,
+      "resetInSeconds": 601277,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-12T12:15:26.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.6-sol",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T17:15:26.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-12T12:15:26.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-12T12:15:26.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0,
+      "resetInSeconds": 601277,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-12T12:15:26.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.6-terra",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T17:15:26.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-12T12:15:26.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-12T12:15:26.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0,
+      "resetInSeconds": 601277,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-12T12:15:26.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.3-codex-spark",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T17:15:26.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-12T12:15:26.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-12T12:15:26.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0,
+      "resetInSeconds": 601277,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 31% utilized; resets 2026-09-09T18:54:59.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.4",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-09T18:54:59.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.31,
+          "remainingFraction": 0.69
+        }
+      ],
+      "resetsAt": "2026-09-09T18:54:59.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0.31,
+      "resetInSeconds": 366050,
+      "remainingFraction": 0.69,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 31% utilized; resets 2026-09-09T18:54:59.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.4-mini",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-09T18:54:59.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.31,
+          "remainingFraction": 0.69
+        }
+      ],
+      "resetsAt": "2026-09-09T18:54:59.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0.31,
+      "resetInSeconds": 366050,
+      "remainingFraction": 0.69,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 31% utilized; resets 2026-09-09T18:54:59.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.5",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-09T18:54:59.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.31,
+          "remainingFraction": 0.69
+        }
+      ],
+      "resetsAt": "2026-09-09T18:54:59.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0.31,
+      "resetInSeconds": 366050,
+      "remainingFraction": 0.69,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 31% utilized; resets 2026-09-09T18:54:59.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.6-luna",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-09T18:54:59.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.31,
+          "remainingFraction": 0.69
+        }
+      ],
+      "resetsAt": "2026-09-09T18:54:59.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0.31,
+      "resetInSeconds": 366050,
+      "remainingFraction": 0.69,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 31% utilized; resets 2026-09-09T18:54:59.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.6-sol",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-09T18:54:59.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.31,
+          "remainingFraction": 0.69
+        }
+      ],
+      "resetsAt": "2026-09-09T18:54:59.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0.31,
+      "resetInSeconds": 366050,
+      "remainingFraction": 0.69,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 31% utilized; resets 2026-09-09T18:54:59.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.6-terra",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-09T18:54:59.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.31,
+          "remainingFraction": 0.69
+        }
+      ],
+      "resetsAt": "2026-09-09T18:54:59.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0.31,
+      "resetInSeconds": 366050,
+      "remainingFraction": 0.69,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 31% utilized; resets 2026-09-09T18:54:59.000Z",
+      "source": "cliproxy-codex",
+      "modelId": "cliproxy/gpt-5.3-codex-spark",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-09T18:54:59.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.31,
+          "remainingFraction": 0.69
+        }
+      ],
+      "resetsAt": "2026-09-09T18:54:59.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0.31,
+      "resetInSeconds": 366050,
+      "remainingFraction": 0.69,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "exhausted",
+      "reason": "exhausted; 100% utilized",
+      "source": "cliproxy-kimi",
+      "modelId": "cliproxy/kimi-k2",
+      "posture": "unavailable",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": null,
+          "sourcePath": "weekly_utilization",
+          "utilization": 1,
+          "remainingFraction": 0
+        }
+      ],
+      "resetsAt": null,
+      "laneLabel": "record-1",
+      "utilization": 1,
+      "resetInSeconds": null,
+      "remainingFraction": 0,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "exhausted",
+      "reason": "exhausted; 100% utilized",
+      "source": "cliproxy-kimi",
+      "modelId": "cliproxy/kimi-k2-thinking",
+      "posture": "unavailable",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": null,
+          "sourcePath": "weekly_utilization",
+          "utilization": 1,
+          "remainingFraction": 0
+        }
+      ],
+      "resetsAt": null,
+      "laneLabel": "record-1",
+      "utilization": 1,
+      "resetInSeconds": null,
+      "remainingFraction": 0,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "exhausted",
+      "reason": "exhausted; 100% utilized",
+      "source": "cliproxy-kimi",
+      "modelId": "cliproxy/kimi-k2.5",
+      "posture": "unavailable",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": null,
+          "sourcePath": "weekly_utilization",
+          "utilization": 1,
+          "remainingFraction": 0
+        }
+      ],
+      "resetsAt": null,
+      "laneLabel": "record-1",
+      "utilization": 1,
+      "resetInSeconds": null,
+      "remainingFraction": 0,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "exhausted",
+      "reason": "exhausted; 100% utilized",
+      "source": "cliproxy-kimi",
+      "modelId": "cliproxy/kimi-k2.6",
+      "posture": "unavailable",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": null,
+          "sourcePath": "weekly_utilization",
+          "utilization": 1,
+          "remainingFraction": 0
+        }
+      ],
+      "resetsAt": null,
+      "laneLabel": "record-1",
+      "utilization": 1,
+      "resetInSeconds": null,
+      "remainingFraction": 0,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "exhausted",
+      "reason": "exhausted; 100% utilized",
+      "source": "cliproxy-kimi",
+      "modelId": "cliproxy/kimi-k2.7-code",
+      "posture": "unavailable",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": null,
+          "sourcePath": "weekly_utilization",
+          "utilization": 1,
+          "remainingFraction": 0
+        }
+      ],
+      "resetsAt": null,
+      "laneLabel": "record-1",
+      "utilization": 1,
+      "resetInSeconds": null,
+      "remainingFraction": 0,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "exhausted",
+      "reason": "exhausted; 100% utilized",
+      "source": "cliproxy-kimi",
+      "modelId": "cliproxy/kimi-k2.7-code-highspeed",
+      "posture": "unavailable",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": null,
+          "sourcePath": "weekly_utilization",
+          "utilization": 1,
+          "remainingFraction": 0
+        }
+      ],
+      "resetsAt": null,
+      "laneLabel": "record-1",
+      "utilization": 1,
+      "resetInSeconds": null,
+      "remainingFraction": 0,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "exhausted",
+      "reason": "exhausted; 100% utilized",
+      "source": "cliproxy-kimi",
+      "modelId": "cliproxy/kimi-k3",
+      "posture": "unavailable",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": null,
+          "sourcePath": "weekly_utilization",
+          "utilization": 1,
+          "remainingFraction": 0
+        }
+      ],
+      "resetsAt": null,
+      "laneLabel": "record-1",
+      "utilization": 1,
+      "resetInSeconds": null,
+      "remainingFraction": 0,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "exhausted",
+      "reason": "exhausted; 100% utilized",
+      "source": "cliproxy-kimi",
+      "modelId": "cliproxy/kimi-k3-256k",
+      "posture": "unavailable",
+      "windows": [
+        {
+          "name": "weekly",
+          "resetsAt": null,
+          "sourcePath": "weekly_utilization",
+          "utilization": 1,
+          "remainingFraction": 0
+        }
+      ],
+      "resetsAt": null,
+      "laneLabel": "record-1",
+      "utilization": 1,
+      "resetInSeconds": null,
+      "remainingFraction": 0,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/deepseek-v4-flash",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/deepseek-v4-flash-vision-exp",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/deepseek-v4-pro",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/glm-5",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/glm-5.1",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/glm-5.2",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/glm-5.3",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/glm-5.3-flash",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/gpt-5.6-luna-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/grok-4.5-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/grok-4.6-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/hy3",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/hy3-preview",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/hy4-preview",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/kimi-k2.5-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/kimi-k2.6-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/kimi-k2.7-code-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/kimi-k3-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/longcat-2.0",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/mimo-v2-omni",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/mimo-v2-pro",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/mimo-v2.5",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/mimo-v2.5-pro",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/minimax-m2.5",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/minimax-m2.7",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/minimax-m3",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/muse-spark-1.2-contributor",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/muse-spark-1.3-contributor",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/omen-alpha",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/qwen3.5-plus",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/qwen3.6-plus",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/qwen3.7-max",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/qwen3.7-plus",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/qwen3.8-flash",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 11% utilized; resets 2026-09-07T00:00:00.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/qwen3.8-max",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:32:35.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0.02,
+          "remainingFraction": 0.98
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0.11,
+          "remainingFraction": 0.89
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-12T07:01:00.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0.07,
+          "remainingFraction": 0.9299999999999999
+        }
+      ],
+      "resetsAt": "2026-09-07T00:00:00.000Z",
+      "laneLabel": "record-1",
+      "utilization": 0.11,
+      "resetInSeconds": 125151,
+      "remainingFraction": 0.89,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/deepseek-v4-flash",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/deepseek-v4-flash-vision-exp",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/deepseek-v4-pro",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/glm-5",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/glm-5.1",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/glm-5.2",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/glm-5.3",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/glm-5.3-flash",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/gpt-5.6-luna-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/grok-4.5-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/grok-4.6-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/hy3",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/hy3-preview",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/hy4-preview",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/kimi-k2.5-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/kimi-k2.6-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/kimi-k2.7-code-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/kimi-k3-go",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/longcat-2.0",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/mimo-v2-omni",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/mimo-v2-pro",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/mimo-v2.5",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/mimo-v2.5-pro",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/minimax-m2.5",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/minimax-m2.7",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/minimax-m3",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/muse-spark-1.2-contributor",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/muse-spark-1.3-contributor",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/omen-alpha",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/qwen3.5-plus",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/qwen3.6-plus",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/qwen3.7-max",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/qwen3.7-plus",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/qwen3.8-flash",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    },
+    {
+      "health": "healthy",
+      "reason": "healthy; 0% utilized; resets 2026-09-23T12:57:28.000Z",
+      "source": "cliproxy-opencode-go",
+      "modelId": "cliproxy/qwen3.8-max",
+      "posture": "available",
+      "windows": [
+        {
+          "name": "five-hour",
+          "resetsAt": "2026-09-05T13:47:34.000Z",
+          "sourcePath": "five_hour_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "weekly",
+          "resetsAt": "2026-09-07T00:00:00.000Z",
+          "sourcePath": "weekly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        },
+        {
+          "name": "monthly",
+          "resetsAt": "2026-09-23T12:57:28.000Z",
+          "sourcePath": "monthly_utilization",
+          "utilization": 0,
+          "remainingFraction": 1
+        }
+      ],
+      "resetsAt": "2026-09-23T12:57:28.000Z",
+      "laneLabel": "record-2",
+      "utilization": 0,
+      "resetInSeconds": 1554199,
+      "remainingFraction": 1,
+      "telemetryAvailable": true
+    }
+  ]
+}
