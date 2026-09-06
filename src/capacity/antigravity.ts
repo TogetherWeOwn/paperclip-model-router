@@ -78,7 +78,14 @@ function findWindowRecord(
 ): { record: Record<string, unknown>; remaining: { value: unknown; field: string } } | null {
   for (const record of collectCandidateRecords(auth)) {
     const remaining = firstValue(record, definition.utilizationFields);
-    if (remaining) return { record, remaining };
+    if (remaining && fraction(remaining.value) !== null) return { record, remaining };
+    for (const [key, value] of Object.entries(record)) {
+      const nested = recordOf(value);
+      const normalizedKey = key.trim().toLowerCase();
+      if (!nested || !definition.utilizationFields.some((field) => normalizedKey === field.trim().toLowerCase())) continue;
+      const nestedRemaining = firstValue(nested, ["remainingFraction", "remaining_fraction", "remaining"]);
+      if (nestedRemaining) return { record: nested, remaining: nestedRemaining };
+    }
   }
   return null;
 }

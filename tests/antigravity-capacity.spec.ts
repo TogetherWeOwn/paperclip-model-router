@@ -18,8 +18,8 @@ const source: CapacitySourceConfig = {
   requestTimeoutMs: 5000,
   maxResponseBytes: 262144,
   windows: [
-    { name: "five-hour", utilizationFields: ["five_hour_remaining_fraction"], resetFields: ["five_hour_reset_at"] },
-    { name: "weekly", utilizationFields: ["weekly_remaining_fraction"], resetFields: ["weekly_reset_at"] },
+    { name: "five-hour", utilizationFields: ["five-hour", "five_hour", "five_hour_remaining_fraction"], resetFields: ["resetAt", "reset_at", "five_hour_reset_at"] },
+    { name: "weekly", utilizationFields: ["weekly", "weekly_remaining_fraction"], resetFields: ["resetAt", "reset_at", "weekly_reset_at"] },
   ],
 };
 
@@ -31,11 +31,15 @@ function authFile(overrides: Record<string, unknown> = {}) {
     provider: "antigravity",
     type: "antigravity",
     status: "active",
-    quota: {
-      five_hour_remaining_fraction: 0.5,
-      five_hour_reset_at: "2026-09-06T22:00:00Z",
-      weekly_remaining_fraction: 0.7,
-      weekly_reset_at: "2026-09-10T20:00:00Z",
+    quota_windows: {
+      "five-hour": {
+        remainingFraction: 0.5,
+        resetAt: "2026-09-06T22:00:00Z",
+      },
+      weekly: {
+        remainingFraction: 0.7,
+        resetAt: "2026-09-10T20:00:00Z",
+      },
     },
     ...overrides,
   };
@@ -83,8 +87,8 @@ describe("antigravity auth-file capacity telemetry", () => {
 
   it.each([
     ["cooling", authFile({ status: "cooling_down" })],
-    ["five-hour exhausted", authFile({ quota: { five_hour_remaining_fraction: 0, five_hour_reset_at: "2026-09-07T01:00:00Z", weekly_remaining_fraction: 0.7, weekly_reset_at: "2026-09-10T20:00:00Z" } })],
-    ["weekly exhausted", authFile({ quota: { five_hour_remaining_fraction: 0.5, five_hour_reset_at: "2026-09-06T22:00:00Z", weekly_remaining_fraction: 0, weekly_reset_at: "2026-09-10T20:00:00Z" } })],
+    ["five-hour exhausted", authFile({ quota_windows: { "five-hour": { remainingFraction: 0, resetAt: "2026-09-07T01:00:00Z" }, weekly: { remainingFraction: 0.7, resetAt: "2026-09-10T20:00:00Z" } } })],
+    ["weekly exhausted", authFile({ quota_windows: { "five-hour": { remainingFraction: 0.5, resetAt: "2026-09-06T22:00:00Z" }, weekly: { remainingFraction: 0, resetAt: "2026-09-10T20:00:00Z" } } })],
   ])("makes both models ineligible when every credential is %s", (_label, credential) => {
     const snapshot = normalizeAntigravityAuthFiles({ payload: { files: [credential, credential] }, source, fetchedAt: NOW });
     const decision = selectModel({
@@ -100,7 +104,7 @@ describe("antigravity auth-file capacity telemetry", () => {
   });
 
   it("fails closed when a credential omits either required quota window", () => {
-    const incomplete = authFile({ quota: { five_hour_remaining_fraction: 0.5, five_hour_reset_at: "2026-09-06T22:00:00Z" } });
+    const incomplete = authFile({ quota_windows: { "five-hour": { remainingFraction: 0.5, resetAt: "2026-09-06T22:00:00Z" } } });
     const snapshot = normalizeAntigravityAuthFiles({ payload: { files: [incomplete] }, source, fetchedAt: NOW });
     const decision = selectModel({
       config: routingConfig(),
