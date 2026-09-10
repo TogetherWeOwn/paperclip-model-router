@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
-const scratch = mkdtempSync(join(tmpdir(), "tog-2135-mutations-"));
 const pace = join(root, "packages/lane-capacity/src/pace.ts");
 const checker = join(root, "packages/lane-capacity/scripts/check_lane_docs.py");
+
+function run(command, args) {
+  return spawnSync(command, args, { cwd: root, encoding: "utf8" });
+}
 
 const mutations = [
   {
@@ -34,8 +36,8 @@ const mutations = [
   {
     name: "missing weight becomes zero",
     file: pace,
-    from: "weight: positiveNumber(value) ?? 1,",
-    to: "weight: positiveNumber(value) ?? 0,",
+    from: "? { weight: 1, source: \"default\" }",
+    to: "? { weight: 0, source: \"default\" }",
     command: ["npx", "vitest", "run", "tests/lane-capacity-pace.spec.ts", "-t", "absent legacy weight"],
   },
   {
@@ -47,30 +49,29 @@ const mutations = [
   },
 ];
 
-try {
-  const baseline = spawnSync("npx", ["vitest", "run", "tests/lane-capacity-pace.spec.ts"], { cwd: root, encoding: "utf8" });
-  if (baseline.status !== 0) {
-    process.stderr.write(baseline.stdout + baseline.stderr);
-    throw new Error("pace baseline is red");
-  }
-  const pythonBaseline = spawnSync("python3", ["-m", "unittest", "discover", "-s", "packages/lane-capacity/tests", "-p", "test_*.py"], { cwd: root, encoding: "utf8" });
-  if (pythonBaseline.status !== 0) {
-    process.stderr.write(pythonBaseline.stdout + pythonBaseline.stderr);
-    throw new Error("checker baseline is red");
-  }
+const baseline = run("npx", ["vitest", "run", "tests/lane-capacity-pace.spec.ts"]);
+if (baseline.status !== 0) {
+  process.stderr.write(baseline.stdout + baseline.stderr);
+  throw new Error("pace baseline is red");
+}
+const pythonBaseline = run("python3", ["-m", "unittest", "discover", "-s", "packages/lane-capacity/tests", "-p", "test_*.py"]);
+if (pythonBaseline.status !== 0) {
+  process.stderr.write(pythonBaseline.stdout + pythonBaseline.stderr);
+  throw new Error("checker baseline is red");
+}
 
-  for (const mutation of mutations) {
-    const original = readFileSync(mutation.file, "utf8");
-    if (!original.includes(mutation.from)) throw new Error(`${mutation.name}: source anchor not found`);
-    const backup = join(scratch, mutation.name.replace(/\W+/g, "-") + ".backup");
-    writeFileSync(backup, original);
+const originals = new Map();
+for (const mutation of mutations) {
+  const original = originals.get(mutation.file) ?? readFileSync(mutation.file, "utf8");
+  originals.set(mutation.file, original);
+  if (!original.includes(mutation.from)) throw new Error(`${mutation.name}: source anchor not found`);
+  try {
     writeFileSync(mutation.file, original.replace(mutation.from, mutation.to));
     const [command, ...args] = mutation.command;
-    const result = spawnSync(command, args, { cwd: root, encoding: "utf8" });
-    cpSync(backup, mutation.file);
+    const result = run(command, args);
     if (result.status === 0) throw new Error(`${mutation.name}: mutant survived`);
     console.log(`PASS: ${mutation.name} was killed`);
+  } finally {
+    writeFileSync(mutation.file, original);
   }
-} finally {
-  rmSync(scratch, { recursive: true, force: true });
 }

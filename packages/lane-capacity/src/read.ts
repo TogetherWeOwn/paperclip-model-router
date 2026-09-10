@@ -50,7 +50,8 @@ export async function readCapacitySource(input: {
   if (response.responseBytes > input.source.maxResponseBytes) return failure(input.source, fetchedAt, "capacity-response-too-large");
   if (response.status === 401 || response.status === 403) return failure(input.source, fetchedAt, "capacity-authentication-failed");
   if (response.status < 200 || response.status >= 300) return failure(input.source, fetchedAt, "capacity-http-failed");
-  if (!response.contentType?.toLowerCase().split(";", 1)[0]?.trim().endsWith("/json") && !response.contentType?.toLowerCase().split(";", 1)[0]?.trim().endsWith("+json")) return failure(input.source, fetchedAt, "capacity-unexpected-media-type");
+  const mediaType = response.contentType?.toLowerCase().split(";", 1)[0]?.trim();
+  if (!mediaType?.endsWith("/json") && !mediaType?.endsWith("+json")) return failure(input.source, fetchedAt, "capacity-unexpected-media-type");
   if (response.body === null || typeof response.body !== "object") return failure(input.source, fetchedAt, "capacity-invalid-json");
   return normalizeCapacityPayload({ payload: response.body, source: input.source, fetchedAt });
 }

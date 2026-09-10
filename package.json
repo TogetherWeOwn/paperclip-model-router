@@ -28,7 +28,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build:lane-capacity": "npm --prefix packages/lane-capacity run build",
+    "build:lane-capacity": "tsc -p packages/lane-capacity/tsconfig.json",
     "check:lane-docs": "python3 packages/lane-capacity/scripts/check_lane_docs.py --dir packages/lane-capacity/tests/data/tog2135 && python3 -m unittest discover -s packages/lane-capacity/tests -p 'test_*.py' -v",
     "check:pace-mutants": "node scripts/tog-2135-mutation-gate.mjs",
     "verify": "npm run typecheck && npm run test && npm run check:lane-docs && npm run build:lane-capacity && npm run build && npm run verify:host && npm run verify:migrations && npm run rehearse",

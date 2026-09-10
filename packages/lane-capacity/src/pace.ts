@@ -1,4 +1,5 @@
 import type { CapacityHealth } from "./types.js";
+import { firstValue, fraction, normalizeHealth, recordOf, timestamp } from "./value-normalization.js";
 
 export type PaceState = "behind-urgent" | "behind" | "on" | "ahead" | "unknown" | "exhausted" | "free";
 export type PaceWindowRole = "serviceability" | "allowance";
@@ -92,41 +93,8 @@ const DEFAULT_MARGIN = 0.1;
 const DEFAULT_URGENT_RESET_SECONDS = 24 * 60 * 60;
 const DEFAULT_MAX_SNAPSHOT_AGE_SECONDS = 15 * 60;
 
-function recordOf(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function firstValue(record: Record<string, unknown>, fields: string[]): unknown {
-  for (const field of fields) {
-    if (field in record) return record[field];
-  }
-  return undefined;
-}
-
-function fraction(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
-}
-
 function positiveNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
-}
-
-function timestamp(value: unknown): string | null {
-  if (typeof value !== "string" && typeof value !== "number") return null;
-  const parsed = new Date(value);
-  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
-}
-
-function normalizeHealth(value: unknown): CapacityHealth {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (["healthy", "available", "allowed", "ready", "ok", "active"].includes(normalized)) return "healthy";
-  if (["degraded", "limited", "warning", "cooldown", "cooling_down"].includes(normalized)) return "degraded";
-  if (["exhausted", "quota_exhausted", "rate_limited"].includes(normalized)) return "exhausted";
-  if (["unavailable", "disabled", "offline", "error", "blocked"].includes(normalized)) return "unavailable";
-  return "unknown";
 }
 
 function windowSeconds(record: Record<string, unknown>, field: string, window: PaceWindowDefinition): number | null {
@@ -141,11 +109,10 @@ function windowSeconds(record: Record<string, unknown>, field: string, window: P
 }
 
 function normalizedWeight(record: Record<string, unknown>, fields: string[]): { weight: number; source: "reported" | "default" } {
-  const value = firstValue(record, fields);
-  return {
-    weight: positiveNumber(value) ?? 1,
-    source: positiveNumber(value) === null ? "default" : "reported",
-  };
+  const reported = positiveNumber(firstValue(record, fields)?.value);
+  return reported === null
+    ? { weight: 1, source: "default" }
+    : { weight: reported, source: "reported" };
 }
 
 export function normalizeLaneDocument(input: {
@@ -168,18 +135,22 @@ export function normalizeLaneDocument(input: {
     const reportedGoverningWindow = typeof record[governingWindowField] === "string" ? record[governingWindowField] as string : null;
     return [{
       accountKey: `record-${index + 1}`,
-      health: normalizeHealth(firstValue(record, input.definition.healthFields)),
+      health: normalizeHealth(firstValue(record, input.definition.healthFields)?.value) ?? "unknown",
       weight: weight.weight,
       weightSource: weight.source,
       governingWindow: reportedGoverningWindow,
-      windows: input.definition.windows.map((window) => ({
-        name: window.name,
-        role: window.role,
-        utilization: fraction(firstValue(record, window.utilizationFields)),
-        resetsAt: timestamp(firstValue(record, window.resetFields)),
-        windowSeconds: windowSeconds(record, windowSecondsField, window),
-        sourcePath: window.utilizationFields.find((field) => field in record) ?? null,
-      })),
+      windows: input.definition.windows.map((window) => {
+        const utilization = firstValue(record, window.utilizationFields);
+        const reset = firstValue(record, window.resetFields);
+        return {
+          name: window.name,
+          role: window.role,
+          utilization: fraction(utilization?.value),
+          resetsAt: timestamp(reset?.value),
+          windowSeconds: windowSeconds(record, windowSecondsField, window),
+          sourcePath: utilization?.field ?? null,
+        };
+      }),
     }];
   });
   return {
@@ -217,27 +188,30 @@ function weightedMilli(values: Array<{ value: number; weight: number }>): number
 }
 
 function governingWindow(account: PaceAccountObservation): PaceWindowObservation | null {
-  const allowance = account.windows.filter((window) =>
-    window.role === "allowance" &&
-    window.utilization !== null &&
-    window.resetsAt !== null &&
-    window.windowSeconds !== null
-  );
-  const explicitlyNamed = account.governingWindow
-    ? allowance.find((window) => window.name === account.governingWindow)
-    : null;
-  if (explicitlyNamed) return explicitlyNamed;
-  allowance.sort((left, right) =>
-    right.windowSeconds! - left.windowSeconds! || left.name.localeCompare(right.name)
-  );
-  return allowance[0] ?? null;
+  let fallback: PaceWindowObservation | null = null;
+  for (const window of account.windows) {
+    if (
+      window.role !== "allowance" ||
+      window.utilization === null ||
+      window.resetsAt === null ||
+      window.windowSeconds === null
+    ) continue;
+    if (window.name === account.governingWindow) return window;
+    if (
+      fallback === null ||
+      window.windowSeconds > fallback.windowSeconds! ||
+      (window.windowSeconds === fallback.windowSeconds && window.name < fallback.name)
+    ) fallback = window;
+  }
+  return fallback;
 }
 
 function serviceable(account: PaceAccountObservation, governing: PaceWindowObservation | null): boolean {
   if (account.health === "exhausted" || account.health === "unavailable") return false;
   if (governing?.utilization !== null && governing && governing.utilization >= 1) return false;
-  const serviceabilityWindows = account.windows.filter((window) => window.role === "serviceability");
-  return serviceabilityWindows.every((window) => window.utilization === null || window.utilization < 1);
+  return account.windows.every((window) =>
+    window.role !== "serviceability" || window.utilization === null || window.utilization < 1
+  );
 }
 
 function stateFor(deviationMilli: number, marginMilli: number): "ahead" | "behind" | "on" {

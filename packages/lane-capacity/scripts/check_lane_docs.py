@@ -24,7 +24,6 @@ class LaneSpec:
     document: str
     free: bool
     governing_windows: dict[str, tuple[str, str]]
-    resets_required: bool = True
 
 
 LANES = (
@@ -114,7 +113,7 @@ def validate_document(spec: LaneSpec, document: Any) -> list[str]:
         if not valid_number(utilization) or utilization < 0 or utilization > 1:
             errors.append(f"{prefix}: {utilization_field} must be a finite fraction from 0 through 1")
         reset = value.get(reset_field)
-        if spec.resets_required and not valid_timestamp(reset):
+        if not valid_timestamp(reset):
             errors.append(f"{prefix}: {reset_field} must be a non-null ISO timestamp")
     return errors
 

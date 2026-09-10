@@ -5,41 +5,7 @@ import type {
   CapacitySourceDefinition,
   CapacityWindow,
 } from "./types.js";
-
-function recordOf(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function firstValue(record: Record<string, unknown>, fields: string[]): { value: unknown; field: string } | null {
-  for (const field of fields) {
-    if (field in record) return { value: record[field], field };
-  }
-  return null;
-}
-
-function fraction(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) return null;
-  return value;
-}
-
-function timestamp(value: unknown): string | null {
-  if (typeof value !== "string" && typeof value !== "number") return null;
-  const date = new Date(value);
-  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
-}
-
-function normalizeHealth(value: unknown): CapacityHealth | null {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim().toLowerCase();
-  if (["healthy", "available", "allowed", "ready", "ok", "active"].includes(normalized)) return "healthy";
-  if (["degraded", "limited", "warning", "cooldown", "cooling_down"].includes(normalized)) return "degraded";
-  if (["exhausted", "quota_exhausted", "rate_limited"].includes(normalized)) return "exhausted";
-  if (["unavailable", "disabled", "offline", "error", "blocked"].includes(normalized)) return "unavailable";
-  if (["unknown", "stale"].includes(normalized)) return "unknown";
-  return null;
-}
+import { firstValue, fraction, normalizeHealth, recordOf, timestamp } from "./value-normalization.js";
 
 function collectEvidenceRecords(payload: unknown, source: CapacitySourceDefinition): Record<string, unknown>[] {
   const found: Record<string, unknown>[] = [];
@@ -104,15 +70,19 @@ function restrictiveWindow(
   windows: CapacityWindow[],
   fetchedAtMs: number,
 ): { window: CapacityWindow | null; health: CapacityHealth } {
-  const evaluated = windows.map((window) => ({
-    window,
-    health: windowHealth(window.utilization!, resetInSeconds(window.resetsAt, fetchedAtMs)),
-  }));
+  const evaluated = windows.map((window) => {
+    const secondsUntilReset = resetInSeconds(window.resetsAt, fetchedAtMs);
+    return {
+      window,
+      secondsUntilReset,
+      health: windowHealth(window.utilization!, secondsUntilReset),
+    };
+  });
   evaluated.sort((left, right) =>
     HEALTH_RANK[right.health] - HEALTH_RANK[left.health] ||
     right.window.utilization! - left.window.utilization! ||
-    (resetInSeconds(right.window.resetsAt, fetchedAtMs) ?? Number.POSITIVE_INFINITY) -
-      (resetInSeconds(left.window.resetsAt, fetchedAtMs) ?? Number.POSITIVE_INFINITY) ||
+    (right.secondsUntilReset ?? Number.POSITIVE_INFINITY) -
+      (left.secondsUntilReset ?? Number.POSITIVE_INFINITY) ||
     left.window.name.localeCompare(right.window.name)
   );
   return evaluated[0] ?? { window: null, health: "unknown" };
