@@ -13,3 +13,6 @@ secure-drop/
 
 # Local agent-harness scratch. Paperclip is the tracker; see docs/PROCESS.md.
 .claude/
+
+__pycache__/
+*.py[cod]
