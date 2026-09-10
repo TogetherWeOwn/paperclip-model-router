@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-09-10T14:53:41.507882Z",
+  "staleAfterSeconds": 300,
+  "records": [
+    {
+      "health": "healthy",
+      "weight": 1,
+      "governing_window": "weekly",
+      "window_seconds": { "five_hour": 18000, "weekly": 604800 },
+      "five_hour_utilization": 0.41,
+      "five_hour_resets_at": "2026-09-10T18:00:00Z",
+      "weekly_utilization": 0.718,
+      "weekly_resets_at": "2026-09-15T04:09:00Z"
+    }
+  ]
+}

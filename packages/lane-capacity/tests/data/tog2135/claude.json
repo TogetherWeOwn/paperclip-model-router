@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-09-10T14:53:41.507882Z",
+  "staleAfterSeconds": 300,
+  "records": [
+    {
+      "health": "healthy",
+      "weight": 2,
+      "governing_window": "seven_day",
+      "window_seconds": {
+        "five_hour": 18000,
+        "seven_day": 604800
+      },
+      "five_hour_utilization": 0.04,
+      "five_hour_resets_at": "2026-09-10T19:49:59.877814Z",
+      "seven_day_utilization": 0.51,
+      "seven_day_resets_at": "2026-09-11T18:59:59.877835Z"
+    },
+    {
+      "health": "degraded",
+      "weight": 1,
+      "governing_window": "seven_day",
+      "window_seconds": {
+        "five_hour": 18000,
+        "seven_day": 604800
+      },
+      "five_hour_utilization": 0,
+      "five_hour_resets_at": null,
+      "seven_day_utilization": 1,
+      "seven_day_resets_at": "2026-09-12T09:59:59.508280Z",
+      "observationQuality": "cached"
+    }
+  ]
+}
