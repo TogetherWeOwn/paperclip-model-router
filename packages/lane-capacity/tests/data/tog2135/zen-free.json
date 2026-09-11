@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-09-10T14:53:41.507882Z",
+  "staleAfterSeconds": 300,
+  "records": [
+    {
+      "health": "healthy",
+      "weight": 1,
+      "governing_window": null
+    }
+  ]
+}

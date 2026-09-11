@@ -1,0 +1,149 @@
+--- a/cliproxy_usage_snapshot.py
++++ b/cliproxy_usage_snapshot.py
+@@ -9,6 +9,15 @@
+ MGMT = "http://127.0.0.1:8317/v0/management"
+ OUT = "/srv/cliproxy-usage"
+ STALE = 300
++# TOG-2135 (per TOG-1916 §5.3 item 4): provider-metered window durations, not plugin-side constants.
++# five_hour=5h, weekly=7d, monthly=30d. governing_window per lane is the LONGEST window the provider
++# meters with a real reset (5h is never governing — owner rule 2026-08-25).
++WINDOW_SECONDS = {"five_hour": 18000, "weekly": 604800, "seven_day": 604800, "monthly": 2592000}
++# TOG-2135: plan-size weight per account. Claude already reports a real weight via cliproxy
++# (a.get("weight"), published 2026-09-05 as Max 20x=2 / 5x=1). No per-plan multiplier table exists yet
++# for codex/kimi/opencode-go/zai, so they default to 1 (equal weighting) until an operator-supplied
++# table lands; check_lane_docs.py requires a positive numeric weight on every record either way.
++DEFAULT_WEIGHT = 1
+ 
+ def load_key():
+     for line in open(os.path.expanduser("~/secure-drop/cliproxy.env")):
+@@ -93,7 +102,10 @@
+ CLAUDE_H = {"Authorization":"Bearer $TOKEN$","Content-Type":"application/json","anthropic-beta":"oauth-2025-04-20"}
+ recs=[]; errs=[]; excluded=[]
+ for n,a in enumerate(sorted(by_provider.get("claude",[]), key=lambda x: x.get("auth_index","")), 1):
+-    rec={"lane": f"claude-lane-{n}", "health": base_health(a), "weight": a.get("weight")}
++    # weight is a real per-account field cliproxy already reports (Max 20x=2 / 5x=1, published 2026-09-05);
++    # fall back to DEFAULT_WEIGHT only when it is absent so an unweighted account never silently drops to 0.
++    rec={"lane": f"claude-lane-{n}", "health": base_health(a), "weight": a.get("weight") or DEFAULT_WEIGHT,
++         "governing_window": "seven_day", "window_seconds": {"five_hour": WINDOW_SECONDS["five_hour"], "seven_day": WINDOW_SECONDS["seven_day"]}}
+     # 2026-09-05: an account the operator DISABLED in cliproxy is not part of the serving pool, so it is
+     # not a capacity lane. The router aggregates per-model evidence by the WORST lane, so emitting it as
+     # an "unavailable" record made every Claude model unusable under enforce while the live account was
+@@ -127,7 +139,8 @@
+     recs.append(rec)
+ if not recs and excluded:
+     for x in excluded:
+-        crec, _ = cached("claude", x["lane"]); rec={"lane": x["lane"], "health": "unavailable"}
++        crec, _ = cached("claude", x["lane"]); rec={"lane": x["lane"], "health": "unavailable", "weight": DEFAULT_WEIGHT,
++             "governing_window": "seven_day", "window_seconds": {"five_hour": WINDOW_SECONDS["five_hour"], "seven_day": WINDOW_SECONDS["seven_day"]}}
+         if crec: rec.update({k:v for k,v in crec.items() if k.endswith(("_utilization","_resets_at"))}); rec["observationQuality"]="cached"
+         recs.append(rec)
+ files["claude.json"]=recs; status["groups"]["claude"]={"lanes":len(recs),"errors":errs,"excludedLanes":excluded}
+@@ -136,7 +149,9 @@
+ CODEX_H = {"Authorization":"Bearer $TOKEN$","Content-Type":"application/json","User-Agent":"codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)"}
+ recs=[]; spark=[]; errs=[]
+ for n,a in enumerate(sorted(by_provider.get("codex",[]), key=lambda x: x.get("auth_index","")), 1):
+-    rec={"lane": f"codex-lane-{n}", "health": base_health(a)}
++    # weekly is the longest window Codex's own usage endpoint meters with a real reset; five_hour never governs (owner rule 2026-08-25).
++    rec={"lane": f"codex-lane-{n}", "health": base_health(a), "weight": DEFAULT_WEIGHT,
++         "governing_window": "weekly", "window_seconds": {"weekly": WINDOW_SECONDS["weekly"]}}
+     crec, cage = cached("codex", rec["lane"])
+     if crec and cage is not None and cage < POLL_MIN_INTERVAL:
+         rec.update({k:v for k,v in crec.items() if k.endswith(("_utilization","_resets_at")) or k=="plan"}); rec["observationQuality"]="cached"
+@@ -152,6 +167,8 @@
+                     secs = w.get("limit_window_seconds") or 0
+                     name = "five_hour" if secs <= 18000 else ("weekly" if secs <= 604800 else "monthly")
+                     rec[f"{name}_utilization"] = frac(w["used_percent"]); rec[f"{name}_resets_at"] = iso(w.get("reset_at"))
++                    # the real API reports the window's own duration; trust it over the WINDOW_SECONDS default when present
++                    if secs: rec.setdefault("window_seconds", {})[name] = secs
+             for extra in b.get("additional_rate_limits") or []:
+                 if "spark" in str(extra.get("limit_name","")).lower():
+                     srec={"lane": f"codex-spark-lane-{n}", "health": "exhausted" if (extra.get("rate_limit") or {}).get("limit_reached") else base_health(a)}
+@@ -177,19 +194,28 @@
+ files["codex.json"]=recs; files["codex-spark.json"]=spark; status["groups"]["codex"]={"lanes":len(recs),"spark":len(spark),"errors":errs}
+ 
+ # ---- Kimi ----
++# TOG-2135/TOG-1916 §5.3: weight and window_seconds are known policy constants, safe to publish unconditionally.
++# weekly_utilization/weekly_resets_at are NOT: the /usages 200 body has never been field-mapped (only raw_shape is
++# logged today), and 429/resource_exhausted carries no reset timestamp we've observed. This patch does not invent
++# either value — it sets weekly_utilization=1.0 only where "exhausted" is itself the real signal (429/resource_exhausted
++# means fully consumed by definition) and leaves weekly_resets_at null with observationQuality="absent" rather than
++# fabricate a timestamp. check_lane_docs.py will still reject a live kimi.json until an operator captures a real
++# 200 sample and completes the field mapping; see the operator doc for this residual gap.
+ recs=[]; errs=[]
+ for n,a in enumerate(by_provider.get("kimi",[]), 1):
+-    rec={"lane": f"kimi-lane-{n}", "health": base_health(a)}
++    rec={"lane": f"kimi-lane-{n}", "health": base_health(a), "weight": DEFAULT_WEIGHT,
++         "governing_window": "weekly", "window_seconds": {"weekly": WINDOW_SECONDS["weekly"]}}
+     try:
+         st, b = api_call(a["auth_index"], "https://api.kimi.com/coding/v1/usages", {"Authorization":"Bearer $TOKEN$"})
+         if st == 429 or (isinstance(b,dict) and b.get("code")=="resource_exhausted"):
+-            rec["health"]="exhausted"; rec["weekly_utilization"]=1.0
++            rec["health"]="exhausted"; rec["weekly_utilization"]=1.0; rec["observationQuality"]="absent"
+         elif st != 200:
+-            rec["health"]="unknown"; errs.append(f"lane{n}:http{st}")
++            rec["health"]="unknown"; rec["observationQuality"]="absent"; errs.append(f"lane{n}:http{st}")
+         else:
+             rec["raw_shape"]=sorted(b.keys())[:8] if isinstance(b,dict) else type(b).__name__
++            rec["observationQuality"]="absent"
+     except Exception as e:
+-        rec["health"]="unknown"; errs.append(f"lane{n}:{type(e).__name__}")
++        rec["health"]="unknown"; rec["observationQuality"]="absent"; errs.append(f"lane{n}:{type(e).__name__}")
+     recs.append(rec)
+ files["kimi.json"]=recs; status["groups"]["kimi"]={"lanes":len(recs),"errors":errs}
+ 
+@@ -203,7 +229,10 @@
+ try:
+     p = mgmt("/plugins/opencode-go-pool/status")
+     for n,acc in enumerate(p.get("accounts",[]), 1):
+-        rec={"lane": f"opencode-go-lane-{n}", "health": "healthy"}
++        # monthly is the longest window the pool plugin meters with a real reset (per TOG-1916 §5.3 item 4); no
++        # per-account plan-size signal exists on this plugin, so weight defaults like codex/kimi/zai.
++        rec={"lane": f"opencode-go-lane-{n}", "health": "healthy", "weight": DEFAULT_WEIGHT,
++             "governing_window": "monthly", "window_seconds": {"five_hour": WINDOW_SECONDS["five_hour"], "weekly": WINDOW_SECONDS["weekly"], "monthly": WINDOW_SECONDS["monthly"]}}
+         for wname, w in (acc.get("windows") or {}).items():
+             name = {"5h":"five_hour","weekly":"weekly","monthly":"monthly"}.get(wname, wname)
+             if isinstance(w, dict) and w.get("usage_percent") is not None:
+@@ -236,7 +265,9 @@
+     req = urllib.request.Request("https://api.z.ai/api/monitor/usage/quota/limit", headers={"Authorization": "Bearer "+key, "Accept": "application/json"})
+     with urllib.request.urlopen(req, timeout=20) as r: d = json.loads(r.read().decode())
+     data = d.get("data") or {}
+-    rec = {"lane": "zai-lane-1", "health": "healthy", "plan": data.get("level"), "source": "api.z.ai/monitor/usage/quota/limit"}
++    # weekly is the longest window Z.ai's quota API meters with a real reset; five_hour never governs (owner rule 2026-08-25).
++    rec = {"lane": "zai-lane-1", "health": "healthy", "plan": data.get("level"), "source": "api.z.ai/monitor/usage/quota/limit",
++           "weight": DEFAULT_WEIGHT, "governing_window": "weekly", "window_seconds": {"five_hour": WINDOW_SECONDS["five_hour"], "weekly": WINDOW_SECONDS["weekly"]}}
+     for lim in data.get("limits") or []:
+         if lim.get("type") != "CREDIT_LIMIT": continue
+         win = "five_hour" if (lim.get("unit") == 3 and lim.get("number") == 5) else ("weekly" if lim.get("unit") == 6 else f"unit{lim.get('unit')}x{lim.get('number')}")
+@@ -280,7 +311,7 @@
+         if t>=wstart: cw+=c
+     u5=round(min(1.0,c5/float(plan["five_hour_credits"])),4); uw=round(min(1.0,cw/float(plan["weekly_credits"])),4)
+     health="exhausted" if (u5>=0.995 or uw>=0.995) else ("degraded" if (u5>=0.9 or uw>=0.9) else "healthy")
+-    rec={"lane":"zai-lane-1","health":health,"five_hour_utilization":u5,"five_hour_resets_at":(five+dt.timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),"weekly_utilization":uw,"weekly_resets_at":wend.strftime("%Y-%m-%dT%H:%M:%SZ"),"credits_5h":round(c5,1),"credits_week":round(cw,1),"calls_week":calls,"plan":plan.get("tier"),"source":"estimate:omniroute-call-logs"}
++    rec={"lane":"zai-lane-1","health":health,"weight":DEFAULT_WEIGHT,"governing_window":"weekly","window_seconds":{"five_hour":WINDOW_SECONDS["five_hour"],"weekly":WINDOW_SECONDS["weekly"]},"five_hour_utilization":u5,"five_hour_resets_at":(five+dt.timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),"weekly_utilization":uw,"weekly_resets_at":wend.strftime("%Y-%m-%dT%H:%M:%SZ"),"credits_5h":round(c5,1),"credits_week":round(cw,1),"calls_week":calls,"plan":plan.get("tier"),"source":"estimate:omniroute-call-logs"}
+     return [rec]
+ try:
+     files["zai.json"]=zai_quota_lane(); status["groups"]["zai"]={"lanes":1,"errors":[],"source":"quota-api"}
+@@ -288,7 +319,11 @@
+     try:
+         files["zai.json"]=zai_lane(); status["groups"]["zai"]={"lanes":1,"errors":[type(e0).__name__],"source":"estimate"}
+     except Exception as e:
+-        files["zai.json"]=[{"lane":"zai-lane-1","health":"healthy","note":"estimator error: "+type(e).__name__+": "+str(e)[:160]}]; status["groups"]["zai"]={"lanes":1,"errors":[type(e0).__name__, type(e).__name__]}
++        # last-resort fallback: still no real quota signal, so weight/governing_window/window_seconds are the
++        # only fields safe to publish. health stays a documented lie ("healthy") only until the estimator
++        # is unbroken — check_lane_docs.py will fail this record on weekly_utilization/weekly_resets_at, which is
++        # correct: an ungoverned zai.json should never validate.
++        files["zai.json"]=[{"lane":"zai-lane-1","health":"healthy","weight":DEFAULT_WEIGHT,"governing_window":"weekly","window_seconds":{"weekly":WINDOW_SECONDS["weekly"]},"note":"estimator error: "+type(e).__name__+": "+str(e)[:160]}]; status["groups"]["zai"]={"lanes":1,"errors":[type(e0).__name__, type(e).__name__]}
+ 
+ # ---- request-rate stats per provider (no identities) ----
+ rates={}
+@@ -316,8 +351,8 @@
+         if _p.get("name") == "opencode-zen-free": MODEL_GROUPS["zen-free.json"] = _aliases
+ except Exception as _e:
+     status.setdefault("groups", {})["dynamic-groups-error"] = type(_e).__name__
+-# the Zen free lane has no quota: always one healthy lane at 0 utilization
+-files["zen-free.json"] = [{"lane": "zen-free-lane-1", "health": "healthy", "weekly_utilization": 0.0, "five_hour_utilization": 0.0, "note": "$0 models, no allowance consumed"}]
++# the Zen free lane has no quota: always one healthy lane at 0 utilization, governing_window explicitly null (free lane)
++files["zen-free.json"] = [{"lane": "zen-free-lane-1", "health": "healthy", "weight": DEFAULT_WEIGHT, "governing_window": None, "weekly_utilization": 0.0, "five_hour_utilization": 0.0, "note": "$0 models, no allowance consumed"}]
+ status["groups"]["zen-free"] = {"lanes": 1, "errors": []}
+ WIN = {"five_hour":"five-hour","seven_day":"weekly","weekly":"weekly","monthly":"monthly","seven_day_opus":"weekly","seven_day_sonnet":"weekly"}
+ def reset_in(ra):

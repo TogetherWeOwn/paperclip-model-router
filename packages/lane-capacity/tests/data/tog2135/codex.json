@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-09-10T14:53:41.507882Z",
+  "staleAfterSeconds": 300,
+  "records": [
+    {
+      "health": "healthy",
+      "weight": 1,
+      "governing_window": "weekly",
+      "window_seconds": {
+        "weekly": 604800
+      },
+      "weekly_utilization": 0.43,
+      "weekly_resets_at": "2026-09-16T16:11:12Z"
+    },
+    {
+      "health": "exhausted",
+      "weight": 1,
+      "governing_window": "weekly",
+      "window_seconds": {
+        "weekly": 604800
+      },
+      "weekly_utilization": 1,
+      "weekly_resets_at": "2026-09-16T01:37:10Z"
+    }
+  ]
+}
