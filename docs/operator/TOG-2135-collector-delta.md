@@ -5,7 +5,7 @@
 - `docs/operator/TOG-2135-collector-delta.py.patch` — sha256 `c6ff73ea48d560e6749b3475138fb4e835390cf6287e3b2d1d071f1f81380166`
 - `docs/operator/TOG-2135-collector-delta.caddy.patch` — sha256 `a9bfc119fd212b698bf45d2593dfe6f5a8bcb9476b7acbec03f3816451e05478`
 
-Branch head at packaging time: `1318b87fee7f76edf9d9e85e4b6379a163d4dda1` (`tog-2135-lane-capacity`).
+This doc and both patches are committed at `0074d7bd558043678b81fa45d485c8d4e12cd7c4` on `tog-2135-lane-capacity` (parent `1318b87fee7f76edf9d9e85e4b6379a163d4dda1`, the accepted TOG-2168 review SHA).
 
 This repository does not own the collector or Caddy config — they run on the operator's host, outside this checkout. This is a patch-artifact handoff, not a deploy: **no production collector or router change happens until the operator applies these and restarts the two units below.** Verification ran against an immutable copy of the exported deployed files (`/paperclip/operator-handoff/TOG-2163-export/`, confirmed byte-identical to the live host via `SHA256SUMS`), not against the live host process.
 
