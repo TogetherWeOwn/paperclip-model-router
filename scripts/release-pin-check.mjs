@@ -28,11 +28,21 @@
  *      working tree
  *   7  `git diff <tag>..HEAD -- src` is empty, so HEAD ships the same plugin
  *      code the tag does
+ *   8  a `verify:host` receipt exists for the tagged commit, recording a STRICT
+ *      run with zero skips — TOG-1070
  *
  * Gate 6 is the one that matters most and the one a human never does: it is
  * what makes "I tested main" and "the operator installs the tarball" the same
  * sentence. Gate 7 is its complement — it is allowed to fail, and when it does
  * the answer is to cut a new tag, not to reword the runbook.
+ *
+ * Gate 8 exists because `docs/PROCESS.md` requires a host-side run before
+ * tagging that NOTHING could previously verify had happened. It printed SKIP
+ * and exited 0 for both v0.4.1 and v0.4.2, so the checklist was followed
+ * exactly and proved nothing (TOG-1070). CI cannot re-run those probes — a
+ * runner has no Paperclip checkout — so the strict run leaves a receipt naming
+ * the commit it covered, and this gate reads it. `--offline` does NOT relax it:
+ * the receipt is a local file, so being offline is no excuse for not having one.
  *
  * Gates 4 and 5 need the network and a GitHub token. The token is read from
  * this repo's own git credential helper, so there is nothing to configure. If
@@ -59,6 +69,8 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import { readReceipt } from "./lib/host-probes.mjs";
 
 const REPO = "TogetherWeOwn/paperclip-model-router";
 const DIST_FILES = ["dist/worker.js", "dist/manifest.js"];
@@ -216,6 +228,24 @@ if (tagCommit) {
   skip("7  HEAD ships the same plugin code as the tag", "gate 1 failed");
 }
 
+// ---------------------------------------------------------------- gate 8
+// TOG-1070. The receipt must name the TAGGED commit, not HEAD: the question is
+// whether the thing being released was host-verified, and a receipt from a
+// later commit does not answer it.
+if (tagCommit) {
+  const receipt = readReceipt(tagCommit);
+  facts.hostVerified = receipt.ok;
+  report(
+    receipt.ok,
+    `8  verify:host ran strictly against ${tag} with no skipped checks`,
+    receipt.ok
+      ? receipt.reason
+      : `${receipt.reason}\n      docs/PROCESS.md requires this run before tagging. It is the gate that reported SKIP and exited 0 for v0.4.1 and v0.4.2.`,
+  );
+} else {
+  skip("8  verify:host ran strictly against the tag", "gate 1 failed");
+}
+
 // ---------------------------------------------------------------- build
 if (opts.build) {
   try {
@@ -325,6 +355,8 @@ if (opts.forCard) {
     console.log(`  Install \`${facts.tag}\`. Asset \`${facts.assetName}\`, ${facts.assetSize} bytes,`);
     console.log(`  sha256 \`${facts.sha256}\`.`);
     console.log(`  Its \`dist/\` is byte-identical to a fresh build of \`main\`, and`);
+    console.log(`  \`verify:host\` ran against a real host checkout at that commit with no`);
+    console.log(`  skipped checks, and`);
     console.log(
       facts.commitsAhead === "0"
         ? `  \`main\` is at the tag.`

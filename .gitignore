@@ -3,6 +3,11 @@ dist/
 coverage/
 *.tsbuildinfo
 
+# Evidence that `verify:host` really ran, written by the strict run and read by
+# the release pin check (TOG-1070). Describes one machine's one commit, so it is
+# never committed — a checked-in receipt would be a stale green by construction.
+.verify-host-receipt.json
+
 
 # Never commit anything that could hold a credential.
 .env

@@ -111,6 +111,24 @@ makes the `[MIRROR]` lines in CI unverified for as long as you skip it, which is
 how a copied table quietly stops describing the host it was copied from
 (TOG-232).
 
+**This run is strict, and it leaves a receipt.** Because `PAPERCLIP_HOST` is
+set, every check is expected to execute: one that cannot resolve what it needs
+is a `FAIL`, not a `SKIP`. Until TOG-1070 the opposite was true — the stock-host
+probes printed `SKIP` and exited 0, so `npm run verify` reported success with
+this gate never having run, and **v0.4.1 and v0.4.2 were both tagged that way**.
+A gate that can pass by absence is indistinguishable from one that passed.
+
+A clean run writes `.verify-host-receipt.json` (git-ignored) naming the commit
+and the number of checks that actually executed. `npm run check:pin` gate 8
+reads it and refuses a pin whose commit was never host-verified, so the evidence
+travels from the machine that can produce it to the check that needs it. CI
+cannot re-run these probes — a runner has no checkout — which is exactly why the
+receipt exists rather than a re-check.
+
+If the host checkout is knowingly half-built and you need to proceed anyway,
+`ALLOW_HOST_PROBE_SKIP=1` restores the old permissive behaviour. It is recorded
+in the receipt, and gate 8 refuses to quote a run that used it.
+
 ## Handing a version to an operator
 
 Everything above proves the *working tree* is good. It says nothing about the
