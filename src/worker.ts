@@ -4,7 +4,7 @@ import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import type { PluginContext, ToolResult } from "@paperclipai/plugin-sdk";
 
 import { readCapacitySource, type CapacityHttpClient } from "./capacity/read.js";
-import type { CapacityEvidence, CapacitySnapshot } from "./capacity/types.js";
+import type { CapacityEvidence, CapacitySnapshot, LanePaceVerdict } from "./capacity/types.js";
 import { resolveConfig } from "./config/resolve.js";
 import { validateSecretRefShape } from "./config/secret-ref.js";
 import {
@@ -212,23 +212,45 @@ export function createPlugin() {
       const storedCapacity = async (
         companyId: string,
         config: RouterConfig,
-      ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; error: string | null }> => {
+      ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; error: string | null; paceVerdicts: Record<string, LanePaceVerdict>; modelLaneByPace: Record<string, string> }> => {
         const stored = asRecord(await ctx.state.get(capacityStateKey(companyId)));
         const refreshedAt = typeof stored.refreshedAt === "string" ? Date.parse(stored.refreshedAt) : Number.NaN;
         const lastRefreshError = typeof stored.lastRefreshError === "string" ? stored.lastRefreshError : null;
         const stale = !Number.isFinite(refreshedAt) || Date.now() - refreshedAt > config.capacityRouting.maxSnapshotAgeMs;
+        // TOG-2139: pace verdicts persist with the snapshot they were computed
+        // from. Rebuilding the model->lane map from config keeps a config
+        // edit (model added to a lane) effective without a fresh fetch.
+        const modelLaneByPace: Record<string, string> = {};
+        for (const source of config.capacityRouting.sources) {
+          if (!source.pace) continue;
+          for (const modelId of source.modelIds) modelLaneByPace[modelId] = source.pace.laneId;
+        }
+        const paceVerdicts: Record<string, LanePaceVerdict> = {};
+        const storedPace = asRecord(stored.paceVerdicts);
+        if (storedPace) {
+          for (const source of config.capacityRouting.sources) {
+            const verdict = asRecord(storedPace[source.id]);
+            if (source.pace && verdict && typeof verdict.laneId === "string" && typeof verdict.state === "string") {
+              // Validate the stored shape minimally; the selector tolerates any
+              // missing fields as fail-neutral unknowns.
+              paceVerdicts[source.pace.laneId] = verdict as unknown as LanePaceVerdict;
+            }
+          }
+        }
         return {
           snapshots: Array.isArray(stored.snapshots) ? stored.snapshots as CapacitySnapshot[] : [],
           evidence: Array.isArray(stored.evidence) ? stored.evidence as CapacityEvidence[] : [],
           error: lastRefreshError ?? (stale ? "capacity-snapshot-stale" : null),
+          paceVerdicts,
+          modelLaneByPace,
         };
       };
 
       const refreshCapacity = async (
         companyId: string,
         config: RouterConfig,
-      ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; error: string | null }> => {
-        if (!config.capacityRouting.enabled) return { snapshots: [], evidence: [], error: null };
+      ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; error: string | null; paceVerdicts: Record<string, LanePaceVerdict> }> => {
+        if (!config.capacityRouting.enabled) return { snapshots: [], evidence: [], error: null, paceVerdicts: {} };
         const snapshots: CapacitySnapshot[] = [];
         for (let index = 0; index < config.capacityRouting.sources.length; index += 1) {
           const source = config.capacityRouting.sources[index]!;
@@ -244,7 +266,17 @@ export function createPlugin() {
               continue;
             }
           }
-          snapshots.push(await readCapacitySource({ source, http: capacityHttp(ctx), apiKey, now: () => new Date().toISOString() }));
+          snapshots.push(await readCapacitySource({
+            source,
+            http: capacityHttp(ctx),
+            apiKey,
+            now: () => new Date().toISOString(),
+            // TOG-2139: pace is computed from the same response body. The lane
+            // definition is passed only when paceOrdering is on, so a rollout
+            // changes nothing about the capacity fetch itself.
+            lane: config.capacityRouting.paceOrdering ? source.pace : undefined,
+            pacePolicy: config.capacityRouting.pacePolicy,
+          }));
         }
         const evidence = snapshots.flatMap((snapshot) => snapshot.evidence);
         const snapshotErrors = snapshots.map((snapshot) => snapshot.error).filter((value): value is string => Boolean(value));
@@ -259,11 +291,17 @@ export function createPlugin() {
           snapshots,
           evidence,
           error: snapshotErrors.join("; ") || (malformedEvidence || incompleteModelIds.length > 0 ? "capacity-refresh-incomplete" : null),
+          // TOG-2139: keyed by SOURCE id for storage; `storedCapacity`
+          // translates to lane ids through the config. A failed pace
+          // evaluation is simply absent — never an error on the refresh.
+          paceVerdicts: Object.fromEntries(snapshots
+            .filter((snapshot) => snapshot.pace && typeof snapshot.pace.state === "string")
+            .map((snapshot) => [snapshot.source, snapshot.pace!])),
         };
         const key = capacityStateKey(companyId);
         const previous = asRecord(await ctx.state.get(key));
         if (!result.error && result.evidence.length > 0) {
-          await ctx.state.set(key, { ...result, refreshedAt: new Date().toISOString(), lastRefreshError: null });
+          await ctx.state.set(key, { ...result, refreshedAt: new Date().toISOString(), lastRefreshError: null, paceVerdicts: { ...asRecord(previous.paceVerdicts), ...result.paceVerdicts } });
         } else {
           await ctx.state.set(key, {
             ...previous,
@@ -388,7 +426,7 @@ export function createPlugin() {
 
         const capacity = config.capacityRouting.enabled
           ? await storedCapacity(companyId, config)
-          : { snapshots: [], evidence: [], error: null };
+          : { snapshots: [], evidence: [], error: null, paceVerdicts: {}, modelLaneByPace: {} };
         const decision = selectModel({
           descriptor: request.task,
           config,
@@ -396,6 +434,8 @@ export function createPlugin() {
             budgetSpentFraction: request.task.signals?.budgetSpentFraction,
             capacityEvidence: capacity.evidence,
             capacityError: capacity.error ?? undefined,
+            paceVerdicts: config.capacityRouting.paceOrdering ? capacity.paceVerdicts : undefined,
+            modelLaneByPace: config.capacityRouting.paceOrdering ? capacity.modelLaneByPace : undefined,
             stickyModelId: config.routing.stickyModelWithinIssue
               ? await readStickyModel(companyId, request.task.issueId)
               : undefined,

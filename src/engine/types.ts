@@ -54,6 +54,18 @@ export interface RuntimeSignals {
   capacityError?: string;
   servingModelId?: string;
   stickyModelId?: string;
+  /**
+   * TOG-2139 (slice 6): per-lane pace verdicts computed by the worker from the
+   * same source documents the capacity evidence came from, keyed by lane id.
+   * Consumed only when `capacityRouting.paceOrdering` is true; a missing or
+   * `unknown` verdict is fail-neutral and never excludes a model.
+   */
+  paceVerdicts?: Record<string, import("../capacity/types.js").LanePaceVerdict>;
+  /**
+   * Maps model id -> lane id for pace lookup. Derived from
+   * `capacityRouting.sources[].pace.laneId` over `sources[].modelIds`.
+   */
+  modelLaneByPace?: Record<string, string>;
 }
 
 export type DecisionOutcome =
@@ -88,6 +100,10 @@ export interface Candidate {
   usagePosture: import("../capacity/types.js").CapacityEvidence["posture"] | "not-evaluated";
   utilization: number | null;
   resetsAt: string | null;
+  /** TOG-2139: pace state of this model's lane when `paceOrdering` is on. */
+  paceState: import("../capacity/types.js").PaceState | "not-evaluated";
+  /** TOG-2139: utilisation − elapsed deviation of the governing window, when known. */
+  paceDeviation: number | null;
 }
 
 export interface RoutingDecision {

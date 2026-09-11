@@ -48,6 +48,7 @@ export const DEFAULT_CAPACITY_ROUTING: CapacityRoutingConfig = {
   conserveUtilization: 0.6,
   avoidUtilization: 0.8,
   maxSnapshotAgeMs: 300_000,
+  paceOrdering: false,
   sources: [],
 };
 
@@ -125,6 +126,54 @@ function resolveTaskClasses(value: unknown): TaskClassConfig[] {
   return classes;
 }
 
+function resolvePacePolicy(value: unknown): CapacityRoutingConfig["pacePolicy"] {
+  if (!isRecord(value)) return undefined;
+  const policy: NonNullable<CapacityRoutingConfig["pacePolicy"]> = {};
+  if (typeof value.margin === "number" && Number.isFinite(value.margin)) policy.margin = value.margin;
+  if (typeof value.urgentResetSeconds === "number" && Number.isFinite(value.urgentResetSeconds)) policy.urgentResetSeconds = value.urgentResetSeconds;
+  if (typeof value.maxSnapshotAgeSeconds === "number" && Number.isFinite(value.maxSnapshotAgeSeconds)) policy.maxSnapshotAgeSeconds = value.maxSnapshotAgeSeconds;
+  return Object.keys(policy).length > 0 ? policy : undefined;
+}
+
+function resolveSourcePace(value: unknown): CapacityRoutingConfig["sources"][number]["pace"] {
+  if (!isRecord(value)) return undefined;
+  const laneId = pickString(value.laneId, "");
+  if (!laneId) return undefined;
+  const windows = Array.isArray(value.windows)
+    ? value.windows.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const name = pickString(entry.name, "");
+        const role = entry.role === "serviceability" || entry.role === "allowance" ? entry.role : null;
+        const utilizationFields = pickStringArray(entry.utilizationFields, []);
+        if (!name || !role || utilizationFields.length === 0) return [];
+        const window: NonNullable<CapacityRoutingConfig["sources"][number]["pace"]>["windows"][number] = {
+          name,
+          role,
+          utilizationFields,
+          resetFields: pickStringArray(entry.resetFields, []),
+        };
+        if (typeof entry.defaultWindowSeconds === "number" && Number.isFinite(entry.defaultWindowSeconds)) window.defaultWindowSeconds = entry.defaultWindowSeconds;
+        return [window];
+      })
+    : [];
+  if (windows.length === 0) return undefined;
+  const pace: NonNullable<CapacityRoutingConfig["sources"][number]["pace"]> = {
+    laneId,
+    healthFields: pickStringArray(value.healthFields, ["health"]),
+    windows,
+  };
+  if (value.free === true) pace.free = true;
+  const weightFields = pickStringArray(value.weightFields, []);
+  if (weightFields.length > 0) pace.weightFields = weightFields;
+  const governingWindowField = pickString(value.governingWindowField, "");
+  if (governingWindowField) pace.governingWindowField = governingWindowField;
+  const windowSecondsField = pickString(value.windowSecondsField, "");
+  if (windowSecondsField) pace.windowSecondsField = windowSecondsField;
+  const staleAfterSecondsField = pickString(value.staleAfterSecondsField, "");
+  if (staleAfterSecondsField) pace.staleAfterSecondsField = staleAfterSecondsField;
+  return pace;
+}
+
 function resolveCapacitySources(value: unknown): CapacityRoutingConfig["sources"] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((raw) => {
@@ -156,6 +205,7 @@ function resolveCapacitySources(value: unknown): CapacityRoutingConfig["sources"
       requestTimeoutMs: pickNumber(raw.requestTimeoutMs, 5_000),
       maxResponseBytes: pickNumber(raw.maxResponseBytes, 262_144),
       windows,
+      pace: resolveSourcePace(raw.pace),
     }];
   });
 }
@@ -263,6 +313,8 @@ export function resolveConfig(raw: unknown): RouterConfig {
       conserveUtilization: pickNumber(capacityRaw.conserveUtilization, DEFAULT_CAPACITY_ROUTING.conserveUtilization),
       avoidUtilization: pickNumber(capacityRaw.avoidUtilization, DEFAULT_CAPACITY_ROUTING.avoidUtilization),
       maxSnapshotAgeMs: pickNumber(capacityRaw.maxSnapshotAgeMs, DEFAULT_CAPACITY_ROUTING.maxSnapshotAgeMs),
+      paceOrdering: pickBoolean(capacityRaw.paceOrdering, DEFAULT_CAPACITY_ROUTING.paceOrdering),
+      pacePolicy: resolvePacePolicy(capacityRaw.pacePolicy),
       sources: resolveCapacitySources(capacityRaw.sources),
     },
     rule0: resolveRule0(source.rule0),
