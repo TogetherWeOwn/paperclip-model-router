@@ -1,0 +1,10 @@
+--- a/router-telemetry-lane.caddy
++++ b/router-telemetry-lane.caddy
+@@ -1,6 +1,6 @@
+ 	@telemetryKnown {
+ 		method GET
+-		path /telemetry/cliproxy/claude.json /telemetry/cliproxy/codex.json /telemetry/cliproxy/codex-spark.json /telemetry/cliproxy/kimi.json /telemetry/cliproxy/opencode-go.json /telemetry/cliproxy/zen-free.json /telemetry/cliproxy/zen-free-health.json /telemetry/cliproxy/model-usage-v1.json /telemetry/cliproxy/model-scores.json /telemetry/cliproxy/request-rates.json
++		path /telemetry/cliproxy/claude.json /telemetry/cliproxy/codex.json /telemetry/cliproxy/codex-spark.json /telemetry/cliproxy/kimi.json /telemetry/cliproxy/opencode-go.json /telemetry/cliproxy/zai.json /telemetry/cliproxy/zen-free.json /telemetry/cliproxy/zen-free-health.json /telemetry/cliproxy/model-usage-v1.json /telemetry/cliproxy/model-scores.json /telemetry/cliproxy/request-rates.json
+ 	}
+ 	handle @telemetryKnown {
+ 		@authed header X-Api-Key {env.CLIPROXY_USAGE_LANE_KEY}
