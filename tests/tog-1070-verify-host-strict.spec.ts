@@ -138,6 +138,9 @@ describe("TOG-1070: a skipped host probe cannot report success", () => {
   });
 
   it("FAILS the manifest script when the requested host does not load", () => {
+    // This standalone verifier consumes the packaged manifest. CI runs tests
+    // before its separate build step, so produce the artifact this case needs.
+    execFileSync(process.execPath, ["esbuild.config.mjs"], { cwd: repo, stdio: "ignore" });
     const result = run(MANIFEST, { PAPERCLIP_HOST: ABSENT_HOST, ALLOW_HOST_PROBE_SKIP: undefined });
 
     expect(result.status).not.toBe(0);
