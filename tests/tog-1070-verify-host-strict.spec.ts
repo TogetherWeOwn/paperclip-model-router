@@ -24,14 +24,38 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const STOCK = "scripts/verify-stock-host-controls.mjs";
 const MANIFEST = "scripts/verify-against-host.mjs";
+const RELEASE_TAG = "v0.4.2";
 
 let scratch: string;
 let receipt: string;
+let tagCommit: string;
+let createdReleaseTag = false;
+
+beforeAll(() => {
+  try {
+    tagCommit = execFileSync("git", ["rev-parse", "--verify", `${RELEASE_TAG}^{commit}`], {
+      cwd: repo,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    // actions/checkout is shallow and does not fetch tags by default. The test
+    // only needs a version-consistent commit to exercise gate 8, so create the
+    // release tag locally when CI did not receive it and remove it afterwards.
+    execFileSync("git", ["tag", RELEASE_TAG, "HEAD"], { cwd: repo });
+    tagCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    createdReleaseTag = true;
+  }
+});
+
+afterAll(() => {
+  if (createdReleaseTag) execFileSync("git", ["tag", "-d", RELEASE_TAG], { cwd: repo, stdio: "ignore" });
+});
 
 beforeEach(() => {
   scratch = mkdtempSync(join(tmpdir(), "tog1070-"));
@@ -144,7 +168,7 @@ describe("TOG-1070: the release gate refuses a pin the host gate never covered",
     try {
       const output = execFileSync(
         process.execPath,
-        ["scripts/release-pin-check.mjs", "--tag", "v0.4.2", "--offline", "--no-build"],
+        ["scripts/release-pin-check.mjs", "--tag", RELEASE_TAG, "--offline", "--no-build"],
         { cwd: repo, encoding: "utf8", env: child as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"] },
       );
       return { status: 0, output };
@@ -177,8 +201,6 @@ describe("TOG-1070: the release gate refuses a pin the host gate never covered",
    * the right commit that records a run proving nothing. Each case below forges
    * a receipt naming the tagged commit and differs in exactly one field.
    */
-  const tagCommit = execFileSync("git", ["rev-parse", "v0.4.2^{commit}"], { cwd: repo, encoding: "utf8" }).trim();
-
   const clean = {
     checksRun: 20,
     failures: 0,
