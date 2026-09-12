@@ -39,7 +39,14 @@
  * apiVersion check that quietly evaporated because the module it read the
  * constant from did not export it is what prompted half of this file.
  *
- * Exits non-zero on any rejection. SKIPs do not fail the run; they are printed.
+ * TOG-1070: counting a SKIP was not enough. When a host checkout IS reachable,
+ * every check here is supposed to run, so a SKIP means something stopped
+ * resolving and the gate is reporting success without having executed. Under
+ * `probePolicy().strict` — i.e. whenever PAPERCLIP_HOST is set or a checkout is
+ * found at /app — a skip is a FAILURE. Without a host it stays a skip, because
+ * CI has no checkout and the mirror fallbacks are the designed behaviour there.
+ *
+ * Exits non-zero on any rejection, and on any skip when strict.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -47,18 +54,46 @@ import { registerHooks } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { describePolicy, probePolicy, writeReceipt } from "./lib/host-probes.mjs";
+
 const FIXTURES = "tests/fixtures";
+const policy = probePolicy();
 let failures = 0;
 let skips = 0;
+let checksRun = 0;
+let unrunnable = 0;
 
 function report(ok, label, detail = "") {
+  checksRun += 1;
   if (!ok) failures += 1;
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail ? `\n      ${detail}` : ""}`);
 }
 
+/**
+ * A check that could have run here and did not.
+ *
+ * Strict turns this into a failure rather than suppressing the line: the label
+ * and reason are the diagnostic, and losing them to make room for a FAIL would
+ * throw away the only thing that says WHAT stopped resolving.
+ */
 function skip(label, reason) {
   skips += 1;
+  if (policy.strict) {
+    failures += 1;
+    console.log(`FAIL  ${label}\n      ${reason}\n      (a host checkout is present, so this check was expected to run — see ${"ALLOW_HOST_PROBE_SKIP"})`);
+    return;
+  }
   console.log(`SKIP  ${label}\n      ${reason}`);
+}
+
+/**
+ * A check that needs something no build ever has — a live instance and its
+ * database. Never a failure: strict mode is about checks that SHOULD have run,
+ * and no amount of fixing this checkout makes this one runnable.
+ */
+function skipUnrunnable(label, reason) {
+  unrunnable += 1;
+  console.log(`N/A   ${label}\n      ${reason}`);
 }
 
 function note(text) {
@@ -140,9 +175,18 @@ async function loadHostServices() {
 const host = await loadHostServices();
 console.log(
   host.ok
-    ? `host checkout: ${host.hostRoot} (steps 5, 5b and 6 run the host's own code)\n`
-    : `host checkout: none — ${host.reason}\n      steps 5, 5b and 6 run this file's MIRROR of them\n`,
+    ? `host checkout: ${host.hostRoot} (steps 5, 5b and 6 run the host's own code)`
+    : `host checkout: none — ${host.reason}\n      steps 5, 5b and 6 run this file's MIRROR of them`,
 );
+console.log(`${describePolicy(policy)}\n`);
+
+// Asking for a host and not getting one is the TOG-1070 shape at its most
+// direct: the run degrades to mirrors and reports success, having proved
+// nothing about the host it was pointed at. Strict makes it a failure here
+// rather than letting it surface as a scatter of skips further down.
+if (policy.strict && !host.ok) {
+  report(false, "the requested host checkout loaded", host.reason);
+}
 
 // --- 1. the built manifest, against the host's Zod schema --------------------
 
@@ -495,7 +539,7 @@ report(
 );
 
 if (routePaths.length > 0) {
-  skip(
+  skipUnrunnable(
     "page routePaths do not collide with an installed plugin",
     "the host compares against registry.listInstalled(); that needs a live instance, not a build",
   );
@@ -679,7 +723,17 @@ report(
 
 // The skip count is part of the verdict, not a footnote. "All host-side checks
 // passed" while three of them never ran is the sentence this script is here to
-// stop anyone from being able to write.
+// stop anyone from being able to write. Under strict those skips are already
+// counted as failures above; the count is still printed so the verdict names
+// the reason the run is red.
 const verdict = failures === 0 ? "all host-side checks passed" : `${failures} check(s) failed`;
-console.log(`\n${verdict}${skips > 0 ? `, ${skips} check(s) skipped — see SKIP lines above` : ""}`);
+const skipNote = skips > 0 ? `, ${skips} check(s) ${policy.strict ? "FAILED for not running" : "skipped"} — see the lines above` : "";
+const naNote = unrunnable > 0 ? `, ${unrunnable} not applicable to a build` : "";
+console.log(`\n${verdict}${skipNote}${naNote}`);
+
+// The receipt is what lets the release path know this ran. Written on success
+// and failure alike: a receipt recording skips is the evidence that refuses a
+// tag, so suppressing it on failure would leave a stale green one in place.
+writeReceipt("manifest", { checksRun, failures, skipped: skips, unrunnable }, policy);
+
 process.exit(failures === 0 ? 0 : 1);

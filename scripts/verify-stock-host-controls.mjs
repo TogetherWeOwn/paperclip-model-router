@@ -7,7 +7,12 @@ import { registerHooks } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const hostRoot = process.env.PAPERCLIP_HOST ?? "/app";
+import { describePolicy, hostEnv, probePolicy, writeReceipt } from "./lib/host-probes.mjs";
+
+// `?? "/app"` used to be the whole of this line, which resolved `PAPERCLIP_HOST=`
+// (exported empty) to "" and then hunted for a host under `/node_modules`.
+const hostRoot = hostEnv() ?? "/app";
+const policy = probePolicy();
 
 // TOG-1064: this used to hardcode `tsx@4.23.1`. The host moved to 4.23.12 and
 // these probes silently SKIPped from then on — a control that reports success
@@ -26,7 +31,21 @@ function findTsxLoader() {
 const tsxLoader = findTsxLoader();
 if (process.env.MODEL_ROUTER_STOCK_HOST_PROBE_CHILD !== "1") {
   if (!tsxLoader) {
-    console.log(`SKIP  stock host control probes\n      no tsx loader found under ${join(hostRoot, "node_modules", ".pnpm")}`);
+    // TOG-1070: this exact branch printed SKIP and exited 0, which is what let
+    // `npm run verify` report success with these probes never having run. If a
+    // host was requested, not finding the loader is a failure — the probes are
+    // the whole point of pointing at a host.
+    const where = join(hostRoot, "node_modules", ".pnpm");
+    if (policy.strict) {
+      console.log(`FAIL  stock host control probes\n      no tsx loader found under ${where}`);
+      console.log(`      A host checkout was requested (${policy.host.from}), so these probes were expected to run.`);
+      console.log(`      Build the host checkout, or set ALLOW_HOST_PROBE_SKIP=1 to accept an unproven run.`);
+      writeReceipt("stockControls", { checksRun: 0, failures: 1, skipped: 1 }, policy);
+      process.exit(1);
+    }
+    console.log(`SKIP  stock host control probes\n      no tsx loader found under ${where}`);
+    console.log(`      ${describePolicy(policy)}`);
+    writeReceipt("stockControls", { checksRun: 0, failures: 0, skipped: 1 }, policy);
     process.exit(0);
   }
   const child = spawnSync(process.execPath, ["--import", tsxLoader, fileURLToPath(import.meta.url)], {
@@ -40,8 +59,10 @@ const sharedDist = join(hostRoot, "packages", "shared", "dist");
 const dbSource = join(hostRoot, "packages", "db", "src");
 const serverServices = join(hostRoot, "server", "dist", "services");
 let failures = 0;
+let checksRun = 0;
 
 function report(ok, label, detail = "") {
+  checksRun += 1;
   if (!ok) failures += 1;
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail ? `\n      ${detail}` : ""}`);
 }
@@ -53,6 +74,7 @@ for (const required of [
 ]) {
   if (!existsSync(required)) {
     console.error(`Missing compiled stock host module: ${required}`);
+    writeReceipt("stockControls", { checksRun: 0, failures: 1, skipped: 1 }, policy);
     process.exit(2);
   }
 }
@@ -130,5 +152,8 @@ try {
   rmSync(localPluginDir, { recursive: true, force: true });
 }
 
-console.log(`\n${failures === 0 ? "STOCK HOST CONTROL PROBES PASSED" : `${failures} stock host control probe(s) failed`}`);
-process.exit(failures === 0 ? 0 : 1);
+// A probe count of zero is not a pass. Every early exit above writes a receipt
+// saying so, and this one records what actually executed.
+console.log(`\n${failures === 0 ? `STOCK HOST CONTROL PROBES PASSED (${checksRun} probe(s) executed)` : `${failures} stock host control probe(s) failed`}`);
+writeReceipt("stockControls", { checksRun, failures, skipped: 0 }, policy);
+process.exit(failures === 0 && checksRun > 0 ? 0 : 1);
