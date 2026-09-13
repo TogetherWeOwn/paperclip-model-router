@@ -1,9 +1,9 @@
 # TOG-2474 — repoint the opencode-go collector block at the v0.4.0 aggregate route
 
-**Status: patch-artifact handoff, not yet applied to the live host.** This repository does not own
-the collector — it runs on the operator's host, outside this checkout. No production process is
-touched by authoring this doc; an operator must apply the patch and restart the collector unit
-below before the fix takes effect.
+**Status: applied and verified on the live host on 2026-09-13.** The operator confirmed the
+live collector matched the expected pre-patch SHA-256, applied the patch cleanly, compiled it,
+and observed fresh telemetry from the aggregate route. The pre-deploy and rollback instructions
+remain below as the reproducible change record.
 
 **Result:** one patch against the real deployed collector (`cliproxy_usage_snapshot.py`, current
 live-host SHA-256 `d6792fa1df6cadfe6f65ee1a94327b4916d2f32bb8cb1c44e509f90ee682ffb1`, the state left
@@ -125,14 +125,27 @@ resulting `opencode-go.json` records were validated against the real, unmodified
 `packages/lane-capacity/scripts/check_lane_docs.py --dir`: both cases passed with zero errors,
 using only the `monthly` fields the record's `governing_window: "monthly"` requires.
 
-**Live-host verification (`observedAt` advancing every cycle, `_status.json` showing 0 errors for
-the opencode-go group) could not be performed from this run — no host access exists.** That is
-necessarily an operator step; record the result here or in a follow-up comment once the deploy
-command above has been run, mirroring the "Verification performed on the live host" section in
-[TOG-2135's doc](TOG-2135-collector-delta.md).
+## Verification performed on the live host
+
+The operator applied the patch on 2026-09-13 after confirming the live
+`cliproxy_usage_snapshot.py` SHA-256 began with `d6792fa1` and matched the documented patch base.
+`git apply --check` succeeded, the patch applied, and `python3 -m py_compile` succeeded. Backup:
+`cliproxy_usage_snapshot.py.tog2474.bak`.
+
+The first collector cycle after deployment produced:
+
+- `opencode-go.json`: `observedAt: 2026-09-13T20:32:17Z`, three records, all three lanes observed
+  as `health: exhausted` from the aggregate subscription-pool response.
+- `_status.json`: `opencode-go {lanes: 3, errors: []}` and
+  `zai {lanes: 1, errors: [], source: quota-api}`.
+
+This proves the stale-route failure is closed: opencode-go telemetry is advancing from
+`/plugins/subscription-pool/status`, while the independent Z.ai quota collector remains healthy.
+The identical monthly values across the three OpenCode Go lanes are a separate per-key polling
+defect tracked and already fixed for the next installed router release; they are not caused by
+this route migration.
 
 ## Scope
 
-This document was authored as a patch-artifact handoff: no collector process was touched by the
-authoring session. Nothing here authorizes further host changes — a new change needs a new
-`Operator:` card.
+This document records the deployed TOG-2474 change. Nothing here authorizes further host changes;
+a new change needs a new `Operator:` card.
