@@ -198,6 +198,21 @@ export const ROUTER_CONFIG_SCHEMA = {
         conserveUtilization: { type: "number", minimum: 0, maximum: 1, default: 0.6 },
         avoidUtilization: { type: "number", minimum: 0, maximum: 1, default: 0.8 },
         maxSnapshotAgeMs: { type: "integer", minimum: 1000, maximum: 86400000, default: 300000 },
+        paceOrdering: {
+          type: "boolean",
+          default: false,
+          description:
+            "TOG-2139: order eligible candidates by subscription pace (furthest behind its governing-window pace line first, deviation next, then existing evidence order). Survivor-pool ordering only — pace never reorders across qualityFloor, capability, context-window, or tier gates and adds no rejection stage.",
+        },
+        pacePolicy: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            margin: { type: "number", minimum: 0, maximum: 1 },
+            urgentResetSeconds: { type: "integer", minimum: 1 },
+            maxSnapshotAgeSeconds: { type: "integer", minimum: 1 },
+          },
+        },
         sources: {
           type: "array",
           default: [],
@@ -255,6 +270,42 @@ export const ROUTER_CONFIG_SCHEMA = {
                       type: "array",
                       items: { type: "string", minLength: 1 },
                       default: [],
+                    },
+                  },
+                },
+              },
+              pace: {
+                type: "object",
+                additionalProperties: false,
+                required: ["laneId", "windows"],
+                description:
+                  "Lane-document shape for pace evaluation (TOG-1916 §2). Absent = pace-neutral source.",
+                properties: {
+                  laneId: { type: "string", minLength: 1 },
+                  free: { type: "boolean", default: false },
+                  weightFields: { type: "array", items: { type: "string", minLength: 1 } },
+                  healthFields: { type: "array", items: { type: "string", minLength: 1 } },
+                  governingWindowField: { type: "string", minLength: 1 },
+                  windowSecondsField: { type: "string", minLength: 1 },
+                  staleAfterSecondsField: { type: "string", minLength: 1 },
+                  windows: {
+                    type: "array",
+                    minItems: 1,
+                    items: {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["name", "role", "utilizationFields"],
+                      properties: {
+                        name: { type: "string", minLength: 1 },
+                        role: { type: "string", enum: ["serviceability", "allowance"] },
+                        utilizationFields: {
+                          type: "array",
+                          minItems: 1,
+                          items: { type: "string", minLength: 1 },
+                        },
+                        resetFields: { type: "array", items: { type: "string", minLength: 1 } },
+                        defaultWindowSeconds: { type: "integer", minimum: 1 },
+                      },
                     },
                   },
                 },

@@ -71,8 +71,31 @@ export interface CapacityRoutingConfig {
   conserveUtilization: number;
   avoidUtilization: number;
   maxSnapshotAgeMs: number;
+  /**
+   * TOG-2139 (slice 6): order eligible candidates by subscription pace — the
+   * lane furthest BEHIND its governing-window pace line wins, deviation next,
+   * then the existing evidence ordering. Within the survivor pool only: pace
+   * never reorders across `qualityFloor`, capability, context-window, or tier
+   * gates, and adds no rejection stage of its own. Off by default.
+   */
+  paceOrdering: boolean;
+  /**
+   * Policy for pace evaluation. Falls back to the shared package defaults
+   * (margin 0.1, 24h urgent reset, 15min snapshot age) when absent.
+   */
+  pacePolicy?: { margin?: number; urgentResetSeconds?: number; maxSnapshotAgeSeconds?: number };
   sources: CapacitySourceConfig[];
 }
+
+/**
+ * Lane-document definition for pace evaluation on a capacity source
+ * (TOG-1916 §2 shape: records[] with per-account windows). Structurally the
+ * shared package's `LanePaceDefinition`; the resolver fills the defaults the
+ * JSON schema leaves optional. A source without one is fail-neutral under
+ * pace ordering — its models rank `unknown`, never denied, exactly like
+ * missing telemetry today.
+ */
+export type SourcePaceDefinition = import("../capacity/types.js").LanePaceDefinition;
 
 export interface Rule0Config {
   enabled: boolean;

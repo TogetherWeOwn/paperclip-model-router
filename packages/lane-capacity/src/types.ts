@@ -33,6 +33,13 @@ export interface CapacitySnapshot {
   source: string;
   evidence: CapacityEvidence[];
   error: string | null;
+  /**
+   * TOG-2139 (slice 6): pace verdict for this source's lane, evaluated from
+   * the same fetched document as `evidence` when the caller supplies a lane
+   * definition. Null when pace evaluation was not requested or the document
+   * could not be parsed — always fail-neutral, never an error of its own.
+   */
+  pace?: import("./pace.js").LanePaceVerdict | null;
 }
 
 export interface CapacitySourceDefinition {

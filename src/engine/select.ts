@@ -1,10 +1,31 @@
-import type { CapacityEvidence } from "../capacity/types.js";
+import type { CapacityEvidence, LanePaceVerdict, PaceState } from "../capacity/types.js";
 import type { RouterConfig } from "../config/types.js";
 import { MODEL_TIER_ORDER, type Candidate, type GateLevel, type ModelEntry, type ModelTier, type RoutingDecision, type RuntimeSignals, type TaskDescriptor } from "./types.js";
 
 const DEFAULT_INPUT_TOKENS = 8_000;
 const DEFAULT_OUTPUT_TOKENS = 2_000;
-type Ranked = { model: ModelEntry; cost: number; evidence: CapacityEvidence | null };
+type Ranked = { model: ModelEntry; cost: number; evidence: CapacityEvidence | null; pace?: LanePaceVerdict | null };
+
+// TOG-2139 (slice 6): pace-state ranking for `capacityRouting.paceOrdering`.
+// Behind = win (the lane is under-consuming its subscription relative to its
+// governing window; unused allowance is destroyed at reset, so the furthest
+// behind is the cheapest real resource). `exhausted` and `unknown`/absent
+// verdicts rank last — an unknown pace must never outrank a known one, and an
+// exhausted lane must not win ordering even though the capacity gate (not
+// pace) is what would actually exclude it.
+const PACE_STATE_RANK: Record<PaceState, number> = {
+  "behind-urgent": 0,
+  behind: 1,
+  on: 2,
+  ahead: 3,
+  free: 4,
+  exhausted: 5,
+  unknown: 6,
+};
+
+function paceDeviation(verdict: LanePaceVerdict | null | undefined): number {
+  return typeof verdict?.score?.deviation === "number" ? verdict.score.deviation : Number.NaN;
+}
 
 function tierIndex(tier: ModelTier): number { const index = MODEL_TIER_ORDER.indexOf(tier); return index === -1 ? 1 : index; }
 function lowerTier(tier: ModelTier): ModelTier { return MODEL_TIER_ORDER[Math.max(0, tierIndex(tier) - 1)] as ModelTier; }
@@ -45,6 +66,28 @@ function aggregateEvidenceFor(modelId: string, evidence: CapacityEvidence[]): Ca
 }
 function baselineOrder(a: Ranked, b: Ranked): number { return a.cost - b.cost || b.model.quality - a.model.quality || a.model.id.localeCompare(b.model.id); }
 function capacityOrder(a: Ranked, b: Ranked): number { return (a.evidence ? evidenceRank(a.evidence) : 5) - (b.evidence ? evidenceRank(b.evidence) : 5) || (a.evidence?.utilization ?? Infinity) - (b.evidence?.utilization ?? Infinity) || baselineOrder(a, b); }
+
+// TOG-2139 (slice 6): pace-first ordering (TOG-2048 D1 — accepted). Within an
+// already-gated survivor pool: the eligible lane furthest BEHIND its pace line
+// wins, deviation (utilisation − elapsed) breaks state ties toward the more
+// behind lane, and everything else falls through to the comparator that pool
+// used before this flag existed (baseline in shadow, capacity in enforce), so
+// the flag only ever PREFIXES pace onto the existing order. Models without a
+// usable verdict rank last together (fail-neutral), so enabling this flag can
+// reorder candidates but never change WHICH models are eligible — qualityFloor,
+// capability, context-window, tier-ceiling, and capacity gates all run before
+// this comparator sees a row.
+function paceOrder(next: (a: Ranked, b: Ranked) => number): (a: Ranked, b: Ranked) => number {
+  return (a, b) => {
+    const rankA = a.pace ? PACE_STATE_RANK[a.pace.state] : PACE_STATE_RANK.unknown;
+    const rankB = b.pace ? PACE_STATE_RANK[b.pace.state] : PACE_STATE_RANK.unknown;
+    if (rankA !== rankB) return rankA - rankB;
+    const deviationA = paceDeviation(a.pace);
+    const deviationB = paceDeviation(b.pace);
+    if (Number.isFinite(deviationA) && Number.isFinite(deviationB) && deviationA !== deviationB) return deviationA - deviationB;
+    return next(a, b);
+  };
+}
 
 export interface SelectInput { descriptor: TaskDescriptor; config: RouterConfig; signals?: RuntimeSignals }
 
@@ -132,7 +175,23 @@ export function selectModel(input: SelectInput): RoutingDecision {
   const survivors = qualified.filter((entry) => { if (tierIndex(entry.model.tier) <= tierIndex(appliedCeiling)) return true; rejections.push({ modelId: entry.model.id, stage: "tier-ceiling", reason: `tier ${entry.model.tier} exceeds ceiling ${appliedCeiling}` }); return false; });
   const withCapacity = qualified.map((entry): Ranked => ({ ...entry, evidence: capacityEnabled ? aggregateEvidenceFor(entry.model.id, effectiveEvidence) : null }));
   const survivorIds = new Set(survivors.map((entry) => entry.model.id));
-  const ranked = withCapacity.filter((entry) => survivorIds.has(entry.model.id)).sort(baselineOrder);
+  // TOG-2139: pace verdicts attach to survivors only — a model rejected by any
+  // upstream gate (qualityFloor, capability, context, tier ceiling) never
+  // reaches this pool, so pace cannot promote it into eligibility. `ranked`
+  // keeps its static baseline ordering: in `capacityRouting.mode: shadow` the
+  // served model follows the static policy and the pace-aware pick surfaces
+  // through the shadow advisory, exactly like capacity ordering today.
+  const paceActive = capacityEnabled && config.capacityRouting.paceOrdering === true;
+  const paceFor = (modelId: string): LanePaceVerdict | null => {
+    if (!paceActive) return null;
+    const laneId = runtime.modelLaneByPace?.[modelId];
+    if (!laneId) return null;
+    return runtime.paceVerdicts?.[laneId] ?? null;
+  };
+  const ranked = withCapacity
+    .filter((entry) => survivorIds.has(entry.model.id))
+    .map((entry): Ranked => ({ ...entry, pace: paceFor(entry.model.id) }))
+    .sort(baselineOrder);
   // Evidence that positively reports exhaustion. This is the only capacity fact
   // that may deny a model under any policy — it is a real signal, not an absence.
   const positivelyUnavailable = (entry: Ranked): boolean =>
@@ -149,7 +208,7 @@ export function selectModel(input: SelectInput): RoutingDecision {
     return covered(entry);
   };
   const unusableSurvivors = ranked.filter((candidate) => !usable(candidate));
-  const usageAware = ranked.filter(usable).sort(capacityOrder);
+  const usageAware = ranked.filter(usable).sort(paceActive ? paceOrder(capacityOrder) : capacityOrder);
   if (capacityEnabled && config.capacityRouting.mode === "enforce") for (const entry of unusableSurvivors) rejections.push({ modelId: entry.model.id, stage: "capacity", reason: entry.evidence ? `capacity evidence ${entry.evidence.source}/${entry.evidence.laneLabel} is ${entry.evidence.telemetryAvailable ? entry.evidence.posture : "unknown"}` : "no capacity evidence covers this model" });
   // TOG-1040: this used to refuse whenever ANY qualified model had missing or
   // unknown evidence — even when another model had healthy evidence and was
@@ -163,7 +222,7 @@ export function selectModel(input: SelectInput): RoutingDecision {
   const shadow = capacityEnabled ? usageAware[0] ?? null : null;
   if (shadow) { base.capacity.shadowModelId = shadow.model.id; base.capacity.shadowSource = shadow.evidence?.source ?? null; base.capacity.shadowLaneLabel = shadow.evidence?.laneLabel ?? null; base.capacity.decisionReason = `preferred evidence ${shadow.evidence?.source}/${shadow.evidence?.laneLabel}`; }
   const pool = capacityEnabled && config.capacityRouting.mode === "enforce" ? usageAware : ranked;
-  base.candidates = pool.map((entry): Candidate => ({ modelId: entry.model.id, tier: entry.model.tier, quality: entry.model.quality, expectedCostUsd: entry.cost, capacitySource: entry.evidence?.source ?? null, laneLabel: entry.evidence?.laneLabel ?? null, usagePosture: entry.evidence?.posture ?? (capacityEnabled ? "unknown" : "not-evaluated"), utilization: entry.evidence?.utilization ?? null, resetsAt: entry.evidence?.resetsAt ?? null }));
+  base.candidates = pool.map((entry): Candidate => ({ modelId: entry.model.id, tier: entry.model.tier, quality: entry.model.quality, expectedCostUsd: entry.cost, capacitySource: entry.evidence?.source ?? null, laneLabel: entry.evidence?.laneLabel ?? null, usagePosture: entry.evidence?.posture ?? (capacityEnabled ? "unknown" : "not-evaluated"), utilization: entry.evidence?.utilization ?? null, resetsAt: entry.evidence?.resetsAt ?? null, paceState: paceActive ? entry.pace?.state ?? "unknown" : "not-evaluated", paceDeviation: paceActive ? (entry.pace?.score?.deviation ?? null) : null }));
   // TOG-1076: `degraded` announces "we served without capacity awareness". Line
   // 102 raises it when telemetry is wholly unavailable, but under `fail-open` a
   // model no source covers is equally uninformed — and until now reported
@@ -193,6 +252,7 @@ export function selectModel(input: SelectInput): RoutingDecision {
     return { ...base, outcome: "selected", modelId: fallbackId, fallbackUsed: true, capacity: { ...capacityFor(fallback), fallbackEvents: [`configured fallback ${fallbackId} used`] } };
   }
   const winner = pool[0]!;
+  if (paceActive) trace.push(`pace ordering: ${winner.model.id} lane ${winner.pace ? `${winner.pace.state}${winner.pace.score ? ` (deviation ${winner.pace.score.deviation.toFixed(3)})` : ""}` : "unknown"}`);
   trace.push(capacityEnabled && config.capacityRouting.mode === "enforce" ? `selected ${winner.model.id} using capacity evidence ${winner.evidence?.source}/${winner.evidence?.laneLabel}` : `selected ${winner.model.id} at an expected $${winner.cost.toFixed(5)}`);
   if (capacityEnabled && config.capacityRouting.mode === "shadow" && shadow && shadow.model.id !== winner.model.id) trace.push(`capacity shadow would choose ${shadow.model.id}; serving remains ${winner.model.id}`);
   return { ...base, outcome: "selected", modelId: winner.model.id, capacity: capacityFor(winner) };

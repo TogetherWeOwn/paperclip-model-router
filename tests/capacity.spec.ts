@@ -254,6 +254,21 @@ describe("usage-aware selection", () => {
     );
   });
 
+  it.each(["capacity-snapshot-stale", "capacity-request-failed"])("keeps shadow serving unchanged from the no-outage baseline after %s", (capacityError) => {
+    const config = routingConfig("shadow");
+    const descriptor = { taskClass: "implementation", requestedProfile: "implementation" };
+    const baseline = selectModel({ config, descriptor, signals: { capacityEvidence: lanes } });
+    const outage = selectModel({ config, descriptor, signals: { capacityEvidence: lanes, capacityError } });
+
+    expect(baseline.capacity.telemetry).toBe("available");
+    expect(outage.capacity.telemetry).toBe("unavailable");
+    expect(outage).toMatchObject({
+      outcome: baseline.outcome,
+      modelId: baseline.modelId,
+      fallbackUsed: baseline.fallbackUsed,
+    });
+  });
+
   it.each(["capacity-snapshot-stale", "capacity-request-failed"])("does not use retained evidence under exclude-lane after %s", (capacityError) => {
     const config = resolveConfig({
       ...routingConfig("enforce"),
