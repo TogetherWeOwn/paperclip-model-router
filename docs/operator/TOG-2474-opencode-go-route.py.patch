@@ -1,0 +1,91 @@
+diff --git a/cliproxy_usage_snapshot.py b/cliproxy_usage_snapshot.py
+index baae7ad..3572c80 100644
+--- a/cliproxy_usage_snapshot.py
++++ b/cliproxy_usage_snapshot.py
+@@ -1,7 +1,7 @@
+ #!/usr/bin/env python3
+ """Operator collector (2026-09-05): per-provider usage snapshots for Router v2 capacity awareness.
+-Reads CLIProxyAPI's management API (auth-files, api-call pass-through with $TOKEN$, opencode-go-pool status)
+-and writes sanitized JSON files to /srv/cliproxy-usage, served read-only by Caddy at
++Reads CLIProxyAPI's management API (auth-files, api-call pass-through with $TOKEN$, subscription-pool
++aggregate status) and writes sanitized JSON files to /srv/cliproxy-usage, served read-only by Caddy at
+ https://router.infextion.net/telemetry/cliproxy/<file> behind an x-api-key. No identity ever leaves
+ this script: no emails, account ids, auth indexes, keys, cookies. Lanes are numbered."""
+ import json, os, os, re, sys, time, urllib.request, urllib.error, datetime as dt, tempfile
+@@ -219,36 +219,62 @@ for n,a in enumerate(by_provider.get("kimi",[]), 1):
+     recs.append(rec)
+ files["kimi.json"]=recs; status["groups"]["kimi"]={"lanes":len(recs),"errors":errs}
+ 
+-# ---- opencode-go pool (plugin) ----
++# ---- opencode-go pool (subscription-pool plugin aggregate route) ----
++# TOG-2474: opencode-go-pool was retired by the v0.4.0 install (404 today, per main.log). The
++# coordinator now serves one aggregate status at /plugins/subscription-pool/status with a
++# `providers` map keyed by provider id (module contract, TOG-2462/PR#34, merged 87b10cb).
++# providers["opencode-go"].accounts[] = {name, disabled, windows: {five_hour, weekly, monthly}};
++# each window = {known, exhausted, utilization?, resets_at?, source?, authoritative?}. utilization
++# here is already a 0-1 ratio (unlike the retired plugin's usage_percent 0-100), so it is used
++# directly instead of through frac().
+ OPENCODE_GO_NO_CN = set()      # owner enabled China-hosted models on ALL OpenCode Go workspaces 2026-09-06 15:2xZ (was {"go-2"})
+ CN_HOSTED_MARKERS = ("deepseek","glm","kimi","qwen","minimax","hy3","hy4","mimo","longcat","muse")
+ def is_cn_model(mid):
+     m = mid.replace("cliproxy/","").lower()
+     return any(m.startswith(x) for x in CN_HOSTED_MARKERS)
++def ratio(v):
++    try: v = float(v)
++    except Exception: return None
++    if v < 0: return None
++    return min(v, 1.0)
+ recs=[]; errs=[]
+ try:
+-    p = mgmt("/plugins/opencode-go-pool/status")
+-    for n,acc in enumerate(p.get("accounts",[]), 1):
++    p = mgmt("/plugins/subscription-pool/status")
++    prov = (p.get("providers") or {}).get("opencode-go") or {}
++    if prov.get("status") == "reconfigure_rejected": errs.append("opencode-go:reconfigure_rejected")
++    if prov.get("validation_error"): errs.append("opencode-go:validation_error")
++    for n,acc in enumerate(prov.get("accounts",[]), 1):
++        # an account the module reports as disabled is not part of the serving pool, same
++        # treatment as a disabled Claude auth-file lane above.
++        if acc.get("disabled"): continue
+         # monthly is the longest window the pool plugin meters with a real reset (per TOG-1916 §5.3 item 4); no
+         # per-account plan-size signal exists on this plugin, so weight defaults like codex/kimi/zai.
+         rec={"lane": f"opencode-go-lane-{n}", "health": "healthy", "weight": DEFAULT_WEIGHT,
+              "governing_window": "monthly", "window_seconds": {"five_hour": WINDOW_SECONDS["five_hour"], "weekly": WINDOW_SECONDS["weekly"], "monthly": WINDOW_SECONDS["monthly"]}}
++        exhausted = False
+         for wname, w in (acc.get("windows") or {}).items():
+-            name = {"5h":"five_hour","weekly":"weekly","monthly":"monthly"}.get(wname, wname)
+-            if isinstance(w, dict) and w.get("usage_percent") is not None:
+-                rec[f"{name}_utilization"] = frac(w["usage_percent"]); rec[f"{name}_resets_at"] = iso(w.get("reset_at"))
+-        # 2026-09-06 operator: the pool plugin's own verdict wins. An account it has blocked (quota window at
+-        # threshold) or suspended (e.g. 403 RegionError: China-hosted models not enabled on that workspace) is not
+-        # usable no matter what its dashboard percentages say; without this the dispatcher kept pinning
+-        # deepseek/glm/kimi-go/qwen to a lane that could not serve them.
++            name = {"five_hour":"five_hour","weekly":"weekly","monthly":"monthly"}.get(wname, wname)
++            if not isinstance(w, dict): continue
++            if w.get("known") and w.get("utilization") is not None:
++                rec[f"{name}_utilization"] = ratio(w["utilization"]); rec[f"{name}_resets_at"] = iso(w.get("resets_at"))
++            # exhausted=true is itself the observed signal even when known=false (the module has no
++            # numeric percent but has learned the window is spent, e.g. from a 429). Same principle
++            # as the Kimi lane above: treat exhausted as utilization=1.0 rather than leave the
++            # governing window's utilization missing, which the old plugin's blocked-account branch
++            # also guaranteed by forcing weekly/five_hour to 1.0.
++            if w.get("exhausted"):
++                exhausted = True
++                rec[f"{name}_utilization"] = 1.0
++                if w.get("resets_at"): rec[f"{name}_resets_at"] = iso(w.get("resets_at"))
+         rec["account"] = acc.get("name")
+         # go-2's workspace has not opted in to China-hosted models (403 RegionError on deepseek/glm/kimi/qwen…);
+         # the pool then suspends the whole account for 30 min, so CN models must only count go-1's capacity.
+         rec["cn_capable"] = acc.get("name") not in OPENCODE_GO_NO_CN
+-        blk = acc.get("blocked") or acc.get("suspend_reason")
+-        if blk:
+-            rec["health"] = "exhausted"; rec["blocked_reason"] = str(blk)[:80]
+-            rec["weekly_utilization"] = 1.0; rec["five_hour_utilization"] = 1.0
++        # the module's own per-window exhausted verdict wins, same principle as the retired plugin's
++        # blocked/suspend_reason check: an account the coordinator marks exhausted is not usable no
++        # matter what a stale utilization number says. There is no free-text reason in this schema
++        # (only booleans), so blocked_reason is dropped rather than fabricated.
++        if exhausted: rec["health"] = "exhausted"
+         recs.append(rec)
+ except Exception as e:
+     errs.append(type(e).__name__)
