@@ -10,6 +10,22 @@ version is not present here.
 
 ## [Unreleased]
 
+### Changed
+
+- **CI merges three redundant jobs into one (TOG-2547).** `typecheck, test,
+  build`, `the packed tarball is installable` and `version and changelog` each
+  paid their own checkout/setup-node/npm-ci for 7-30s of real work, and GitHub
+  bills per job rounded up to the nearest minute — three sub-minute jobs billed
+  three minutes apiece for no functional reason. They are now one job,
+  `typecheck, test, build, package, version`, in the same fast-fail-first
+  order; `secret scan` stays separate because it needs its own full-history
+  checkout. No check was removed. This change is queued as
+  `docs/operator/tog-2547-ci-job-merge.patch` per
+  [`docs/decisions/0008`](docs/decisions/0008-workflow-files-are-operator-applied.md)
+  — no agent can push `.github/workflows/`, so `ci.yml` itself is unchanged
+  until an operator applies the patch. See
+  [`docs/decisions/0011`](docs/decisions/0011-ci-jobs-merge-for-per-job-billing.md).
+
 ### Fixed
 
 - **Decision telemetry is no longer a 200-record ring buffer (TOG-1038).** Every
