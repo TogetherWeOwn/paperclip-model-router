@@ -16,10 +16,8 @@
         "strict_required_status_checks_policy": false,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
-          { "context": "typecheck, test, build", "integration_id": 15368 },
-          { "context": "secret scan", "integration_id": 15368 },
-          { "context": "the packed tarball is installable", "integration_id": 15368 },
-          { "context": "version and changelog", "integration_id": 15368 }
+          { "context": "typecheck, test, build, package, version", "integration_id": 15368 },
+          { "context": "secret scan", "integration_id": 15368 }
         ]
       }
     },

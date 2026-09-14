@@ -54,6 +54,11 @@ required check whose name matches no real job is the classic way a gate silently
 never runs. All four report on `pull_request`, so they are usable as merge gates.
 `release` is deliberately not required — it fires only on `v*.*.*` tags, and
 requiring it would deadlock every PR.
+>
+> **Superseded in part by [`0011`](0011-ci-jobs-merge-for-per-job-billing.md)
+> (TOG-2547, 2026-09-14):** three of these four job names were merged into one.
+> The check-name list above describes `ci.yml` as it existed from 2026-08-23 to
+> 2026-09-14; see 0011 for the current list and why it changed.
 
 **Require a pull request, but require zero approving reviews.** Required status
 checks alone do not force a change through a PR, and the concern here is merges to
