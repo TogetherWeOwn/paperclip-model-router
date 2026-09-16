@@ -277,9 +277,9 @@ export const ROUTER_CONFIG_SCHEMA = {
               pace: {
                 type: "object",
                 additionalProperties: false,
-                required: ["laneId", "windows"],
+                required: ["laneId"],
                 description:
-                  "Lane-document shape for pace evaluation (TOG-1916 §2). Absent = pace-neutral source.",
+                  "Lane-document shape for pace evaluation (TOG-1916 §2). A health-only lane may use an empty windows array and remains pace-neutral until utilization telemetry appears. Absent = pace-neutral source.",
                 properties: {
                   laneId: { type: "string", minLength: 1 },
                   free: { type: "boolean", default: false },
@@ -290,7 +290,7 @@ export const ROUTER_CONFIG_SCHEMA = {
                   staleAfterSecondsField: { type: "string", minLength: 1 },
                   windows: {
                     type: "array",
-                    minItems: 1,
+                    default: [],
                     items: {
                       type: "object",
                       additionalProperties: false,

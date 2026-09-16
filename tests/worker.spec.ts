@@ -425,6 +425,101 @@ describe("one select-invoke-normalize-record path", () => {
     expect(JSON.stringify([failed, afterFailure, secretCalls])).not.toContain("leaked capacity body");
   });
 
+  it("persists fresh pace independently of legacy capacity evidence and clears it on refresh failure", async () => {
+    const { harness, configs } = await sharedWorker();
+    const config = structuredClone(configs.get(COMPANY_A)!);
+    (config.routing as { stickyModelWithinIssue: boolean }).stickyModelWithinIssue = false;
+    const expensive = (config.models as Array<{ id: string; tier: string }>).find((model) => model.id === "claude-sonnet-5");
+    if (!expensive) throw new Error("missing expensive test model");
+    expensive.tier = "standard";
+    config.capacityRouting = {
+      enabled: true,
+      mode: "enforce",
+      unknownTelemetry: "fail-open",
+      paceOrdering: true,
+      maxSnapshotAgeMs: 300_000,
+      sources: [
+        {
+          id: "expensive-behind",
+          statusUrl: "https://capacity.example/behind",
+          modelIds: ["claude-sonnet-5"],
+          healthFields: ["health"],
+          requestTimeoutMs: 5000,
+          maxResponseBytes: 262144,
+          windows: [{ name: "legacy", utilizationFields: ["legacy_used"], resetFields: [] }],
+          pace: {
+            laneId: "expensive-behind",
+            healthFields: ["health"],
+            windows: [{ name: "weekly", role: "allowance", utilizationFields: ["weekly_utilization"], resetFields: ["weekly_resets_at"], defaultWindowSeconds: 604800 }],
+          },
+        },
+        {
+          id: "cheap-ahead",
+          statusUrl: "https://capacity.example/ahead",
+          modelIds: ["minimax-m2.5"],
+          healthFields: ["health"],
+          requestTimeoutMs: 5000,
+          maxResponseBytes: 262144,
+          windows: [{ name: "legacy", utilizationFields: ["legacy_used"], resetFields: [] }],
+          pace: {
+            laneId: "cheap-ahead",
+            healthFields: ["health"],
+            windows: [{ name: "weekly", role: "allowance", utilizationFields: ["weekly_utilization"], resetFields: ["weekly_resets_at"], defaultWindowSeconds: 604800 }],
+          },
+        },
+      ],
+    };
+    configs.set(COMPANY_A, config);
+    const observedAt = new Date();
+    const laneDocument = (utilization: number, resetDays: number) => ({
+      schemaVersion: 1,
+      observedAt: observedAt.toISOString(),
+      staleAfterSeconds: 300,
+      records: [{
+        health: "healthy",
+        governing_window: "weekly",
+        window_seconds: { weekly: 604800 },
+        weekly_utilization: utilization,
+        weekly_resets_at: new Date(observedAt.getTime() + resetDays * 24 * 60 * 60 * 1_000).toISOString(),
+      }],
+    });
+    let fail = false;
+    harness.ctx.http.fetch = async (url) => {
+      if (!String(url).includes("capacity.example")) return success("openai");
+      if (fail) return new Response("{}", { status: 503, headers: { "content-type": "application/json" } });
+      const behind = String(url).endsWith("/behind");
+      return new Response(JSON.stringify(behind ? laneDocument(0.1, 1) : laneDocument(0.95, 3)), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    const refreshed = await harness.performAction(ACTION_KEYS.refreshCapacity, {}, { companyId: COMPANY_A }) as {
+      error: string;
+      paceVerdicts: Record<string, { state: string }>;
+    };
+    expect(refreshed.error).toContain("capacity payload carried no recognizable telemetry records");
+    expect(["behind", "behind-urgent"]).toContain(refreshed.paceVerdicts["expensive-behind"]?.state);
+    expect(refreshed.paceVerdicts["cheap-ahead"]?.state).toBe("ahead");
+    const storedFresh = harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.capacitySnapshot });
+    expect(storedFresh).toMatchObject({
+      paceRefreshedAt: expect.any(String),
+      paceVerdicts: {
+        "expensive-behind": expect.objectContaining({ state: expect.stringMatching(/^behind/) }),
+        "cheap-ahead": expect.objectContaining({ state: "ahead" }),
+      },
+    });
+    const paceSelected = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as { decision: { modelId: string } };
+    expect(paceSelected.decision.modelId).toBe("claude-sonnet-5");
+
+    fail = true;
+    await harness.performAction(ACTION_KEYS.refreshCapacity, {}, { companyId: COMPANY_A });
+    const storedFailed = harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.capacitySnapshot });
+    expect(storedFailed).toMatchObject({ paceVerdicts: {}, lastRefreshError: expect.stringContaining("capacity-http-failed") });
+    const staticSelected = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as { decision: { modelId: string } };
+    expect(staticSelected.decision.modelId).toBe("minimax-m2.5");
+  });
+
   it("rejects mixed valid and malformed refresh records and preserves prior evidence", async () => {
     const { harness, configs } = await sharedWorker();
     const config = structuredClone(configs.get(COMPANY_A)!);

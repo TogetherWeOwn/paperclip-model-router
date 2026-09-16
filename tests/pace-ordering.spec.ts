@@ -93,6 +93,47 @@ describe("TOG-2139 pace ordering (slice 6)", () => {
     expect(AHEAD.score!.deviation).toBeGreaterThan(BEHIND.score!.deviation);
   });
 
+  it("keeps a health-only live lane explicit and fail-neutral", () => {
+    const config = resolveConfig({
+      capacityRouting: {
+        sources: [{
+          id: "health-only",
+          statusUrl: "https://router.example/health-only.json",
+          modelIds: ["health-only-model"],
+          windows: [{ name: "weekly", utilizationFields: ["weekly_utilization"] }],
+          pace: {
+            laneId: "health-only",
+            healthFields: ["health"],
+            weightFields: ["weight"],
+            governingWindowField: "governing_window",
+            windowSecondsField: "window_seconds",
+            staleAfterSecondsField: "staleAfterSeconds",
+            windows: [],
+          },
+        }],
+      },
+    });
+    const pace = config.capacityRouting.sources[0]?.pace;
+    expect(pace).toBeDefined();
+    expect(pace?.windows).toEqual([]);
+
+    const verdict = evaluateLanePace({
+      observation: normalizeLaneDocument({
+        document: laneDocument([{
+          health: "unknown",
+          weight: 1,
+          governing_window: "weekly",
+          window_seconds: { weekly: 604800 },
+        }]),
+        definition: pace!,
+      }),
+      asOf: NOW,
+    });
+    expect(verdict.state).toBe("unknown");
+    expect(verdict.serviceable).toBe(true);
+    expect(verdict.reason).toBe("no-computable-governing-window");
+  });
+
   it("flag off: pace verdicts present in signals do not change the decision (frozen behavior)", () => {
     const config = baseConfig(false);
     const signals = {

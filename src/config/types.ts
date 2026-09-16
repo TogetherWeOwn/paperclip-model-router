@@ -91,9 +91,10 @@ export interface CapacityRoutingConfig {
  * Lane-document definition for pace evaluation on a capacity source
  * (TOG-1916 §2 shape: records[] with per-account windows). Structurally the
  * shared package's `LanePaceDefinition`; the resolver fills the defaults the
- * JSON schema leaves optional. A source without one is fail-neutral under
- * pace ordering — its models rank `unknown`, never denied, exactly like
- * missing telemetry today.
+ * JSON schema leaves optional. A health-only lane may carry an empty windows
+ * array; it yields an explicit `unknown` verdict until utilization telemetry
+ * appears. A source without a pace block is also fail-neutral — its models rank
+ * `unknown`, never denied, exactly like missing telemetry today.
  */
 export type SourcePaceDefinition = import("../capacity/types.js").LanePaceDefinition;
 

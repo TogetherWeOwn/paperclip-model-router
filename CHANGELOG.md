@@ -10,7 +10,22 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-16
+
+Compatibility: drop-in over 0.4.2 while `capacityRouting.paceOrdering` remains
+false (the default). Before enabling it, add a `pace` definition to every live
+capacity source. Health-only sources may use `windows: []`; they emit an explicit,
+fail-neutral `unknown` verdict until utilization telemetry appears. The flag is a
+separate later one-key change and can be rolled back independently.
+
 ### Changed
+
+- **Pace ordering is release-ready for the live four-source router (TOG-2922).**
+  The manifest accepts `capacityRouting.paceOrdering` and source `pace` blocks,
+  refreshes persist non-empty lane verdicts, and selection orders only the
+  already-eligible survivor pool toward the furthest-behind lane. Health-only
+  lane documents are retained as explicit `unknown` verdicts instead of having
+  their pace block discarded, so telemetry gaps remain visible and fail-neutral.
 
 - **CI merges three redundant jobs into one (TOG-2547).** `typecheck, test,
   build`, `the packed tarball is installable` and `version and changelog` each

@@ -1,7 +1,7 @@
 export const PLUGIN_ID = "togetherweown.paperclip-model-router";
 
 /** Kept in sync with package.json by `npm run verify`. */
-export const PLUGIN_VERSION = "0.4.2";
+export const PLUGIN_VERSION = "0.4.3";
 
 export const PLUGIN_API_VERSION = 1 as const;
 

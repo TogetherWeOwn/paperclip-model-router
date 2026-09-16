@@ -1,0 +1,100 @@
+{
+  "capacityRouting": {
+    "pacePolicy": {
+      "margin": 0.1,
+      "urgentResetSeconds": 86400,
+      "maxSnapshotAgeSeconds": 300
+    },
+    "sourcesById": {
+      "cliproxy-claude": {
+        "pace": {
+          "laneId": "cliproxy-claude",
+          "healthFields": ["health"],
+          "weightFields": ["weight"],
+          "governingWindowField": "governing_window",
+          "windowSecondsField": "window_seconds",
+          "staleAfterSecondsField": "staleAfterSeconds",
+          "windows": [
+            {
+              "name": "five_hour",
+              "role": "serviceability",
+              "utilizationFields": ["five_hour_utilization"],
+              "resetFields": ["five_hour_resets_at"],
+              "defaultWindowSeconds": 18000
+            },
+            {
+              "name": "seven_day",
+              "role": "allowance",
+              "utilizationFields": ["seven_day_utilization"],
+              "resetFields": ["seven_day_resets_at"],
+              "defaultWindowSeconds": 604800
+            }
+          ]
+        }
+      },
+      "cliproxy-codex": {
+        "pace": {
+          "laneId": "cliproxy-codex",
+          "healthFields": ["health"],
+          "weightFields": ["weight"],
+          "governingWindowField": "governing_window",
+          "windowSecondsField": "window_seconds",
+          "staleAfterSecondsField": "staleAfterSeconds",
+          "windows": [
+            {
+              "name": "weekly",
+              "role": "allowance",
+              "utilizationFields": ["weekly_utilization"],
+              "resetFields": ["weekly_resets_at"],
+              "defaultWindowSeconds": 604800
+            }
+          ]
+        }
+      },
+      "cliproxy-kimi": {
+        "pace": {
+          "laneId": "cliproxy-kimi",
+          "healthFields": ["health"],
+          "weightFields": ["weight"],
+          "governingWindowField": "governing_window",
+          "windowSecondsField": "window_seconds",
+          "staleAfterSecondsField": "staleAfterSeconds",
+          "windows": []
+        }
+      },
+      "cliproxy-opencode-go": {
+        "pace": {
+          "laneId": "cliproxy-opencode-go",
+          "healthFields": ["health"],
+          "weightFields": ["weight"],
+          "governingWindowField": "governing_window",
+          "windowSecondsField": "window_seconds",
+          "staleAfterSecondsField": "staleAfterSeconds",
+          "windows": [
+            {
+              "name": "five_hour",
+              "role": "serviceability",
+              "utilizationFields": ["five_hour_utilization"],
+              "resetFields": ["five_hour_resets_at"],
+              "defaultWindowSeconds": 18000
+            },
+            {
+              "name": "weekly",
+              "role": "allowance",
+              "utilizationFields": ["weekly_utilization"],
+              "resetFields": ["weekly_resets_at"],
+              "defaultWindowSeconds": 604800
+            },
+            {
+              "name": "monthly",
+              "role": "allowance",
+              "utilizationFields": ["monthly_utilization"],
+              "resetFields": ["monthly_resets_at"],
+              "defaultWindowSeconds": 2592000
+            }
+          ]
+        }
+      }
+    }
+  }
+}
