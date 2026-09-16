@@ -1,4 +1,4 @@
-# TOG-2922 — v0.4.4 pace-ordering release handoff
+# TOG-2922 — v0.4.5 pace-ordering release handoff
 
 ## Scope
 
@@ -30,7 +30,7 @@ byte-for-byte equivalent after canonical JSON ordering.
 
 Kimi currently publishes health, weight, governing-window, duration, and
 freshness fields but no real utilization/reset pair. Its health-only block uses
-`windows: []`; v0.4.4 retains an explicit fail-neutral `unknown` verdict instead
+`windows: []`; v0.4.5 retains an explicit fail-neutral `unknown` verdict instead
 of fabricating telemetry or discarding the lane.
 
 ## Install and prerequisite migration
@@ -44,9 +44,9 @@ capability-approval boundary and applies migrations transactionally.
 set -euo pipefail
 PLUGIN='togetherweown.paperclip-model-router'
 COMPANY_ID='ef993a7e-5ea7-445f-ba88-27a6a2690c3a'
-BUNDLE='/secure/path/tog-2922-model-router-v0.4.4'
-TGZ="$BUNDLE/togetherweown-paperclip-model-router-0.4.4.tgz"
-NEW_DIR='/paperclip/plugin-packages-root/model-router-0.4.4'
+BUNDLE='/secure/path/tog-2922-model-router-v0.4.5'
+TGZ="$BUNDLE/togetherweown-paperclip-model-router-0.4.5.tgz"
+NEW_DIR='/paperclip/plugin-packages-root/model-router-0.4.5'
 BACKUP='/secure/path/model-router-config-before-tog-2922.json'
 
 sha256sum -c "$BUNDLE/SHA256SUMS"
@@ -72,13 +72,29 @@ npx paperclipai plugin action "$PLUGIN" refresh-capacity \
   --payload-json "$(jq -nc --arg companyId "$COMPANY_ID" '{companyId:$companyId,params:{}}')" \
   --json | tee "$BUNDLE/prerequisite-refresh-result.json"
 
-jq -e '.data.paceVerdicts | keys | sort == ["cliproxy-claude","cliproxy-codex","cliproxy-kimi","cliproxy-opencode-go"]' \
+node "$NEW_DIR/scripts/tog-2922-prerequisite-refresh-gate.mjs" \
   "$BUNDLE/prerequisite-refresh-result.json"
 ```
 
-Do not continue if the final assertion fails. The expected Kimi verdict is
-present but `unknown`; the other three must be computable from their real lane
-documents.
+Do not continue if that gate fails; it exits non-zero and names each lane at
+fault.
+
+Counting the four lane keys is **not** enough, which is why this is a script
+rather than a `jq` one-liner. A lane whose `utilizationFields` no longer match
+what its collector publishes still appears as a key, carrying
+`state: "unknown"` and a null score. The keys-only assertion shipped in the
+first v0.4.4 cut passed exactly that broken prerequisite (TOG-2993). The gate
+therefore requires:
+
+- `cliproxy-claude`, `cliproxy-codex`, `cliproxy-opencode-go` — each a
+  non-`unknown` state **and** a non-null `score`;
+- `cliproxy-kimi` — exactly `unknown`. It publishes no utilization/reset pair,
+  so its block is deliberately `windows: []`; a *computable* Kimi verdict means
+  the lane document changed and the pace blocks need re-deriving.
+
+The same rule is asserted in CI against the reviewed blocks
+(`tests/tog-2922-prerequisite-refresh.spec.ts`), so the install gate and the
+release gate cannot drift apart.
 
 ## Later one-key enable
 
@@ -125,7 +141,7 @@ npx paperclipai plugin config:set "$PLUGIN" -C "$COMPANY_ID" \
 ```
 
 If the old installed directory does not contain the transformer, use the
-v0.4.4 bundle's transformer for `restore`; that command copies the saved config
+v0.4.5 bundle's transformer for `restore`; that command copies the saved config
 without adding any pace fields.
 
 ## Verification evidence

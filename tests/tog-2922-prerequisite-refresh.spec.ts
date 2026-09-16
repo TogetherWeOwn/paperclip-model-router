@@ -148,10 +148,26 @@ describe("TOG-2922: the reviewed prerequisite pace blocks produce verdicts with 
     ]);
   });
 
-  it("returns a verdict for every source even while legacy capacity evidence is empty", async () => {
+  /**
+   * The expected verdict for each lane, stated as a literal.
+   *
+   * An earlier cut of this file asserted only `typeof state === "string"`
+   * (TOG-2993). That is vacuous: a lane whose `utilizationFields` no longer
+   * match what its collector publishes degrades to `unknown`, and `unknown` is
+   * a string, so a broken prerequisite stayed green. Only Kimi is allowed to be
+   * `unknown`, and only because its block is deliberately `windows: []`.
+   */
+  const EXPECTED_STATE: Record<string, string> = {
+    "cliproxy-claude": "on",
+    "cliproxy-codex": "ahead",
+    "cliproxy-kimi": "unknown",
+    "cliproxy-opencode-go": "behind",
+  };
+
+  it("returns the expected verdict for every source even while legacy capacity evidence is empty", async () => {
     for (const sourceId of Object.keys(sourcesById).sort()) {
       const snapshot = await verdictFor(sourceId);
-      expect(typeof snapshot.pace?.state, `${sourceId} produced no verdict`).toBe("string");
+      expect(snapshot.pace?.state, `${sourceId} produced the wrong verdict`).toBe(EXPECTED_STATE[sourceId]);
       // These fixtures carry no legacy capacity windows, so the evidence
       // normalizer reports exactly the error the LIVE snapshot has carried
       // since 2026-09-10. Pace is computed from the same body by its own
@@ -169,6 +185,21 @@ describe("TOG-2922: the reviewed prerequisite pace blocks produce verdicts with 
     const opencode = await verdictFor("cliproxy-opencode-go");
     expect(codex.pace?.state, "codex at 0.99 utilization should be ahead of pace").toBe("ahead");
     expect(opencode.pace?.state, "opencode-go at 0.23 utilization should be behind pace").toMatch(/^behind/);
+  });
+
+  it("computes Claude from its own lane document rather than degrading to unknown", async () => {
+    // Claude is the lane TOG-2993 caught: it is not covered by the
+    // ahead/behind split above, and it is the one lane whose fields nothing
+    // else pins. Renaming either `seven_day_utilization` or
+    // `seven_day_resets_at` in the reviewed prerequisites makes the governing
+    // window incomputable, and this assertion is what turns that red.
+    const claude = await verdictFor("cliproxy-claude");
+    expect(claude.pace?.state, "Claude must not be unknown").not.toBe("unknown");
+    expect(claude.pace?.reason).toBe("ok");
+    // 0.59 spent against 0.5 of the seven-day window elapsed: inside the 0.1
+    // margin, so `on`. Pinning the score proves the number came from the lane
+    // document and not from a default.
+    expect(claude.pace?.score).toEqual({ utilization: 0.59, elapsed: 0.5, deviation: 0.09 });
   });
 
   it("keeps Kimi explicitly unknown instead of fabricating or dropping it", async () => {

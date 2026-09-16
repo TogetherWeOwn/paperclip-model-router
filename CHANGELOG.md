@@ -10,6 +10,43 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-09-16
+
+Supersedes the never-tagged 0.4.4 candidate, which was rejected in review
+(TOG-2993). Its release gate was vacuous for the Claude lane and its package
+silently shipped no operator runbook. 0.4.4 was never tagged or published; no
+installation carries it.
+
+Compatibility: unchanged from the 0.4.4 candidate — drop-in over 0.4.2 while
+`capacityRouting.paceOrdering` remains false. No runtime behaviour changed in
+this version; the fixes are to the release and install gates.
+
+### Fixed
+
+- **The prerequisite gate could not see a Claude lane it had stopped measuring
+  (TOG-2993).** The acceptance spec asserted only that each lane returned a
+  state *string*, and `unknown` is a string — so renaming Claude's
+  `utilizationFields` to nonexistent literals left the suite 4/4 green with
+  Claude silently unmeasurable. Claude was the one lane no other assertion
+  covered. Each lane's expected verdict is now pinned as a literal, Claude's
+  score is pinned to prove it was computed rather than defaulted, and the pair
+  of controls is recorded: the same break is RED under the new assertion and
+  GREEN under the old one.
+- **The live install assertion had the same hole.** The runbook's keys-only
+  `jq` check is replaced by `scripts/tog-2922-prerequisite-refresh-gate.mjs`,
+  which requires a non-`unknown` state *and* a non-null score for
+  `cliproxy-claude`, `cliproxy-codex` and `cliproxy-opencode-go`, and exactly
+  `unknown` for `cliproxy-kimi`. The gate is unit-tested against the refresh
+  shapes the old check accepted, so the install gate and the CI gate cannot
+  drift apart.
+- **The 0.4.4 package shipped no operator runbook.** `files` still named
+  `docs/operator/TOG-2922-v0.4.3-pace-ordering.md` after the rename to v0.4.4;
+  npm does not error on a `files` entry that matches nothing, it just ships one
+  file fewer, so the tarball reproduced byte-for-byte while missing the
+  document the operator installs from. The runbook now has a version-stable
+  name, and a test asserts every `files` entry exists and that every script the
+  runbook tells the operator to run is actually packaged.
+
 ## [0.4.4] - 2026-09-16
 
 Supersedes the never-tagged 0.4.3 candidate, which was rejected in review: it

@@ -129,10 +129,22 @@ const packedVersion = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "
 if (packedVersion !== version) fail("package.json version changed mid-build");
 
 copyFileSync(path.join(ROOT, "scripts/tog-2922-config-delta.mjs"), path.join(dir, "scripts/tog-2922-config-delta.mjs"));
+copyFileSync(path.join(ROOT, "scripts/tog-2922-prerequisite-refresh-gate.mjs"), path.join(dir, "scripts/tog-2922-prerequisite-refresh-gate.mjs"));
 copyFileSync(path.join(ROOT, "docs/operator/tog-2922-pace-prerequisites.json"), path.join(dir, "docs/tog-2922-pace-prerequisites.json"));
-const handoff = `docs/operator/TOG-2922-v${version}-pace-ordering.md`;
-if (!existsSync(path.join(ROOT, handoff))) fail(`missing handoff runbook ${handoff} for version ${version}`);
+// The runbook filename is version-stable on purpose (TOG-2993): the old
+// `TOG-2922-v<version>-pace-ordering.md` had to be renamed on every bump, and
+// the v0.4.4 bump renamed the file but not the `files` entry in package.json,
+// so the published tarball carried no runbook at all. The bundle copy keeps a
+// versioned name so an operator can tell two bundles apart.
+const handoff = "docs/operator/TOG-2922-pace-ordering.md";
+if (!existsSync(path.join(ROOT, handoff))) fail(`missing handoff runbook ${handoff}`);
 copyFileSync(path.join(ROOT, handoff), path.join(dir, `docs/TOG-2922-v${version}-pace-ordering.md`));
+// The runbook must travel inside the installed package too, not just beside it
+// in the bundle -- that is the failure this check exists to prevent.
+const packagedFiles = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")).files ?? [];
+for (const required of [handoff, "scripts/tog-2922-prerequisite-refresh-gate.mjs", "scripts/tog-2922-config-delta.mjs"]) {
+  if (!packagedFiles.includes(required)) fail(`${required} is missing from package.json "files"; the installed package would not carry it`);
+}
 
 const manifest = {
   issue: "TOG-2922",

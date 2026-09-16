@@ -1,6 +1,6 @@
 {
   "name": "@togetherweown/paperclip-model-router",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "private": true,
   "description": "Paperclip plugin: select a model, invoke a company-compatible upstream once, and return a normalized audited result.",
   "license": "UNLICENSED",
@@ -22,8 +22,9 @@
     "README.md",
     "CHANGELOG.md",
     "scripts/tog-2922-config-delta.mjs",
+    "scripts/tog-2922-prerequisite-refresh-gate.mjs",
     "docs/operator/tog-2922-pace-prerequisites.json",
-    "docs/operator/TOG-2922-v0.4.3-pace-ordering.md"
+    "docs/operator/TOG-2922-pace-ordering.md"
   ],
   "scripts": {
     "build": "node esbuild.config.mjs",
