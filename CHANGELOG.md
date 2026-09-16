@@ -10,7 +10,12 @@ version is not present here.
 
 ## [Unreleased]
 
-## [0.4.3] - 2026-09-16
+## [0.4.4] - 2026-09-16
+
+Supersedes the never-tagged 0.4.3 candidate, which was rejected in review: it
+gated pace *evaluation* on the same flag as pace *steering*, so the prerequisite
+config landed `source.pace` but produced zero verdicts. 0.4.3 was never tagged or
+published; no installation carries it.
 
 Compatibility: drop-in over 0.4.2 while `capacityRouting.paceOrdering` remains
 false (the default). Before enabling it, add a `pace` definition to every live
@@ -19,6 +24,15 @@ fail-neutral `unknown` verdict until utilization telemetry appears. The flag is 
 separate later one-key change and can be rolled back independently.
 
 ### Changed
+
+- **A refresh evaluates configured lane pace even while `paceOrdering` is off
+  (TOG-2922).** Evaluation is now keyed on a source having a `pace` block, not on
+  the steering flag, so the prerequisite config write warms real verdicts and the
+  later enable is genuinely one-key and observable beforehand. Pace rides the same
+  capacity response, so no extra fetch is made and a malformed lane document stays
+  fail-neutral. Steering remains gated in two independent places — the verdicts
+  passed into selection and `paceActive` inside the engine — and a regression test
+  pins both halves: verdicts present, selection unmoved.
 
 - **Pace ordering is release-ready for the live four-source router (TOG-2922).**
   The manifest accepts `capacityRouting.paceOrdering` and source `pace` blocks,

@@ -275,10 +275,13 @@ export function createPlugin() {
             http: capacityHttp(ctx),
             apiKey,
             now: () => new Date().toISOString(),
-            // TOG-2139: pace is computed from the same response body. The lane
-            // definition is passed only when paceOrdering is on, so a rollout
-            // changes nothing about the capacity fetch itself.
-            lane: config.capacityRouting.paceOrdering ? source.pace : undefined,
+            // TOG-2139: pace is computed from the same response body, so passing
+            // the lane definition changes nothing about the capacity fetch itself.
+            // TOG-2922: evaluate it whenever the source configures it, including
+            // while paceOrdering is off. That warms the stored verdicts so the
+            // enable is genuinely one-key and observable before it steers
+            // anything; steering stays gated on the flag at the selectModel call.
+            lane: source.pace,
             pacePolicy: config.capacityRouting.pacePolicy,
           }));
         }
