@@ -156,7 +156,6 @@ function resolveSourcePace(value: unknown): CapacityRoutingConfig["sources"][num
         return [window];
       })
     : [];
-  if (windows.length === 0) return undefined;
   const pace: NonNullable<CapacityRoutingConfig["sources"][number]["pace"]> = {
     laneId,
     healthFields: pickStringArray(value.healthFields, ["health"]),

@@ -10,7 +10,73 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-09-16
+
+Supersedes the never-tagged 0.4.4 candidate, which was rejected in review
+(TOG-2993). Its release gate was vacuous for the Claude lane and its package
+silently shipped no operator runbook. 0.4.4 was never tagged or published; no
+installation carries it.
+
+Compatibility: unchanged from the 0.4.4 candidate — drop-in over 0.4.2 while
+`capacityRouting.paceOrdering` remains false. No runtime behaviour changed in
+this version; the fixes are to the release and install gates.
+
+### Fixed
+
+- **The prerequisite gate could not see a Claude lane it had stopped measuring
+  (TOG-2993).** The acceptance spec asserted only that each lane returned a
+  state *string*, and `unknown` is a string — so renaming Claude's
+  `utilizationFields` to nonexistent literals left the suite 4/4 green with
+  Claude silently unmeasurable. Claude was the one lane no other assertion
+  covered. Each lane's expected verdict is now pinned as a literal, Claude's
+  score is pinned to prove it was computed rather than defaulted, and the pair
+  of controls is recorded: the same break is RED under the new assertion and
+  GREEN under the old one.
+- **The live install assertion had the same hole.** The runbook's keys-only
+  `jq` check is replaced by `scripts/tog-2922-prerequisite-refresh-gate.mjs`,
+  which requires a non-`unknown` state *and* a non-null score for
+  `cliproxy-claude`, `cliproxy-codex` and `cliproxy-opencode-go`, and exactly
+  `unknown` for `cliproxy-kimi`. The gate is unit-tested against the refresh
+  shapes the old check accepted, so the install gate and the CI gate cannot
+  drift apart.
+- **The 0.4.4 package shipped no operator runbook.** `files` still named
+  `docs/operator/TOG-2922-v0.4.3-pace-ordering.md` after the rename to v0.4.4;
+  npm does not error on a `files` entry that matches nothing, it just ships one
+  file fewer, so the tarball reproduced byte-for-byte while missing the
+  document the operator installs from. The runbook now has a version-stable
+  name, and a test asserts every `files` entry exists and that every script the
+  runbook tells the operator to run is actually packaged.
+
+## [0.4.4] - 2026-09-16
+
+Supersedes the never-tagged 0.4.3 candidate, which was rejected in review: it
+gated pace *evaluation* on the same flag as pace *steering*, so the prerequisite
+config landed `source.pace` but produced zero verdicts. 0.4.3 was never tagged or
+published; no installation carries it.
+
+Compatibility: drop-in over 0.4.2 while `capacityRouting.paceOrdering` remains
+false (the default). Before enabling it, add a `pace` definition to every live
+capacity source. Health-only sources may use `windows: []`; they emit an explicit,
+fail-neutral `unknown` verdict until utilization telemetry appears. The flag is a
+separate later one-key change and can be rolled back independently.
+
 ### Changed
+
+- **A refresh evaluates configured lane pace even while `paceOrdering` is off
+  (TOG-2922).** Evaluation is now keyed on a source having a `pace` block, not on
+  the steering flag, so the prerequisite config write warms real verdicts and the
+  later enable is genuinely one-key and observable beforehand. Pace rides the same
+  capacity response, so no extra fetch is made and a malformed lane document stays
+  fail-neutral. Steering remains gated in two independent places — the verdicts
+  passed into selection and `paceActive` inside the engine — and a regression test
+  pins both halves: verdicts present, selection unmoved.
+
+- **Pace ordering is release-ready for the live four-source router (TOG-2922).**
+  The manifest accepts `capacityRouting.paceOrdering` and source `pace` blocks,
+  refreshes persist non-empty lane verdicts, and selection orders only the
+  already-eligible survivor pool toward the furthest-behind lane. Health-only
+  lane documents are retained as explicit `unknown` verdicts instead of having
+  their pace block discarded, so telemetry gaps remain visible and fail-neutral.
 
 - **CI merges three redundant jobs into one (TOG-2547).** `typecheck, test,
   build`, `the packed tarball is installable` and `version and changelog` each

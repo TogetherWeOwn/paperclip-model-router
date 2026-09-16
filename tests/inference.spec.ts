@@ -324,11 +324,20 @@ describe("request timeout budget", () => {
 
     // ...and without the override the very same call is still lost, which is what
     // makes the override the cause of the rescue rather than the fixture.
-    const withoutOverride = await invokeCompatibleUpstream({
-      http: { fetch: () => new Promise<Response>((resolve) => setTimeout(() => resolve(slowReply), 25)) },
-      config, credential: "resolved-value", request, modelId: "m",
-    });
-    expect(withoutOverride.error?.code).toBe("upstream-timeout");
+    // TOG-3055: this half carried the same 20ms wall-clock margin as the timeout
+    // test below, so it runs on virtual time. The rescued half above keeps the
+    // real clock — its margin is 975ms, and it has to read the response body.
+    vi.useFakeTimers();
+    try {
+      const pending = invokeCompatibleUpstream({
+        http: { fetch: () => new Promise<Response>((resolve) => setTimeout(() => resolve(slowReply), 25)) },
+        config, credential: "resolved-value", request, modelId: "m",
+      });
+      await vi.advanceTimersByTimeAsync(5);
+      expect((await pending).error?.code).toBe("upstream-timeout");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -470,12 +479,35 @@ describe("single-attempt transport", () => {
     });
   });
 
+  // TOG-3055: this ran on the wall clock — a 5ms budget against an upstream that
+  // answered 25ms later. `transport.ts` arms the mock's timer (inside http.fetch)
+  // one statement before it arms its own, and Promise.race resolves on absolute
+  // due time, so the whole test rested on those two arming points landing within
+  // 20ms of each other. One GC pause or scheduler preemption there and the
+  // upstream response wins instead, which surfaces as "invalid-upstream-response"
+  // — measured at 2 of 7 full-suite runs on a loaded 8-core box, and once on CI.
+  // Fake timers order the two by virtual due time, so the margin is exact rather
+  // than probabilistic, and they let us advance PAST the late response to prove
+  // it is discarded rather than replayed.
   it("returns caller-visible timeout without starting another request", async () => {
-    const config = fixtureConfig("company-a").upstream;
-    config.requestTimeoutMs = 5;
-    const fetch = vi.fn(() => new Promise<Response>((resolve) => setTimeout(() => resolve(response({})), 25)));
-    const result = await invokeCompatibleUpstream({ http: { fetch }, config, credential: "resolved-value", request, modelId: "m" });
-    expect(result.error?.code).toBe("upstream-timeout");
-    expect(fetch).toHaveBeenCalledTimes(1);
+    vi.useFakeTimers();
+    try {
+      const config = fixtureConfig("company-a").upstream;
+      config.requestTimeoutMs = 5;
+      const fetch = vi.fn(() => new Promise<Response>((resolve) => setTimeout(() => resolve(response({})), 25)));
+      const pending = invokeCompatibleUpstream({ http: { fetch }, config, credential: "resolved-value", request, modelId: "m" });
+      await vi.advanceTimersByTimeAsync(5);
+      const result = await pending;
+      expect(result.error?.code).toBe("upstream-timeout");
+      expect(fetch).toHaveBeenCalledTimes(1);
+      // The upstream answers after the caller already has its timeout. Nothing
+      // may re-issue the request, and the late body must not resurface.
+      await vi.advanceTimersByTimeAsync(25);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(result.error?.code).toBe("upstream-timeout");
+      expect(result.response).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

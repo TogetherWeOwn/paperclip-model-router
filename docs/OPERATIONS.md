@@ -71,7 +71,7 @@ A completed handler operation returns HTTP 200 even when the compatible upstream
 - Company identity is resolved by the host for tools, actions, and routes.
 - Rule 0 and selection refusals make no secret-resolution or HTTP call.
 - The credential is resolved at call time and used only in the protocol auth header.
-- `refresh-capacity` is company-scoped and performs bounded, non-retrying telemetry GETs; failed refreshes preserve the last valid snapshot.
+- `refresh-capacity` is company-scoped and performs bounded, non-retrying telemetry GETs. Failed refreshes preserve the last valid capacity-evidence snapshot but replace pace verdicts with only the current attempt's results, so stale pace never steers routing.
 - Canonical `invoke` performs zero telemetry GETs. Inference performs exactly one `ctx.http.fetch` with `redirect: "manual"` and `Accept-Encoding: identity`.
 - Capacity evidence is keyed to exact opaque model IDs and records only sanitized source/lane labels and usage facts, never provider/account serving identity.
 - A transport failure never causes automatic replay or post-HTTP model fallback.

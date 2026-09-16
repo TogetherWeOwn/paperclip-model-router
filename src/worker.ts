@@ -215,18 +215,22 @@ export function createPlugin() {
       ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; error: string | null; paceVerdicts: Record<string, LanePaceVerdict>; modelLaneByPace: Record<string, string> }> => {
         const stored = asRecord(await ctx.state.get(capacityStateKey(companyId)));
         const refreshedAt = typeof stored.refreshedAt === "string" ? Date.parse(stored.refreshedAt) : Number.NaN;
+        const paceRefreshedAt = typeof stored.paceRefreshedAt === "string" ? Date.parse(stored.paceRefreshedAt) : Number.NaN;
         const lastRefreshError = typeof stored.lastRefreshError === "string" ? stored.lastRefreshError : null;
         const stale = !Number.isFinite(refreshedAt) || Date.now() - refreshedAt > config.capacityRouting.maxSnapshotAgeMs;
-        // TOG-2139: pace verdicts persist with the snapshot they were computed
-        // from. Rebuilding the model->lane map from config keeps a config
-        // edit (model added to a lane) effective without a fresh fetch.
+        const paceStale = !Number.isFinite(paceRefreshedAt) || Date.now() - paceRefreshedAt > config.capacityRouting.maxSnapshotAgeMs;
+        // TOG-2139/TOG-2922: pace freshness is independent of capacity evidence.
+        // A lane document can yield a valid pace verdict even when the legacy
+        // capacity normalizer cannot recognize its records. Rebuilding the
+        // model->lane map from config keeps a config edit effective without a
+        // fresh fetch.
         const modelLaneByPace: Record<string, string> = {};
         for (const source of config.capacityRouting.sources) {
           if (!source.pace) continue;
           for (const modelId of source.modelIds) modelLaneByPace[modelId] = source.pace.laneId;
         }
         const paceVerdicts: Record<string, LanePaceVerdict> = {};
-        const storedPace = asRecord(stored.paceVerdicts);
+        const storedPace = paceStale ? null : asRecord(stored.paceVerdicts);
         if (storedPace) {
           for (const source of config.capacityRouting.sources) {
             const verdict = asRecord(storedPace[source.id]);
@@ -271,10 +275,13 @@ export function createPlugin() {
             http: capacityHttp(ctx),
             apiKey,
             now: () => new Date().toISOString(),
-            // TOG-2139: pace is computed from the same response body. The lane
-            // definition is passed only when paceOrdering is on, so a rollout
-            // changes nothing about the capacity fetch itself.
-            lane: config.capacityRouting.paceOrdering ? source.pace : undefined,
+            // TOG-2139: pace is computed from the same response body, so passing
+            // the lane definition changes nothing about the capacity fetch itself.
+            // TOG-2922: evaluate it whenever the source configures it, including
+            // while paceOrdering is off. That warms the stored verdicts so the
+            // enable is genuinely one-key and observable before it steers
+            // anything; steering stays gated on the flag at the selectModel call.
+            lane: source.pace,
             pacePolicy: config.capacityRouting.pacePolicy,
           }));
         }
@@ -300,13 +307,24 @@ export function createPlugin() {
         };
         const key = capacityStateKey(companyId);
         const previous = asRecord(await ctx.state.get(key));
+        const refreshedAt = new Date().toISOString();
         if (!result.error && result.evidence.length > 0) {
-          await ctx.state.set(key, { ...result, refreshedAt: new Date().toISOString(), lastRefreshError: null, paceVerdicts: { ...asRecord(previous.paceVerdicts), ...result.paceVerdicts } });
+          await ctx.state.set(key, {
+            ...result,
+            refreshedAt,
+            lastRefreshError: null,
+            paceVerdicts: result.paceVerdicts,
+            paceRefreshedAt: refreshedAt,
+          });
         } else {
           await ctx.state.set(key, {
             ...previous,
-            lastRefreshAttemptAt: new Date().toISOString(),
+            lastRefreshAttemptAt: refreshedAt,
             lastRefreshError: result.error ?? "capacity-refresh-empty",
+            // Replace rather than merge: a failed source must clear its old
+            // verdict immediately instead of steering with stale pace.
+            paceVerdicts: result.paceVerdicts,
+            paceRefreshedAt: refreshedAt,
           });
         }
         return result;
