@@ -41,6 +41,13 @@ const mutations = [
     command: ["npx", "vitest", "run", "tests/lane-capacity-pace.spec.ts", "-t", "absent legacy weight"],
   },
   {
+    name: "unserviceable account re-enters aggregation (TOG-2674)",
+    file: pace,
+    from: "entry.utilizationMilli !== null && entry.elapsedMilli !== null && entry.resetAtMs !== null && entry.verdict.serviceable",
+    to: "entry.utilizationMilli !== null && entry.elapsedMilli !== null && entry.resetAtMs !== null",
+    command: ["npx", "vitest", "run", "tests/lane-capacity-pace.spec.ts", "-t", "never lets a 1.00-utilization"],
+  },
+  {
     name: "null document passes",
     file: checker,
     from: "return [f\"{spec.document}: document must be a JSON object\"]",

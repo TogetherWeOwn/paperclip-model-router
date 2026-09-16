@@ -17,6 +17,7 @@ export interface LanePaceDefinition {
   free?: boolean;
   healthFields: string[];
   weightFields?: string[];
+  accountKeyFields?: string[];
   governingWindowField?: string;
   windowSecondsField?: string;
   staleAfterSecondsField?: string;
@@ -54,6 +55,8 @@ export interface PaceScore {
   utilization: number;
   elapsed: number;
   deviation: number;
+  paceDebt: number;
+  clearRate: number | null;
 }
 
 export interface PaceAccountVerdict {
@@ -133,8 +136,12 @@ export function normalizeLaneDocument(input: {
     if (!record) return [];
     const weight = normalizedWeight(record, input.definition.weightFields ?? ["weight"]);
     const reportedGoverningWindow = typeof record[governingWindowField] === "string" ? record[governingWindowField] as string : null;
+    const reportedAccountKey = firstValue(record, input.definition.accountKeyFields ?? ["account_key"])?.value;
+    const accountKey = typeof reportedAccountKey === "string" && reportedAccountKey.trim().length > 0
+      ? reportedAccountKey
+      : `record-${index + 1}`;
     return [{
-      accountKey: `record-${index + 1}`,
+      accountKey,
       health: normalizeHealth(firstValue(record, input.definition.healthFields)?.value) ?? "unknown",
       weight: weight.weight,
       weightSource: weight.source,
@@ -174,11 +181,13 @@ function toMilli(value: number): number {
   return roundHalfEven(Math.min(1, Math.max(0, value)) * SCALE);
 }
 
-function score(utilizationMilli: number, elapsedMilli: number): PaceScore {
+function score(utilizationMilli: number, elapsedMilli: number, clearRateValue: number | null): PaceScore {
   return {
     utilization: utilizationMilli / SCALE,
     elapsed: elapsedMilli / SCALE,
     deviation: (utilizationMilli - elapsedMilli) / SCALE,
+    paceDebt: (elapsedMilli - utilizationMilli) / SCALE,
+    clearRate: clearRateValue,
   };
 }
 
@@ -187,23 +196,38 @@ function weightedMilli(values: Array<{ value: number; weight: number }>): number
   return roundHalfEven(values.reduce((sum, entry) => sum + entry.value * entry.weight, 0) / weight);
 }
 
-function governingWindow(account: PaceAccountObservation): PaceWindowObservation | null {
-  let fallback: PaceWindowObservation | null = null;
+function weightedRate(values: Array<{ value: number | null; weight: number }>): number | null {
+  const usable = values.filter((entry): entry is { value: number; weight: number } => entry.value !== null);
+  if (usable.length === 0) return null;
+  const weight = usable.reduce((sum, entry) => sum + entry.weight, 0);
+  return usable.reduce((sum, entry) => sum + entry.value * entry.weight, 0) / weight;
+}
+
+function clearRate(window: PaceWindowObservation, observedAtMs: number): number | null {
+  if (
+    window.role !== "allowance" ||
+    window.utilization === null ||
+    window.resetsAt === null ||
+    window.windowSeconds === null
+  ) return null;
+  const resetMs = Date.parse(window.resetsAt);
+  if (!Number.isFinite(resetMs)) return null;
+  const hoursToReset = Math.max(1, (resetMs - observedAtMs) / 3_600_000);
+  return Math.max(0, 1 - window.utilization) / hoursToReset;
+}
+
+function governingWindow(account: PaceAccountObservation, observedAtMs: number): PaceWindowObservation | null {
+  let binding: PaceWindowObservation | null = null;
+  let bindingRate = Infinity;
   for (const window of account.windows) {
-    if (
-      window.role !== "allowance" ||
-      window.utilization === null ||
-      window.resetsAt === null ||
-      window.windowSeconds === null
-    ) continue;
-    if (window.name === account.governingWindow) return window;
-    if (
-      fallback === null ||
-      window.windowSeconds > fallback.windowSeconds! ||
-      (window.windowSeconds === fallback.windowSeconds && window.name < fallback.name)
-    ) fallback = window;
+    const rate = clearRate(window, observedAtMs);
+    if (rate === null) continue;
+    if (rate < bindingRate || (rate === bindingRate && (binding === null || window.name < binding.name))) {
+      binding = window;
+      bindingRate = rate;
+    }
   }
-  return fallback;
+  return binding;
 }
 
 function serviceable(account: PaceAccountObservation, governing: PaceWindowObservation | null): boolean {
@@ -247,7 +271,7 @@ export function evaluateLanePace(input: {
   }
 
   const internal = input.observation.accounts.map((account) => {
-    const governing = governingWindow(account);
+    const governing = governingWindow(account, observedAtMs);
     const accountServiceable = serviceable(account, governing);
     if (!governing) {
       const exhausted = account.health === "exhausted" || account.health === "unavailable";
@@ -261,7 +285,7 @@ export function evaluateLanePace(input: {
     const utilizationMilli = toMilli(governing.utilization!);
     const remainingSeconds = (Date.parse(governing.resetsAt!) - observedAtMs) / 1_000;
     const elapsedMilli = toMilli(1 - Math.min(1, Math.max(0, remainingSeconds / governing.windowSeconds!)));
-    const accountScore = score(utilizationMilli, elapsedMilli);
+    const accountScore = score(utilizationMilli, elapsedMilli, clearRate(governing, observedAtMs));
     const exhausted = account.health === "exhausted" || account.health === "unavailable" || governing.utilization! >= 1;
     let state: PaceAccountVerdict["state"] = exhausted ? "exhausted" : stateFor(utilizationMilli - elapsedMilli, marginMilli);
     const resetSeconds = (Date.parse(governing.resetsAt!) - asOfMs) / 1_000;
@@ -281,7 +305,7 @@ export function evaluateLanePace(input: {
   }
 
   const known = internal.filter((entry): entry is typeof entry & { utilizationMilli: number; elapsedMilli: number; resetAtMs: number } =>
-    entry.utilizationMilli !== null && entry.elapsedMilli !== null && entry.resetAtMs !== null
+    entry.utilizationMilli !== null && entry.elapsedMilli !== null && entry.resetAtMs !== null && entry.verdict.serviceable
   );
   if (known.length === 0) {
     return { laneId: input.observation.laneId, observedAt: input.observation.observedAt, state: "unknown", serviceable: true, score: null, accounts, knownAccountCount: 0, knownWeight: 0, serviceableAccountCount, urgentResetAt: null, reason: "no-computable-governing-window" };
@@ -289,12 +313,13 @@ export function evaluateLanePace(input: {
 
   const utilizationMilli = weightedMilli(known.map((entry) => ({ value: entry.utilizationMilli, weight: entry.verdict.weight })));
   const elapsedMilli = weightedMilli(known.map((entry) => ({ value: entry.elapsedMilli, weight: entry.verdict.weight })));
-  const laneScore = score(utilizationMilli, elapsedMilli);
+  const laneClearRate = weightedRate(known.map((entry) => ({ value: entry.verdict.score?.clearRate ?? null, weight: entry.verdict.weight })));
+  const laneScore = score(utilizationMilli, elapsedMilli, laneClearRate);
   let state: LanePaceVerdict["state"] = stateFor(utilizationMilli - elapsedMilli, marginMilli);
   const urgent = known
     .filter((entry) => entry.verdict.state === "behind-urgent")
     .sort((left, right) => left.resetAtMs - right.resetAtMs)[0];
-  if (state === "behind" && urgent) state = "behind-urgent";
+  if (urgent) state = "behind-urgent";
   return {
     laneId: input.observation.laneId,
     observedAt: input.observation.observedAt,

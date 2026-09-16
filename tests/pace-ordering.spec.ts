@@ -257,6 +257,33 @@ describe("TOG-2139 pace ordering (slice 6)", () => {
     expect(decision.trace.some((line) => line.includes("would choose behind-lane-model"))).toBe(true);
   });
 
+  it("ACCEPTANCE MUTANT SCENARIO: pace ordering never repins a sticky (already-running) issue", () => {
+    const config = resolveConfig({
+      ...structuredClone(baseConfig(true)),
+      routing: { enabled: true, mode: "enforce", fallbackModelId: null, stickyModelWithinIssue: true, maxOutputTokens: 16384 },
+    });
+    const decision = selectModel({
+      descriptor: { taskClass: "implementation" },
+      config,
+      signals: {
+        // Pace flips hard toward behind-lane-model here (BEHIND vs AHEAD,
+        // same as the "flag on" test above, which picks behind-lane-model
+        // when nothing is running) — but this issue already has an
+        // incumbent model from an earlier turn, and that incumbent still
+        // survives the capacity/quality gates.
+        capacityEvidence: [healthyEvidence("behind-lane-model", 0.9), healthyEvidence("ahead-lane-model", 0.2), healthyEvidence("uncovered-model", 0.1)],
+        paceVerdicts: { behind: BEHIND, ahead: AHEAD },
+        modelLaneByPace: { "behind-lane-model": "behind", "ahead-lane-model": "ahead" },
+        stickyModelId: "ahead-lane-model",
+      },
+    });
+    // Pace ordering only ranks candidates for a *fresh* pick; it is never
+    // consulted once a sticky incumbent survives the gates, so a mid-run
+    // issue cannot be bounced onto a different model just because the
+    // account pacing verdict shifted underneath it.
+    expect(decision.modelId).toBe("ahead-lane-model");
+  });
+
   it("kill switch: routing.enabled false disables the decision regardless of pace", () => {
     const config = resolveConfig({
       ...structuredClone(baseConfig(true)),
