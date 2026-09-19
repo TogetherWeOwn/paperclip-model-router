@@ -10,6 +10,38 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-19
+
+### Added
+
+- **Async invoke: submit + poll (TOG-3419).** Two new opt-in surfaces sit
+  alongside the existing synchronous `model_router_invoke` /
+  `POST /invoke`, unchanged: `model_router_invoke_async` /
+  `POST /invoke-async` runs selection and credential resolution
+  synchronously, writes a pending record, fires the compatible-upstream call
+  in the background, and returns `{status: "pending", requestId, decision}`
+  immediately. `model_router_invoke_result` / `GET /invoke/:requestId` polls
+  that record: `pending` while the call runs, `not-found` once its TTL
+  elapses, or the terminal `completed`/`error` outcome. The background call
+  uses the selected model's own `requestTimeoutMs` (up to the worker's 300s
+  ceiling) instead of the 28s sync ceiling, so a generation that would
+  overrun Paperclip's 30s host RPC cap can still complete.
+- **`maxSyncOutputTokens`, a new optional per-model config field.** The
+  synchronous `/invoke` path now rejects, in milliseconds and before any
+  credential resolution or upstream call, a `maxOutputTokens` that could not
+  finish inside `min(selectedModel.requestTimeoutMs ?? upstream.requestTimeoutMs,
+  28_000)` at a 43 tok/s baseline (1200 tokens / 28s, TOG-1035). Its error
+  message names the model and points the caller at
+  `model_router_invoke_async` instead. `maxSyncOutputTokens` overrides the
+  derived budget for a model whose real throughput differs from that
+  baseline; omitting it preserves the old default exactly.
+
+Compatibility: drop-in over 0.4.5. No existing config requires changes —
+`maxSyncOutputTokens` is optional and the sync `/invoke` path's default
+budget matches the ceiling every existing model already inherited. No new
+plugin capability is required, so this upgrades through the ordinary
+`plugin upgrade` path, unlike the capability-escalating TOG-2922 install.
+
 ## [0.4.5] - 2026-09-16
 
 Supersedes the never-tagged 0.4.4 candidate, which was rejected in review

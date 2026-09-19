@@ -66,6 +66,8 @@ curl -X POST "$PAPERCLIP_API_URL/api/plugins/togetherweown.paperclip-model-route
 
 A completed handler operation returns HTTP 200 even when the compatible upstream failed; inspect `outcome` and `error`. Invalid native request bodies return HTTP 400. Host authorization, body-size, bridge, and worker failures may return other host statuses before the plugin handler completes.
 
+For a generation that may run past the host's RPC timeout, use the async submit/poll pair instead — `POST /invoke-async` returns `{status, requestId, decision}` immediately (HTTP 202) and `GET /invoke/:requestId` reports `pending`, `not-found` (after the pending record's TTL), or the terminal outcome. See [`docs/operator/TOG-3419-async-invoke.md`](operator/TOG-3419-async-invoke.md) for worked commands and for the new `maxSyncOutputTokens` config field that governs when the synchronous path refuses a request outright instead of attempting it.
+
 ## Expected safety properties
 
 - Company identity is resolved by the host for tools, actions, and routes.

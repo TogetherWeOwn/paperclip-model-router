@@ -33,9 +33,11 @@ describe("TOG-2993: every packaged path exists", () => {
     const runbook = pkg.files.find((entry) => entry.endsWith("TOG-2922-pace-ordering.md"));
     expect(runbook, "the TOG-2922 runbook is not in package.json files").toBeDefined();
     const body = readFileSync(path.join(ROOT, runbook!), "utf8");
-    // The runbook names the tarball and unpack directory by version, so a
-    // version bump that forgets the runbook hands the operator dead paths.
-    expect(body, `the runbook does not mention version ${pkg.version}`).toContain(pkg.version);
+    // This runbook documents one specific historical migration (its bundle
+    // paths, e.g. `tog-2922-model-router-v0.4.5`, are that release's
+    // artifacts) -- it is not rewritten on every later version bump, so it
+    // is pinned to the version it actually shipped with, not `pkg.version`.
+    expect(body, "the runbook does not mention the v0.4.5 release it documents").toContain("0.4.5");
     // It must invoke the gate, not a keys-only assertion.
     expect(body).toContain("tog-2922-prerequisite-refresh-gate.mjs");
   });
@@ -47,5 +49,14 @@ describe("TOG-2993: every packaged path exists", () => {
     for (const script of new Set(referenced)) {
       expect(pkg.files, `${script} is run by the runbook but not packaged`).toContain(script);
     }
+  });
+
+  it("ships the operator runbook for async invoke (TOG-3419), matching the current version", () => {
+    const runbook = pkg.files.find((entry) => entry.endsWith("TOG-3419-async-invoke.md"));
+    expect(runbook, "the TOG-3419 runbook is not in package.json files").toBeDefined();
+    const body = readFileSync(path.join(ROOT, runbook!), "utf8");
+    expect(body, `the runbook does not mention version ${pkg.version}`).toContain(pkg.version);
+    expect(body).toContain("invoke-async");
+    expect(body).toContain("maxSyncOutputTokens");
   });
 });

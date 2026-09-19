@@ -51,6 +51,15 @@ const INVOKE_SCHEMA = {
   },
 } as const;
 
+const INVOKE_RESULT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["requestId"],
+  properties: {
+    requestId: { type: "string", minLength: 1 },
+  },
+} as const;
+
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: PLUGIN_API_VERSION,
@@ -87,6 +96,20 @@ const manifest: PaperclipPluginManifestV1 = {
         "Select a model under this company's routing policy, invoke its compatible upstream once, and return a normalized response.",
       parametersSchema: INVOKE_SCHEMA as unknown as Record<string, unknown>,
     },
+    {
+      name: TOOL_NAMES.invokeAsync,
+      displayName: "Invoke a routed model asynchronously",
+      description:
+        "Select a model, submit its compatible upstream generation in the background, and return a requestId immediately. Poll model_router_invoke_result for the outcome. Use this instead of model_router_invoke for generations that may run past the host's RPC timeout.",
+      parametersSchema: INVOKE_SCHEMA as unknown as Record<string, unknown>,
+    },
+    {
+      name: TOOL_NAMES.invokeResult,
+      displayName: "Poll an async model invocation",
+      description:
+        "Read the current status of a model_router_invoke_async submission by requestId: pending while running, or the terminal completed/error outcome once it finishes.",
+      parametersSchema: INVOKE_RESULT_SCHEMA as unknown as Record<string, unknown>,
+    },
   ],
   apiRoutes: [
     {
@@ -106,6 +129,24 @@ const manifest: PaperclipPluginManifestV1 = {
       capability: "api.routes.register",
       checkoutPolicy: "none",
       companyResolution: { from: "issue", param: "issueId" },
+    },
+    {
+      routeKey: ROUTE_KEYS.invokeAsync,
+      method: "POST",
+      path: "/invoke-async",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      checkoutPolicy: "none",
+      companyResolution: { from: "query", key: "companyId" },
+    },
+    {
+      routeKey: ROUTE_KEYS.invokeResult,
+      method: "GET",
+      path: "/invoke/:requestId",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      checkoutPolicy: "none",
+      companyResolution: { from: "query", key: "companyId" },
     },
   ],
 };

@@ -98,6 +98,12 @@ function resolveModels(value: unknown): ModelEntry[] {
       ...(typeof raw.requestTimeoutMs === "number" && Number.isFinite(raw.requestTimeoutMs)
         ? { requestTimeoutMs: raw.requestTimeoutMs }
         : {}),
+      // Same absent-means-inherit pattern as requestTimeoutMs: a stored 0 or
+      // missing value should fall through to the throughput-derived default
+      // computed at check time, not freeze a bad default into config here.
+      ...(typeof raw.maxSyncOutputTokens === "number" && Number.isFinite(raw.maxSyncOutputTokens)
+        ? { maxSyncOutputTokens: raw.maxSyncOutputTokens }
+        : {}),
       enabled: pickBoolean(raw.enabled, true),
     });
   }

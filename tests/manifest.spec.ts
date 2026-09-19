@@ -18,10 +18,16 @@ describe("manifest", () => {
   });
 
   it("declares exact compatible-upstream native surfaces", () => {
-    expect(manifest.tools?.map((tool) => tool.name)).toEqual([TOOL_NAMES.invoke]);
+    expect(manifest.tools?.map((tool) => tool.name)).toEqual([
+      TOOL_NAMES.invoke,
+      TOOL_NAMES.invokeAsync,
+      TOOL_NAMES.invokeResult,
+    ]);
     expect(manifest.apiRoutes?.map((route) => [route.routeKey, route.path, route.companyResolution])).toEqual([
       [ROUTE_KEYS.invoke, "/invoke", { from: "query", key: "companyId" }],
       [ROUTE_KEYS.invokeIssue, "/issues/:issueId/invoke", { from: "issue", param: "issueId" }],
+      [ROUTE_KEYS.invokeAsync, "/invoke-async", { from: "query", key: "companyId" }],
+      [ROUTE_KEYS.invokeResult, "/invoke/:requestId", { from: "query", key: "companyId" }],
     ]);
   });
 
