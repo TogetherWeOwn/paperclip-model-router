@@ -977,7 +977,7 @@ describe("async invoke (submit + poll)", () => {
   });
 });
 
-describe("TOG-3419 acceptance: generations that would overrun the host RPC cap", () => {
+describe("TOG-3419 simulated overrun regression", () => {
   it("the sync path refuses the request outright while async invoke completes it past 28s", async () => {
     const { harness, httpCalls, configs } = await sharedWorker();
     const mutated = structuredClone(configs.get(COMPANY_A)!);
