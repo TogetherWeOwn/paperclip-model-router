@@ -7,9 +7,32 @@ import { pathToFileURL } from "node:url";
 
 import manifest from "../dist/manifest.js";
 import { decisionInsertSql, decisionPruneSql } from "../dist/decision-records.js";
+import { describePolicy, probePolicy } from "./lib/host-probes.mjs";
 
-const hostRoot = process.env.PAPERCLIP_HOST;
-if (!hostRoot) throw new Error("PAPERCLIP_HOST is required");
+// Mirror verify:host's TOG-1070 policy so the two host probes cannot disagree
+// about whether a checkout is present. This validator needs the host's compiled
+// `plugin-database.js` AND its embedded PostgreSQL, so when no checkout is
+// reachable it can only be SKIPPED, never mirrored — but it must not CRASH. It
+// used to force `PAPERCLIP_HOST=/app` in the npm script and read the source
+// unconditionally, so on any runner without a host mounted at /app (a CI or
+// release runner that drew a host-less machine) it died with ENOENT instead of
+// skipping, which is how the v0.5.0 release's `npm run verify` failed while the
+// same commit's CI went green on a host-equipped runner (TOG-3419).
+const policy = probePolicy();
+console.log(describePolicy(policy));
+if (!policy.host.present) {
+  if (policy.strict) {
+    console.error(
+      `FAIL  migration validation\n      a host was requested (${policy.host.from ?? "PAPERCLIP_HOST"}) but ${policy.host.root ?? "/app"}/server/dist is missing — build the host checkout first`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    "SKIP  migration validation\n      no host checkout reachable — this run is NOT the pre-tag migration gate (run PAPERCLIP_HOST=/app npm run verify:migrations from a checkout)",
+  );
+  process.exit(0);
+}
+const hostRoot = policy.host.root;
 const sourcePath = join(resolve(hostRoot), "server", "dist", "services", "plugin-database.js");
 let source = readFileSync(sourcePath, "utf8")
   .replace(/^import .*?from "drizzle-orm";\n/gm, "")
