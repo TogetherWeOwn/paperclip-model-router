@@ -4,6 +4,12 @@ import { MODEL_TIER_ORDER, type Candidate, type GateLevel, type ModelEntry, type
 
 const DEFAULT_INPUT_TOKENS = 8_000;
 const DEFAULT_OUTPUT_TOKENS = 2_000;
+// TOG-3551 (scope 3): a pin must never park work on a lane already running hot.
+// Above this governing-window (weekly, for the roster lanes) utilization the
+// pin is refused even when the capacity gate would still count the lane
+// "usable" — a lane at 0.85 is one burst from exhaustion and is not a safe pin
+// target. Expressed as a fraction to match `CapacityEvidence.utilization`.
+const PIN_MAX_WEEKLY_UTILIZATION = 0.7;
 type Ranked = { model: ModelEntry; cost: number; evidence: CapacityEvidence | null; pace?: LanePaceVerdict | null };
 
 // TOG-2139 (slice 6): pace-state ranking for `capacityRouting.paceOrdering`.
@@ -232,7 +238,20 @@ export function selectModel(input: SelectInput): RoutingDecision {
   // the model actually selected, not the health of the fetch.
   const capacityFor = (entry: Ranked): RoutingDecision["capacity"] => ({ ...base.capacity, degraded: base.capacity.degraded || (capacityEnabled && config.capacityRouting.mode === "enforce" && !covered(entry)), selectedSource: entry.evidence?.source ?? null, selectedLaneLabel: entry.evidence?.laneLabel ?? null, usagePosture: entry.evidence?.posture ?? (capacityEnabled ? "unknown" : "not-evaluated"), utilization: entry.evidence?.utilization ?? null, resetsAt: entry.evidence?.resetsAt ?? null });
   const pinnedId = descriptor.pinnedModelId ?? taskClass?.pinnedModelId ?? null;
-  if (pinnedId) { const pinned = withCapacity.find((entry) => entry.model.id === pinnedId); const honored = Boolean(pinned && (!(capacityEnabled && config.capacityRouting.mode === "enforce") || usable(pinned))); const reason = descriptor.pinReason ?? "configured pin"; base.pin = { modelId: pinnedId, reason, honored }; if (honored) return { ...base, outcome: "selected", modelId: pinnedId, capacity: capacityFor(pinned!) }; trace.push(`pin refused: ${pinnedId}`); }
+  if (pinnedId) {
+    const pinned = withCapacity.find((entry) => entry.model.id === pinnedId);
+    // TOG-3551 (scope 3): refuse the pin when telemetry shows the lane above the
+    // weekly utilization cap. Applies whenever capacity telemetry gives a real
+    // reading (both shadow and enforce) — a hot lane is hot regardless of the
+    // routing mode; a null reading (no telemetry) cannot trip the cap.
+    const pinnedUtil = pinned?.evidence?.utilization ?? null;
+    const overUtilCap = capacityEnabled && pinnedUtil !== null && pinnedUtil > PIN_MAX_WEEKLY_UTILIZATION;
+    const honored = Boolean(pinned && !overUtilCap && (!(capacityEnabled && config.capacityRouting.mode === "enforce") || usable(pinned)));
+    const reason = descriptor.pinReason ?? "configured pin";
+    base.pin = { modelId: pinnedId, reason, honored };
+    if (honored) return { ...base, outcome: "selected", modelId: pinnedId, capacity: capacityFor(pinned!) };
+    trace.push(overUtilCap ? `pin refused: ${pinnedId} over weekly utilization cap ${PIN_MAX_WEEKLY_UTILIZATION} (utilization ${pinnedUtil})` : `pin refused: ${pinnedId}`);
+  }
   if (budgetGate === "halt" && !base.pin?.honored) { trace.push("budget gate halt: refusing non-pinned model work"); return base; }
   if (config.routing.stickyModelWithinIssue && runtime.stickyModelId) { const stickyPool = (budgetGate === "downshift" ? ranked : withCapacity).filter((entry) => !(capacityEnabled && config.capacityRouting.mode === "enforce") || usable(entry)); const incumbent = stickyPool.find((entry) => entry.model.id === runtime.stickyModelId); if (incumbent) return { ...base, outcome: "selected", modelId: incumbent.model.id, capacity: capacityFor(incumbent) }; if (pool.length) trace.push(`sticky: ${runtime.stickyModelId} no longer survives the gates, switching despite the cache cost`); }
   if (!pool.length) {

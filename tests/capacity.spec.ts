@@ -360,6 +360,49 @@ describe("usage-aware selection", () => {
     expect(decision.outcome).toBe("no-eligible-model");
   });
 
+  // TOG-3551 (scope 3): the pin cap is stricter than the capacity gate. A lane
+  // can be perfectly healthy (usable() passes) yet already above the weekly
+  // utilization cap; a pin must not park more work on it.
+  it("refuses a pin onto a healthy lane that is above the weekly utilization cap", () => {
+    const hotButHealthy = lanes.map((lane) =>
+      lane.modelId === "subscription-model"
+        ? { ...lane, health: "healthy" as const, posture: "available" as const, utilization: 0.85, remainingFraction: 0.15 }
+        : lane,
+    );
+    const decision = selectModel({
+      config: routingConfig("enforce"),
+      descriptor: { taskClass: "implementation", pinnedModelId: "subscription-model", pinReason: "hot pin" },
+      signals: { capacityEvidence: hotButHealthy },
+    });
+    expect(decision.pin).toMatchObject({ modelId: "subscription-model", honored: false });
+  });
+
+  // Boundary: the cap is strict (> 0.70). Exactly at 0.70 the pin is honored;
+  // a hair above it is refused. This kills operator (>=) and threshold mutants.
+  it("honors a pin exactly at the cap and refuses it just above", () => {
+    const atCap = lanes.map((lane) =>
+      lane.modelId === "subscription-model"
+        ? { ...lane, health: "healthy" as const, posture: "available" as const, utilization: 0.7, remainingFraction: 0.3 }
+        : lane,
+    );
+    const honored = selectModel({
+      config: routingConfig("enforce"),
+      descriptor: { taskClass: "implementation", pinnedModelId: "subscription-model", pinReason: "at cap" },
+      signals: { capacityEvidence: atCap },
+    });
+    expect(honored).toMatchObject({ outcome: "selected", modelId: "subscription-model", pin: { honored: true } });
+
+    const overCap = atCap.map((lane) =>
+      lane.modelId === "subscription-model" ? { ...lane, utilization: 0.7001, remainingFraction: 0.2999 } : lane,
+    );
+    const refused = selectModel({
+      config: routingConfig("enforce"),
+      descriptor: { taskClass: "implementation", pinnedModelId: "subscription-model", pinReason: "over cap" },
+      signals: { capacityEvidence: overCap },
+    });
+    expect(refused.pin).toMatchObject({ honored: false });
+  });
+
   it("does not let issue stickiness resurrect an exhausted lane in enforce mode", () => {
     const config = resolveConfig({
       ...routingConfig("enforce"),
