@@ -32,7 +32,7 @@ import type { RoutingDecision } from "./engine/types.js";
 import { selectModel } from "./engine/select.js";
 import { validateUpstreamConfig } from "./inference/adapters.js";
 import { effectiveMaxSyncOutputTokens } from "./inference/sync-budget.js";
-import { invokeCompatibleUpstream } from "./inference/transport.js";
+import { directFetchHttpClient, invokeCompatibleUpstream } from "./inference/transport.js";
 import type { InferenceError, InferenceResult, InvokeRequest, NormalizedResponse } from "./inference/types.js";
 import { InvocationValidationError, parseInvokeRequest } from "./inference/validate.js";
 
@@ -732,7 +732,11 @@ export function createPlugin() {
           let result: InferenceResult;
           try {
             const transport = await invokeCompatibleUpstream({
-              http: ctx.http,
+              // Direct worker `fetch`, not `ctx.http`: the host bridge aborts at
+              // 30s, which is the exact cap async invoke exists to escape. See
+              // directFetchHttpClient for the SSRF/timeout rationale. The sync
+              // path above deliberately keeps `ctx.http` and its 30s ceiling.
+              http: directFetchHttpClient,
               config: config.upstream,
               credential,
               request,

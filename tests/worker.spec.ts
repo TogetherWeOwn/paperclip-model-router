@@ -1,5 +1,5 @@
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ACTION_KEYS, PENDING_INVOCATION_TTL_MS, ROUTE_KEYS, STATE_KEYS, TOOL_NAMES } from "../src/constants.js";
 import manifest from "../src/manifest.js";
@@ -39,12 +39,19 @@ async function sharedWorker() {
     },
   };
   const httpCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const defaultUpstream = (url: unknown): Response =>
+    String(url).includes("company-a.example") ? success("openai") : success("anthropic");
   harness.ctx.http = {
     async fetch(url, init) {
       httpCalls.push({ url: String(url), init });
-      return String(url).includes("company-a.example") ? success("openai") : success("anthropic");
+      return defaultUpstream(url);
     },
   };
+  // The async (submit + poll) path deliberately bypasses ctx.http and uses the
+  // worker's own global fetch (see directFetchHttpClient). Stub it with the same
+  // default upstream so async tests reach a working upstream unless they override
+  // it; afterEach() unstubs. Individual async tests replace this via vi.stubGlobal.
+  vi.stubGlobal("fetch", async (url: string, _init?: RequestInit) => defaultUpstream(url));
   const { definition } = createPlugin();
   await definition.setup(harness.ctx);
   return { harness, definition, httpCalls, secretCalls, configs };
@@ -55,6 +62,10 @@ const invocation = {
   messages: [{ role: "user", content: "hello" }],
   maxOutputTokens: 100,
 };
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("durable decision records", () => {
   it("reconciles the legacy ring buffer and keeps appending after 200 records", async () => {
@@ -790,8 +801,8 @@ describe("async invoke (submit + poll)", () => {
 
     vi.useFakeTimers();
     try {
-      harness.ctx.http.fetch = async () =>
-        await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 90_000));
+      vi.stubGlobal("fetch", async () =>
+        await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 90_000)));
 
       const request = { ...invocation, task: { ...invocation.task, pinnedModelId: "claude-sonnet-5" } };
       const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, request, { companyId: COMPANY_A }) as {
@@ -842,7 +853,7 @@ describe("async invoke (submit + poll)", () => {
       }
       return structuredClone(value);
     };
-    harness.ctx.http.fetch = async () => await new Promise<Response>(() => undefined);
+    vi.stubGlobal("fetch", async () => await new Promise<Response>(() => undefined));
 
     const [first, second] = await Promise.all([
       harness.performAction(ACTION_KEYS.invokeAsync, {
@@ -900,8 +911,8 @@ describe("async invoke (submit + poll)", () => {
     const mutated = structuredClone(configs.get(COMPANY_A)!);
     (mutated.models as Array<Record<string, unknown>>).find((m) => m.id === "claude-sonnet-5")!.requestTimeoutMs = 60_000;
     configs.set(COMPANY_A, mutated);
-    harness.ctx.http.fetch = async () =>
-      new Response(JSON.stringify({ error: { message: "boom" } }), { status: 500, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async () =>
+      new Response(JSON.stringify({ error: { message: "boom" } }), { status: 500, headers: { "content-type": "application/json" } }));
 
     const request = { ...invocation, task: { ...invocation.task, pinnedModelId: "claude-sonnet-5" } };
     const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, request, { companyId: COMPANY_A }) as { status: string; requestId: string };
@@ -957,8 +968,8 @@ describe("async invoke (submit + poll)", () => {
     vi.setSystemTime(start);
     try {
       const { harness } = await sharedWorker();
-      harness.ctx.http.fetch = async () =>
-        await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 60_000));
+      vi.stubGlobal("fetch", async () =>
+        await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 60_000)));
 
       const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, invocation, { companyId: COMPANY_A }) as { requestId: string };
 
@@ -1011,8 +1022,8 @@ describe("TOG-3419 simulated overrun regression", () => {
 
     vi.useFakeTimers();
     try {
-      harness.ctx.http.fetch = async () =>
-        await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 45_000));
+      vi.stubGlobal("fetch", async () =>
+        await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 45_000)));
 
       const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, request, { companyId: COMPANY_A }) as {
         status: string;

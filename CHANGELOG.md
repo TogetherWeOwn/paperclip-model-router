@@ -27,9 +27,15 @@ version is not present here.
   outcome. The background call uses the selected model's own
   `requestTimeoutMs` (up to the worker's 300s ceiling) instead of the 28s sync
   ceiling, so a generation that would overrun Paperclip's 30s host RPC cap can
-  still complete. Audit persistence is isolated from the terminal transport
-  outcome, and decision records preserve the full async latency instead of
-  truncating it at 60 seconds.
+  still complete. It reaches that ceiling by issuing the upstream request with
+  the worker process's own `fetch` (`directFetchHttpClient`) rather than the
+  host `ctx.http.fetch` bridge, which hard-aborts every outbound request at 30s
+  — the plugin SDK explicitly sanctions direct `fetch` from a worker, and the
+  only URL this path reaches is the already-validated `upstream.baseUrl`, so
+  SSRF posture is unchanged. The synchronous `/invoke` path still uses the
+  host bridge and its 30s cap, unchanged. Audit persistence is isolated from
+  the terminal transport outcome, and decision records preserve the full async
+  latency instead of truncating it at 60 seconds.
 - **`maxSyncOutputTokens`, a new optional per-model config field.** The
   synchronous `/invoke` path now rejects, in milliseconds and before issue
   stickiness, credential resolution, or any upstream call, a `maxOutputTokens` that could not

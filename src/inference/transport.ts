@@ -23,6 +23,35 @@ function error(code: InferenceError["code"], message: string, retryable: boolean
   return { response: null, error: { code, message, retryable, upstreamStatus: null, upstreamRequestId: null } };
 }
 
+/**
+ * A {@link PluginHttpClient} that performs the outbound request with the worker
+ * process's own `fetch`, deliberately bypassing the host RPC bridge.
+ *
+ * Why this exists: the host-managed `ctx.http.fetch` bridge hard-aborts every
+ * outbound request at 30s (`plugin-host-services.ts` `PLUGIN_FETCH_TIMEOUT_MS`),
+ * which makes any generation longer than the host RPC cap impossible on that
+ * path — this was the wall the async design first hit. The plugin SDK
+ * explicitly sanctions direct `fetch` from a worker ("Plugins may also use
+ * standard Node `fetch` or other libraries directly" — `PluginHttpClient`
+ * docs). The worker is a long-lived forked Node process with direct network
+ * egress, so its own `fetch` is not subject to the host abort and can run up to
+ * this transport's own `MAX_REQUEST_TIMEOUT_MS` (300s) ceiling.
+ *
+ * SSRF: this path does not re-run the host's per-request DNS pinning. That is
+ * acceptable because the only URL it ever reaches is the operator-configured
+ * `upstream.baseUrl`, which config validation already constrains to an https,
+ * credential-free, non-private/reserved absolute URL (see
+ * `config/upstream-constraints` and the `upstream.baseUrl` checks in the config
+ * validator). The per-request payload never changes the host or path beyond
+ * that fixed, pre-validated upstream endpoint.
+ *
+ * Used only by the async (submit + poll) background continuation. The
+ * synchronous `/invoke` path keeps `ctx.http` and its 30s host cap unchanged.
+ */
+export const directFetchHttpClient: PluginHttpClient = {
+  fetch: (url, init) => globalThis.fetch(url, init),
+};
+
 function sdkReconstructedEmptyResponseStatus(cause: unknown): 204 | 205 | 304 | null {
   if (!(cause instanceof TypeError)) return null;
   const match = /^Response constructor: Invalid response status code (204|205|304)$/.exec(cause.message);

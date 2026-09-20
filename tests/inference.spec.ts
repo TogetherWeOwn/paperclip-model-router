@@ -10,7 +10,7 @@ import {
   serializeMessage,
   startWorkerRpcHost,
 } from "@paperclipai/plugin-sdk";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildAnthropicRequest,
@@ -25,7 +25,7 @@ import {
   MAX_REQUEST_TIMEOUT_MS,
   MIN_REQUEST_TIMEOUT_MS,
 } from "../src/config/upstream-constraints.js";
-import { effectiveRequestTimeoutMs, invokeCompatibleUpstream } from "../src/inference/transport.js";
+import { directFetchHttpClient, effectiveRequestTimeoutMs, invokeCompatibleUpstream } from "../src/inference/transport.js";
 import type { InvokeRequest } from "../src/inference/types.js";
 import { InvocationValidationError, parseInvokeRequest } from "../src/inference/validate.js";
 import { fixtureConfig } from "./helpers.js";
@@ -506,6 +506,40 @@ describe("single-attempt transport", () => {
       expect(fetch).toHaveBeenCalledTimes(1);
       expect(result.error?.code).toBe("upstream-timeout");
       expect(result.response).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("directFetchHttpClient (async path, escapes the host 30s cap)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("delegates to the worker's own global fetch, passing url and init through unchanged", async () => {
+    const sentinel = new Response("ok", { status: 200 });
+    const fetchSpy = vi.fn(async () => sentinel);
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const init = { method: "POST", headers: { "x-test": "1" }, body: "{}" };
+    const result = await directFetchHttpClient.fetch("https://router.example/v1/x", init);
+
+    expect(result).toBe(sentinel);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledWith("https://router.example/v1/x", init);
+  });
+
+  it("does not impose its own timeout — a long global fetch resolves through it", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("fetch", async () =>
+        await new Promise<Response>((resolve) => setTimeout(() => resolve(new Response("late", { status: 200 })), 120_000)));
+      const pending = directFetchHttpClient.fetch("https://router.example/v1/x");
+      await vi.advanceTimersByTimeAsync(120_000);
+      const result = await pending;
+      expect(result.status).toBe(200);
+      expect(await result.text()).toBe("late");
     } finally {
       vi.useRealTimers();
     }

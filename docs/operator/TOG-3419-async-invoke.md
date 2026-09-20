@@ -35,6 +35,29 @@ synchronous budget exactly as before.
   a 43 tok/s baseline. The `invalid-request` error names the model and points
   the caller at `model_router_invoke_async`.
 
+## How the async path escapes the 30s cap
+
+Paperclip caps every request that goes through the host HTTP bridge
+(`ctx.http.fetch`) at 30s: the host aborts the outbound socket
+(`PLUGIN_FETCH_TIMEOUT_MS`) and the SDK RPC layer rejects the pending host
+promise (`DEFAULT_RPC_TIMEOUT_MS`) at the same deadline. The synchronous
+`/invoke` path still rides that bridge and is still bound by it — nothing about
+the sync path changed.
+
+The async background continuation instead issues its single upstream request
+with the worker process's own `fetch` (`directFetchHttpClient` in
+`src/inference/transport.ts`), which never touches the host bridge and is
+therefore bound only by the model's own `requestTimeoutMs` (clamped to the
+worker's [1s, 300s] range). The plugin SDK explicitly sanctions a worker using
+standard Node `fetch` directly; this is not a host workaround, it is the
+supported way to run a long call from inside a plugin worker.
+
+**SSRF posture is unchanged.** The direct fetch skips the host's DNS pinning,
+but the only URL this path ever constructs is derived from the company's
+already-validated `upstream.baseUrl` — config validation requires an absolute
+`https://` URL, credential-free, that does not resolve to a private or reserved
+range. There is no caller-supplied URL on this path.
+
 ## Verify a configured company
 
 Submit, then poll:
