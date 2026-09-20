@@ -38,7 +38,7 @@
     "check:pace-mutants": "node scripts/tog-2135-mutation-gate.mjs",
     "verify": "npm run typecheck && npm run test && npm run check:lane-docs && npm run build:lane-capacity && npm run build && npm run verify:host && npm run verify:migrations && npm run rehearse",
     "verify:host": "node scripts/verify-against-host.mjs && node scripts/verify-stock-host-controls.mjs",
-    "verify:migrations": "PAPERCLIP_HOST=${PAPERCLIP_HOST:-/app} node scripts/validate-migrations-against-host.mjs",
+    "verify:migrations": "node scripts/validate-migrations-against-host.mjs",
     "rehearse": "node scripts/acceptance-rehearsal.mjs",
     "check:pin": "node scripts/release-pin-check.mjs",
     "check:workflows": "node scripts/check-workflows.mjs",

@@ -52,6 +52,20 @@ budget matches the ceiling every existing model already inherited. No new
 plugin capability is required, so this upgrades through the ordinary
 `plugin upgrade` path, unlike the capability-escalating TOG-2922 install.
 
+### Fixed
+
+- **`verify:migrations` crashed on a host-less release runner (TOG-3419).**
+  The migration validator forced `PAPERCLIP_HOST=/app` in its npm script and
+  read the host's compiled `plugin-database.js` unconditionally, so on a
+  self-hosted runner drawn without a host checkout at `/app` it died with
+  `ENOENT` instead of skipping. This is what failed the first v0.5.0 release's
+  `npm run verify` while the same commit's CI passed on a host-equipped
+  runner. It now mirrors `verify:host`'s TOG-1070 probe policy: it runs and
+  mirrors when a host checkout is reachable, fails only when a host was
+  explicitly requested but is missing, and otherwise SKIPs cleanly. The
+  pre-tag gate (`PAPERCLIP_HOST=/app npm run verify:migrations`) still runs
+  the full embedded-PostgreSQL rehearsal unchanged.
+
 ## [0.4.5] - 2026-09-16
 
 Supersedes the never-tagged 0.4.4 candidate, which was rejected in review
