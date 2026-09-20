@@ -14,20 +14,6 @@ No company config needs to change to adopt v0.5.0. `maxSyncOutputTokens` is an
 optional per-model field; every model without it keeps deriving its
 synchronous budget exactly as before.
 
-## Release blocker
-
-**Do not install or tag v0.5.0 on the 2026-09-20 stock host.** Two host-side
-limits still terminate the upstream path at 30 seconds: worker→host RPC in
-`packages/plugins/sdk/src/worker-rpc-host.ts`, and outbound HTTP in
-`server/src/services/plugin-host-services.ts`. A live `zai/glm-5.3-flash`
-request took 118,422 ms directly, but the same request through the built worker
-submitted in 64 ms and polled to `upstream-connect` at 30,006 ms.
-
-This release can proceed only after the host exposes a bounded >30-second budget
-for both layers and a real live-lane submit/poll test reaches terminal success
-with its full latency in the decision log. The plugin must not bypass the host
-HTTP boundary to work around this gate.
-
 ## What's new
 
 - `model_router_invoke_async` (tool) / `POST /invoke-async` (route) — runs

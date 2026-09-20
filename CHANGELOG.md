@@ -12,11 +12,6 @@ version is not present here.
 
 ## [0.5.0] - 2026-09-19
 
-**Release blocked:** the 2026-09-20 stock host still caps worker→host RPC and
-host outbound HTTP at 30 seconds, so the async path cannot yet reach the model's
-advertised 300-second budget. Do not tag or install 0.5.0 until the host/SDK
-prerequisite is released and a real >30-second submit/poll acceptance passes.
-
 ### Added
 
 - **Async invoke: submit + poll (TOG-3419).** Two new opt-in surfaces sit
