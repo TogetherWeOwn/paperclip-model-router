@@ -403,6 +403,27 @@ describe("usage-aware selection", () => {
     expect(refused.pin).toMatchObject({ honored: false });
   });
 
+  // TOG-3551 (scope 3): a blocklisted id is never honored as a pin — even a
+  // perfectly healthy, low-utilization lane. The control call (empty blocklist,
+  // identical evidence) proves the refusal is the blocklist and not some other
+  // gate, which also kills an "always refuse" mutant.
+  it("never honors a pin whose id is on the blocklist, and honors the same pin without it", () => {
+    const healthy = lanes.map((lane) =>
+      lane.modelId === "subscription-model"
+        ? { ...lane, health: "healthy" as const, posture: "available" as const, utilization: 0.2, remainingFraction: 0.8 }
+        : lane,
+    );
+    const descriptor = { taskClass: "implementation", pinnedModelId: "subscription-model", pinReason: "pin test" } as const;
+
+    const base = routingConfig("enforce");
+    const blockedConfig = { ...base, routing: { ...base.routing, pinBlocklist: ["subscription-model"] } };
+    const blocked = selectModel({ config: blockedConfig, descriptor, signals: { capacityEvidence: healthy } });
+    expect(blocked.pin).toMatchObject({ modelId: "subscription-model", honored: false });
+
+    const allowed = selectModel({ config: routingConfig("enforce"), descriptor, signals: { capacityEvidence: healthy } });
+    expect(allowed).toMatchObject({ outcome: "selected", modelId: "subscription-model", pin: { honored: true } });
+  });
+
   it("does not let issue stickiness resurrect an exhausted lane in enforce mode", () => {
     const config = resolveConfig({
       ...routingConfig("enforce"),

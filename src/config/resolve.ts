@@ -17,6 +17,7 @@ export const DEFAULT_ROUTING: RoutingConfig = {
   fallbackModelId: null,
   stickyModelWithinIssue: true,
   maxOutputTokens: 16_384,
+  pinBlocklist: [],
 };
 
 export const DEFAULT_UPSTREAM: CompatibleUpstreamConfig = {
@@ -262,6 +263,7 @@ export function resolveConfig(raw: unknown): RouterConfig {
         DEFAULT_ROUTING.stickyModelWithinIssue,
       ),
       maxOutputTokens: pickNumber(routingRaw.maxOutputTokens, DEFAULT_ROUTING.maxOutputTokens),
+      pinBlocklist: pickStringArray(routingRaw.pinBlocklist, DEFAULT_ROUTING.pinBlocklist),
     },
     upstream: {
       protocol:

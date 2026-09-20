@@ -246,11 +246,15 @@ export function selectModel(input: SelectInput): RoutingDecision {
     // routing mode; a null reading (no telemetry) cannot trip the cap.
     const pinnedUtil = pinned?.evidence?.utilization ?? null;
     const overUtilCap = capacityEnabled && pinnedUtil !== null && pinnedUtil > PIN_MAX_WEEKLY_UTILIZATION;
-    const honored = Boolean(pinned && !overUtilCap && (!(capacityEnabled && config.capacityRouting.mode === "enforce") || usable(pinned)));
+    // TOG-3551 (scope 3): a blocklisted id is never honored as a pin, whatever
+    // the mode or evidence — this is the operator list of known-unserved /
+    // payment_required ids a label-only pin must not resurrect.
+    const blocked = config.routing.pinBlocklist.includes(pinnedId);
+    const honored = Boolean(pinned && !blocked && !overUtilCap && (!(capacityEnabled && config.capacityRouting.mode === "enforce") || usable(pinned)));
     const reason = descriptor.pinReason ?? "configured pin";
     base.pin = { modelId: pinnedId, reason, honored };
     if (honored) return { ...base, outcome: "selected", modelId: pinnedId, capacity: capacityFor(pinned!) };
-    trace.push(overUtilCap ? `pin refused: ${pinnedId} over weekly utilization cap ${PIN_MAX_WEEKLY_UTILIZATION} (utilization ${pinnedUtil})` : `pin refused: ${pinnedId}`);
+    trace.push(blocked ? `pin refused: ${pinnedId} is on the pin blocklist` : overUtilCap ? `pin refused: ${pinnedId} over weekly utilization cap ${PIN_MAX_WEEKLY_UTILIZATION} (utilization ${pinnedUtil})` : `pin refused: ${pinnedId}`);
   }
   if (budgetGate === "halt" && !base.pin?.honored) { trace.push("budget gate halt: refusing non-pinned model work"); return base; }
   if (config.routing.stickyModelWithinIssue && runtime.stickyModelId) { const stickyPool = (budgetGate === "downshift" ? ranked : withCapacity).filter((entry) => !(capacityEnabled && config.capacityRouting.mode === "enforce") || usable(entry)); const incumbent = stickyPool.find((entry) => entry.model.id === runtime.stickyModelId); if (incumbent) return { ...base, outcome: "selected", modelId: incumbent.model.id, capacity: capacityFor(incumbent) }; if (pool.length) trace.push(`sticky: ${runtime.stickyModelId} no longer survives the gates, switching despite the cache cost`); }
