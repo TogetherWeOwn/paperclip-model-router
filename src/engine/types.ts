@@ -29,6 +29,15 @@ export interface ModelEntry {
    * seconds, and one shared ceiling cannot be right for both (TOG-1035).
    */
   requestTimeoutMs?: number;
+  /**
+   * TOG-3419: caps `maxOutputTokens` on the synchronous `/invoke` path only,
+   * so an unreachable request is rejected in milliseconds instead of running
+   * until `SYNC_BUDGET_CEILING_MS` cuts it off. Absent means derive a default
+   * from this model's effective request timeout and the throughput baseline
+   * in `config/upstream-constraints.ts`. `model_router_invoke_async` ignores
+   * this field entirely.
+   */
+  maxSyncOutputTokens?: number;
   enabled: boolean;
 }
 

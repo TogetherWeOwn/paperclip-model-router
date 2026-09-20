@@ -22,6 +22,24 @@ export const MAX_REQUEST_TIMEOUT_MS = 300_000;
  * as a bounds change. Raising the ceiling stays strictly opt-in.
  */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
+
+/**
+ * TOG-3419: the wall-clock budget the *synchronous* `/invoke` path gets to
+ * finish inside, independent of how large `requestTimeoutMs` is configured.
+ * `model_router_invoke_async` has no such ceiling beyond the worker's own
+ * `MAX_REQUEST_TIMEOUT_MS`.
+ */
+export const SYNC_BUDGET_CEILING_MS = 28_000;
+
+/**
+ * TOG-1035's measured baseline: glm-5.3-flash produced ~1200 output tokens in
+ * ~28s of upstream generation time. Used only to derive a default
+ * `maxSyncOutputTokens` for a model that has not set one explicitly — an
+ * operator with better numbers for their own models should set the field
+ * instead of relying on this.
+ */
+export const SYNC_THROUGHPUT_TOKENS_PER_MS = 1_200 / 28_000;
+
 export const MIN_RESPONSE_BYTES = 1_024;
 export const MAX_RESPONSE_BYTES = 16_777_216;
 

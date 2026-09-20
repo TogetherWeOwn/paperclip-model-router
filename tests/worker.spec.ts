@@ -1,7 +1,7 @@
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ACTION_KEYS, ROUTE_KEYS, STATE_KEYS, TOOL_NAMES } from "../src/constants.js";
+import { ACTION_KEYS, PENDING_INVOCATION_TTL_MS, ROUTE_KEYS, STATE_KEYS, TOOL_NAMES } from "../src/constants.js";
 import manifest from "../src/manifest.js";
 import { createPlugin } from "../src/worker.js";
 import { companyDecisionRecords, readFixture } from "./helpers.js";
@@ -39,12 +39,19 @@ async function sharedWorker() {
     },
   };
   const httpCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const defaultUpstream = (url: unknown): Response =>
+    String(url).includes("company-a.example") ? success("openai") : success("anthropic");
   harness.ctx.http = {
     async fetch(url, init) {
       httpCalls.push({ url: String(url), init });
-      return String(url).includes("company-a.example") ? success("openai") : success("anthropic");
+      return defaultUpstream(url);
     },
   };
+  // The async (submit + poll) path deliberately bypasses ctx.http and uses the
+  // worker's own global fetch (see directFetchHttpClient). Stub it with the same
+  // default upstream so async tests reach a working upstream unless they override
+  // it; afterEach() unstubs. Individual async tests replace this via vi.stubGlobal.
+  vi.stubGlobal("fetch", async (url: string, _init?: RequestInit) => defaultUpstream(url));
   const { definition } = createPlugin();
   await definition.setup(harness.ctx);
   return { harness, definition, httpCalls, secretCalls, configs };
@@ -55,6 +62,10 @@ const invocation = {
   messages: [{ role: "user", content: "hello" }],
   maxOutputTokens: 100,
 };
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("durable decision records", () => {
   it("reconciles the legacy ring buffer and keeps appending after 200 records", async () => {
@@ -308,7 +319,15 @@ describe("one select-invoke-normalize-record path", () => {
     harness.ctx.http.fetch = async () =>
       await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 1_600));
 
-    const result = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as { outcome: string; error: { code: string } };
+    // TOG-3419: the sync-budget preflight derives its ceiling from the same
+    // 1_000ms the selected model inherits here, so maxOutputTokens has to fit
+    // that tiny test budget or the request is rejected before ever reaching
+    // the transport this test means to exercise.
+    const result = await harness.performAction(
+      ACTION_KEYS.invoke,
+      { ...invocation, maxOutputTokens: 10 },
+      { companyId: COMPANY_A },
+    ) as { outcome: string; error: { code: string } };
     expect(result).toMatchObject({ outcome: "error", error: { code: "upstream-timeout" } });
   });
 
@@ -730,5 +749,343 @@ describe("scoped routes", () => {
       { agentId: "agent-a", runId: "run-a", stopReason: "end-turn" },
       { agentId: "agent-a", runId: "run-a", stopReason: null },
     ]);
+  });
+
+  it("returns HTTP 202 for a pending async submission and 200 once its poll completes", async () => {
+    const { definition, configs } = await sharedWorker();
+    const mutated = structuredClone(configs.get(COMPANY_A)!);
+    (mutated.models as Array<Record<string, unknown>>).find((m) => m.id === "claude-sonnet-5")!.requestTimeoutMs = 60_000;
+    configs.set(COMPANY_A, mutated);
+
+    const submitResponse = await definition.onApiRequest!({
+      routeKey: ROUTE_KEYS.invokeAsync,
+      method: "POST",
+      path: "/invoke-async",
+      params: {},
+      query: { companyId: COMPANY_A },
+      body: { ...invocation, task: { ...invocation.task, pinnedModelId: "claude-sonnet-5" } },
+      actor: { actorType: "agent", actorId: "agent-a", runId: "run-a" },
+      companyId: COMPANY_A,
+      headers: {},
+    });
+    expect(submitResponse.status).toBe(202);
+    const requestId = (submitResponse.body as { requestId: string }).requestId;
+    expect(requestId).toBeTruthy();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const pollResponse = await definition.onApiRequest!({
+      routeKey: ROUTE_KEYS.invokeResult,
+      method: "GET",
+      path: `/invoke/${requestId}`,
+      params: { requestId },
+      query: { companyId: COMPANY_A },
+      body: {},
+      actor: { actorType: "agent", actorId: "agent-a", runId: "run-a" },
+      companyId: COMPANY_A,
+      headers: {},
+    });
+    expect(pollResponse.status).toBe(200);
+    expect(pollResponse.body).toMatchObject({ status: "completed", outcome: "completed" });
+  });
+});
+
+describe("sync budget preflight (TOG-3419)", () => {
+  it("rejects an unreachable maxOutputTokens before stickiness, secret access, or upstream", async () => {
+    const { harness, httpCalls, secretCalls } = await sharedWorker();
+    const request = {
+      ...invocation,
+      // company-a's default upstream requestTimeoutMs (25s) derives a ~1071
+      // token sync budget for claude-sonnet-5; 5000 is comfortably unreachable.
+      maxOutputTokens: 5_000,
+      task: { ...invocation.task, pinnedModelId: "claude-sonnet-5" },
+    };
+
+    const startedAt = Date.now();
+    const result = await harness.performAction(ACTION_KEYS.invoke, request, { companyId: COMPANY_A }) as {
+      outcome: string;
+      error: { code: string; message: string };
+    };
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(result).toMatchObject({ outcome: "error", error: { code: "invalid-request" } });
+    expect(result.error.message).toContain("claude-sonnet-5");
+    expect(result.error.message).toContain(TOOL_NAMES.invokeAsync);
+    expect(httpCalls).toHaveLength(0);
+    expect(secretCalls).toHaveLength(0);
+    expect(harness.getState({
+      scopeKind: "company",
+      scopeId: COMPANY_A,
+      stateKey: STATE_KEYS.issueStickiness,
+    })).toBeUndefined();
+    expect(elapsedMs).toBeLessThan(50);
+  });
+
+  it("still lets an in-budget request reach upstream on the synchronous path, unchanged", async () => {
+    const { harness, httpCalls } = await sharedWorker();
+    const request = { ...invocation, maxOutputTokens: 100, task: { ...invocation.task, pinnedModelId: "claude-sonnet-5" } };
+    const result = await harness.performAction(ACTION_KEYS.invoke, request, { companyId: COMPANY_A }) as { outcome: string };
+    expect(result).toMatchObject({ outcome: "completed" });
+    expect(httpCalls).toHaveLength(1);
+  });
+});
+
+describe("async invoke (submit + poll)", () => {
+  it("returns pending immediately and completes on poll, using the model's own uncapped timeout", async () => {
+    const { harness, configs } = await sharedWorker();
+    const mutated = structuredClone(configs.get(COMPANY_A)!);
+    (mutated.models as Array<Record<string, unknown>>).find((m) => m.id === "claude-sonnet-5")!.requestTimeoutMs = 120_000;
+    configs.set(COMPANY_A, mutated);
+
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("fetch", async () =>
+        await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 90_000)));
+
+      const request = { ...invocation, task: { ...invocation.task, pinnedModelId: "claude-sonnet-5" } };
+      const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, request, { companyId: COMPANY_A }) as {
+        status: string;
+        requestId: string;
+        decision: { modelId: string };
+      };
+      expect(submitted).toMatchObject({ status: "pending", decision: { modelId: "claude-sonnet-5" } });
+      expect(submitted.requestId).toBeTruthy();
+
+      const stillRunning = await harness.performAction(ACTION_KEYS.invokeResult, { requestId: submitted.requestId }, { companyId: COMPANY_A });
+      expect(stillRunning).toMatchObject({ status: "pending" });
+
+      // 90s of simulated upstream latency: past the host's 30s RPC cap and
+      // the sync path's 28s ceiling, within the model's 120s override.
+      await vi.advanceTimersByTimeAsync(90_000);
+
+      const finished = await harness.performAction(ACTION_KEYS.invokeResult, { requestId: submitted.requestId }, { companyId: COMPANY_A }) as {
+        status: string;
+        outcome: string;
+        response: { modelId: string };
+      };
+      expect(finished).toMatchObject({ status: "completed", outcome: "completed", response: { modelId: "claude-sonnet-5" } });
+      expect(companyDecisionRecords(harness, COMPANY_A)).toMatchObject([{
+        outcome: "completed",
+        modelId: "claude-sonnet-5",
+        latencyMs: 90_000,
+      }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps concurrent request ids independently pollable", async () => {
+    const { harness } = await sharedWorker();
+    const originalGet = harness.ctx.state.get.bind(harness.ctx.state);
+    let pendingReads = 0;
+    let releaseReads!: () => void;
+    const bothReadsStarted = new Promise<void>((resolve) => { releaseReads = resolve; });
+    harness.ctx.state.get = async (input) => {
+      const value = await originalGet(input);
+      // This barrier deterministically reproduces the old shared-map race. The
+      // per-request implementation never reads this legacy aggregate key.
+      if (input.stateKey === STATE_KEYS.pendingInvocations) {
+        pendingReads += 1;
+        if (pendingReads === 2) releaseReads();
+        await bothReadsStarted;
+      }
+      return structuredClone(value);
+    };
+    vi.stubGlobal("fetch", async () => await new Promise<Response>(() => undefined));
+
+    const [first, second] = await Promise.all([
+      harness.performAction(ACTION_KEYS.invokeAsync, {
+        ...invocation,
+        task: { ...invocation.task, issueId: "concurrent-1" },
+      }, { companyId: COMPANY_A }),
+      harness.performAction(ACTION_KEYS.invokeAsync, {
+        ...invocation,
+        task: { ...invocation.task, issueId: "concurrent-2" },
+      }, { companyId: COMPANY_A }),
+    ]) as [{ requestId: string }, { requestId: string }];
+
+    expect(first.requestId).not.toBe(second.requestId);
+    await expect(harness.performAction(
+      ACTION_KEYS.invokeResult,
+      { requestId: first.requestId },
+      { companyId: COMPANY_A },
+    )).resolves.toMatchObject({ status: "pending" });
+    await expect(harness.performAction(
+      ACTION_KEYS.invokeResult,
+      { requestId: second.requestId },
+      { companyId: COMPANY_A },
+    )).resolves.toMatchObject({ status: "pending" });
+  });
+
+  it("keeps a successful terminal outcome when audit persistence fails", async () => {
+    const { harness } = await sharedWorker();
+    const execute = harness.ctx.db.execute.bind(harness.ctx.db);
+    let failedInsert = false;
+    harness.ctx.db.execute = async (sql, params) => {
+      if (!failedInsert && /insert\s+into/i.test(sql)) {
+        failedInsert = true;
+        throw new Error("simulated audit write failure");
+      }
+      return execute(sql, params);
+    };
+
+    const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, invocation, { companyId: COMPANY_A }) as {
+      requestId: string;
+    };
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const polled = await harness.performAction(
+      ACTION_KEYS.invokeResult,
+      { requestId: submitted.requestId },
+      { companyId: COMPANY_A },
+    );
+    expect(failedInsert).toBe(true);
+    expect(polled).toMatchObject({ status: "completed", outcome: "completed" });
+    expect(companyDecisionRecords(harness, COMPANY_A)).toHaveLength(0);
+  });
+
+  it("records a terminal error on poll when the background upstream call fails", async () => {
+    const { harness, configs } = await sharedWorker();
+    const mutated = structuredClone(configs.get(COMPANY_A)!);
+    (mutated.models as Array<Record<string, unknown>>).find((m) => m.id === "claude-sonnet-5")!.requestTimeoutMs = 60_000;
+    configs.set(COMPANY_A, mutated);
+    vi.stubGlobal("fetch", async () =>
+      new Response(JSON.stringify({ error: { message: "boom" } }), { status: 500, headers: { "content-type": "application/json" } }));
+
+    const request = { ...invocation, task: { ...invocation.task, pinnedModelId: "claude-sonnet-5" } };
+    const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, request, { companyId: COMPANY_A }) as { status: string; requestId: string };
+    expect(submitted.status).toBe("pending");
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const polled = await harness.performAction(ACTION_KEYS.invokeResult, { requestId: submitted.requestId }, { companyId: COMPANY_A }) as {
+      status: string;
+      outcome: string;
+    };
+    expect(polled).toMatchObject({ status: "error", outcome: "error" });
+    expect(companyDecisionRecords(harness, COMPANY_A)).toMatchObject([{ outcome: "error" }]);
+  });
+
+  it("returns not-found for an unknown requestId", async () => {
+    const { harness } = await sharedWorker();
+    const polled = await harness.performAction(ACTION_KEYS.invokeResult, { requestId: "never-submitted" }, { companyId: COMPANY_A });
+    expect(polled).toEqual({ status: "not-found" });
+  });
+
+  it("physically deletes a terminal response when its TTL expires", async () => {
+    const start = new Date("2026-01-01T00:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(start);
+    try {
+      const { harness } = await sharedWorker();
+      const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, invocation, { companyId: COMPANY_A }) as {
+        requestId: string;
+      };
+      await vi.advanceTimersByTimeAsync(0);
+
+      const stateKey = `${STATE_KEYS.pendingInvocations}:${submitted.requestId}`;
+      expect(harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey }))
+        .toMatchObject({ status: "completed", response: { content: [{ text: "hello a" }] } });
+
+      await vi.advanceTimersByTimeAsync(PENDING_INVOCATION_TTL_MS + 1);
+
+      expect(harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey })).toBeUndefined();
+      await expect(harness.performAction(
+        ACTION_KEYS.invokeResult,
+        { requestId: submitted.requestId },
+        { companyId: COMPANY_A },
+      )).resolves.toEqual({ status: "not-found" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("expires a pending record after its TTL, independent of whether the background call ever finishes", async () => {
+    const start = new Date("2026-01-01T00:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(start);
+    try {
+      const { harness } = await sharedWorker();
+      vi.stubGlobal("fetch", async () =>
+        await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 60_000)));
+
+      const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, invocation, { companyId: COMPANY_A }) as { requestId: string };
+
+      vi.setSystemTime(new Date(start.getTime() + PENDING_INVOCATION_TTL_MS + 1_000));
+
+      const polled = await harness.performAction(ACTION_KEYS.invokeResult, { requestId: submitted.requestId }, { companyId: COMPANY_A });
+      expect(polled).toEqual({ status: "not-found" });
+      expect(harness.getState({
+        scopeKind: "company",
+        scopeId: COMPANY_A,
+        stateKey: `${STATE_KEYS.pendingInvocations}:${submitted.requestId}`,
+      })).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("TOG-3419 simulated overrun regression", () => {
+  it("the sync path refuses the request outright while async invoke completes it past 28s", async () => {
+    const { harness, httpCalls, configs } = await sharedWorker();
+    const mutated = structuredClone(configs.get(COMPANY_A)!);
+    (mutated.models as Array<Record<string, unknown>>).push({
+      id: "cliproxy/glm-5.3-flash",
+      tier: "strong",
+      quality: 80,
+      costPerMTokIn: 0.5,
+      costPerMTokOut: 2,
+      contextWindow: 128_000,
+      capabilities: [],
+      requestTimeoutMs: 90_000,
+      enabled: true,
+    });
+    configs.set(COMPANY_A, mutated);
+
+    const request = {
+      task: { taskClass: "implementation", issueId: "issue-glm", pinnedModelId: "cliproxy/glm-5.3-flash" },
+      messages: [{ role: "user", content: "generate a long, careful answer" }],
+      // ~93s of generation at the TOG-1035 baseline (43 tok/s): unreachable
+      // within the sync path's 28s ceiling, comfortably inside the model's 90s.
+      maxOutputTokens: 4_000,
+    };
+
+    const syncResult = await harness.performAction(ACTION_KEYS.invoke, request, { companyId: COMPANY_A }) as {
+      outcome: string;
+      error: { code: string };
+    };
+    expect(syncResult).toMatchObject({ outcome: "error", error: { code: "invalid-request" } });
+    expect(httpCalls).toHaveLength(0);
+
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("fetch", async () =>
+        await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 45_000)));
+
+      const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, request, { companyId: COMPANY_A }) as {
+        status: string;
+        requestId: string;
+      };
+      expect(submitted.status).toBe("pending");
+
+      const stillRunning = await harness.performAction(ACTION_KEYS.invokeResult, { requestId: submitted.requestId }, { companyId: COMPANY_A });
+      expect(stillRunning).toMatchObject({ status: "pending" });
+
+      await vi.advanceTimersByTimeAsync(45_000);
+
+      const finished = await harness.performAction(ACTION_KEYS.invokeResult, { requestId: submitted.requestId }, { companyId: COMPANY_A }) as {
+        status: string;
+        outcome: string;
+        response: { modelId: string };
+      };
+      expect(finished).toMatchObject({
+        status: "completed",
+        outcome: "completed",
+        response: { modelId: "cliproxy/glm-5.3-flash" },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

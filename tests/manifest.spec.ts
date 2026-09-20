@@ -18,10 +18,16 @@ describe("manifest", () => {
   });
 
   it("declares exact compatible-upstream native surfaces", () => {
-    expect(manifest.tools?.map((tool) => tool.name)).toEqual([TOOL_NAMES.invoke]);
+    expect(manifest.tools?.map((tool) => tool.name)).toEqual([
+      TOOL_NAMES.invoke,
+      TOOL_NAMES.invokeAsync,
+      TOOL_NAMES.invokeResult,
+    ]);
     expect(manifest.apiRoutes?.map((route) => [route.routeKey, route.path, route.companyResolution])).toEqual([
       [ROUTE_KEYS.invoke, "/invoke", { from: "query", key: "companyId" }],
       [ROUTE_KEYS.invokeIssue, "/issues/:issueId/invoke", { from: "issue", param: "issueId" }],
+      [ROUTE_KEYS.invokeAsync, "/invoke-async", { from: "query", key: "companyId" }],
+      [ROUTE_KEYS.invokeResult, "/invoke/:requestId", { from: "query", key: "companyId" }],
     ]);
   });
 
@@ -66,17 +72,29 @@ describe("manifest", () => {
 });
 
 describe("network and secret discipline", () => {
-  it("uses only ctx.http.fetch for inference networking", () => {
-    const sources = [
+  it("routes networking through ctx.http.fetch, confining direct fetch to the async upstream client", () => {
+    const transport = readFileSync(join(root, "src/inference/transport.ts"), "utf8");
+    const others = [
       "src/worker.ts",
-      "src/inference/transport.ts",
       "src/inference/adapters.ts",
       "src/capacity/read.ts",
     ].map((file) => readFileSync(join(root, file), "utf8")).join("\n");
-    expect(sources).toContain("input.http.fetch");
-    expect(sources).not.toMatch(/from\s+["']node:(?:http|https|net|tls)["']/);
-    expect(sources).not.toMatch(/\bglobalThis\.fetch\b|(?<!\.)\bfetch\s*\(/);
-    expect(sources).toContain('"Accept-Encoding": "identity"');
+    const all = `${transport}\n${others}`;
+
+    // The host bridge remains the transport's default path; the sync invoke
+    // wiring in worker.ts still hands the transport ctx.http.
+    expect(transport).toContain("input.http.fetch");
+    expect(others).toContain("http: ctx.http");
+    // No file reaches for raw node network primitives.
+    expect(all).not.toMatch(/from\s+["']node:(?:http|https|net|tls)["']/);
+    // The ONLY sanctioned direct fetch is directFetchHttpClient in transport.ts,
+    // used solely by the async background continuation to escape the host's 30s
+    // cap. It is reached only for the config-validated upstream.baseUrl.
+    expect(transport).toContain("export const directFetchHttpClient");
+    expect((transport.match(/globalThis\.fetch/g) ?? []).length).toBe(1);
+    // No other inference file may reach for global or bare fetch.
+    expect(others).not.toMatch(/\bglobalThis\.fetch\b|(?<!\.)\bfetch\s*\(/);
+    expect(all).toContain('"Accept-Encoding": "identity"');
   });
 
   it("contains no credential-shaped literals in active artifacts", () => {

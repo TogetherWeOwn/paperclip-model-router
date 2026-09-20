@@ -16,6 +16,7 @@ import type { RouterConfig } from "./config/types.js";
 import {
   ACTION_KEYS,
   DECISION_LOG_RETENTION_DAYS,
+  PENDING_INVOCATION_TTL_MS,
   PLUGIN_VERSION,
   ROUTE_KEYS,
   STATE_KEYS,
@@ -27,11 +28,42 @@ import {
   decisionRecordParams,
   type DecisionRecord,
 } from "./decision-records.js";
+import type { RoutingDecision } from "./engine/types.js";
 import { selectModel } from "./engine/select.js";
 import { validateUpstreamConfig } from "./inference/adapters.js";
-import { invokeCompatibleUpstream } from "./inference/transport.js";
-import type { InferenceResult, InvokeRequest } from "./inference/types.js";
+import { effectiveMaxSyncOutputTokens } from "./inference/sync-budget.js";
+import { directFetchHttpClient, invokeCompatibleUpstream } from "./inference/transport.js";
+import type { InferenceError, InferenceResult, InvokeRequest, NormalizedResponse } from "./inference/types.js";
 import { InvocationValidationError, parseInvokeRequest } from "./inference/validate.js";
+
+type AsyncInvokeResult =
+  | InferenceResult
+  | { status: "pending"; requestId: string; decision: RoutingDecision };
+
+type PendingInvocationRecord =
+  | { status: "pending"; requestId: string; decision: RoutingDecision; startedAt: string; expiresAt: string }
+  | {
+      status: "completed";
+      requestId: string;
+      decision: RoutingDecision;
+      outcome: "completed";
+      response: NormalizedResponse;
+      error: null;
+      startedAt: string;
+      expiresAt: string;
+    }
+  | {
+      status: "error";
+      requestId: string;
+      decision: RoutingDecision;
+      outcome: "error";
+      response: null;
+      error: InferenceError;
+      startedAt: string;
+      expiresAt: string;
+    };
+
+type PollResult = { status: "not-found" } | PendingInvocationRecord;
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -137,6 +169,12 @@ export function createPlugin() {
     raw: unknown,
     actor?: { agentId?: string | null; runId?: string | null },
   ) => Promise<InferenceResult>) | null = null;
+  let invokeAsync: ((
+    companyId: string,
+    raw: unknown,
+    actor?: { agentId?: string | null; runId?: string | null },
+  ) => Promise<AsyncInvokeResult>) | null = null;
+  let invokeResult: ((companyId: string, requestId: string) => Promise<PollResult>) | null = null;
 
   return definePlugin({
     multiCompanyConfig: true,
@@ -349,6 +387,67 @@ export function createPlugin() {
         return result;
       };
 
+      const pendingInvocationKey = (companyId: string, requestId: string) => ({
+        scopeKind: "company" as const,
+        scopeId: companyId,
+        stateKey: `${STATE_KEYS.pendingInvocations}:${requestId}`,
+      });
+      const pendingInvocationExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+      const deletePendingInvocation = async (companyId: string, requestId: string): Promise<void> => {
+        const timerKey = `${companyId}:${requestId}`;
+        const timer = pendingInvocationExpiryTimers.get(timerKey);
+        if (timer) clearTimeout(timer);
+        pendingInvocationExpiryTimers.delete(timerKey);
+        await ctx.state.delete(pendingInvocationKey(companyId, requestId));
+      };
+
+      // ctx.state has no native TTL. One row per request makes concurrent
+      // submissions independent; a worker-local timer deletes the row at its
+      // deadline, and polling also deletes an expired row if the worker was
+      // restarted before that timer fired.
+      const schedulePendingInvocationExpiry = (
+        companyId: string,
+        requestId: string,
+        expiresAt: string,
+      ): void => {
+        const timerKey = `${companyId}:${requestId}`;
+        const previous = pendingInvocationExpiryTimers.get(timerKey);
+        if (previous) clearTimeout(previous);
+        const delayMs = Math.max(0, Date.parse(expiresAt) - Date.now());
+        const timer = setTimeout(() => {
+          pendingInvocationExpiryTimers.delete(timerKey);
+          void ctx.state.delete(pendingInvocationKey(companyId, requestId)).catch(() => {
+            ctx.logger.error("Failed to delete expired async invocation", { requestId });
+          });
+        }, delayMs);
+        timer.unref?.();
+        pendingInvocationExpiryTimers.set(timerKey, timer);
+      };
+
+      const readPendingInvocation = async (
+        companyId: string,
+        requestId: string,
+      ): Promise<PendingInvocationRecord | null> => {
+        const stored = await ctx.state.get(pendingInvocationKey(companyId, requestId));
+        const entry = stored && typeof stored === "object" && !Array.isArray(stored)
+          ? stored as PendingInvocationRecord
+          : null;
+        if (!entry || typeof entry.expiresAt !== "string") return null;
+        const expiresAtMs = Date.parse(entry.expiresAt);
+        if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+          await deletePendingInvocation(companyId, requestId);
+          return null;
+        }
+        schedulePendingInvocationExpiry(companyId, requestId, entry.expiresAt);
+        return entry;
+      };
+
+      const writePendingInvocation = async (companyId: string, entry: PendingInvocationRecord): Promise<void> => {
+        await ctx.state.set(pendingInvocationKey(companyId, entry.requestId), entry);
+        schedulePendingInvocationExpiry(companyId, entry.requestId, entry.expiresAt);
+      };
+
       const record = async (
         companyId: string,
         actor: { agentId: string | null; runId: string | null },
@@ -376,7 +475,7 @@ export function createPlugin() {
           outcome: result.outcome,
           errorCode: failure?.code ?? null,
           upstreamStatus: failure?.upstreamStatus ?? null,
-          latencyMs: Math.max(0, Math.min(Math.round(latencyMs), 60_000)),
+          latencyMs: Math.max(0, Math.round(latencyMs)),
           inputTokens: response?.usage.inputTokens ?? null,
           outputTokens: response?.usage.outputTokens ?? null,
           stopReason: response?.stopReason ?? null,
@@ -393,11 +492,31 @@ export function createPlugin() {
         await ctx.metrics.write(`model_router.invoke.${result.outcome}`, 1);
       };
 
-      const invokeFor = async (
+      type PreparedInvocation = {
+        requestId: string;
+        startedAt: number;
+        actor: { agentId: string | null; runId: string | null };
+        config: RouterConfig;
+        request: InvokeRequest;
+        decision: RoutingDecision & { modelId: string };
+        credential: string;
+        selectedEntry: RouterConfig["models"][number] | undefined;
+      };
+
+      type PrepareOutcome =
+        | { kind: "terminal"; result: InferenceResult }
+        | { kind: "ready"; prepared: PreparedInvocation };
+
+      // Shared fast prefix for sync and async invoke: validate config, parse the
+      // request, select a model, and resolve its credential. The sync-only
+      // output budget check runs immediately after selection, before stickiness
+      // or secret access. Every early exit is already record()-ed.
+      const prepareInvocation = async (
         companyId: string,
         raw: unknown,
+        mode: "sync" | "async",
         actorContext: { agentId?: string | null; runId?: string | null } = {},
-      ): Promise<InferenceResult> => {
+      ): Promise<PrepareOutcome> => {
         const actor = {
           agentId: actorContext.agentId ?? null,
           runId: actorContext.runId ?? null,
@@ -429,7 +548,7 @@ export function createPlugin() {
             },
           };
           await record(companyId, actor, request, result, Date.now() - startedAt);
-          return result;
+          return { kind: "terminal", result };
         }
         try {
           const protocol = config.upstream.protocol;
@@ -458,7 +577,7 @@ export function createPlugin() {
             },
           };
           await record(companyId, actor, request, result, Date.now() - startedAt);
-          return result;
+          return { kind: "terminal", result };
         }
 
         const capacity = config.capacityRouting.enabled
@@ -489,7 +608,35 @@ export function createPlugin() {
             error: null,
           };
           await record(companyId, actor, request, result, Date.now() - startedAt);
-          return result;
+          return { kind: "terminal", result };
+        }
+
+        // The selected id, not the requested one: under capacity enforce those
+        // differ, and the budget has to follow the model actually being invoked.
+        const selectedEntry = config.models.find((model) => model.id === decision.modelId);
+        if (mode === "sync") {
+          const maxSyncOutputTokens = effectiveMaxSyncOutputTokens(
+            config.upstream.requestTimeoutMs,
+            selectedEntry?.requestTimeoutMs,
+            selectedEntry?.maxSyncOutputTokens,
+          );
+          if (request.maxOutputTokens > maxSyncOutputTokens) {
+            result = {
+              outcome: "error",
+              requestId,
+              decision,
+              response: null,
+              error: {
+                code: "invalid-request",
+                message: `maxOutputTokens (${request.maxOutputTokens}) is not reachable within the synchronous invoke budget for model ${decision.modelId} (up to ${maxSyncOutputTokens} tokens). Use ${TOOL_NAMES.invokeAsync} for longer generations.`,
+                retryable: false,
+                upstreamStatus: null,
+                upstreamRequestId: null,
+              },
+            };
+            await record(companyId, actor, request, result, Date.now() - startedAt);
+            return { kind: "terminal", result };
+          }
         }
 
         await writeStickyModel(companyId, request.task.issueId, decision.modelId);
@@ -508,7 +655,7 @@ export function createPlugin() {
             },
           };
           await record(companyId, actor, request, result, Date.now() - startedAt);
-          return result;
+          return { kind: "terminal", result };
         }
 
         let credential: string;
@@ -532,12 +679,33 @@ export function createPlugin() {
             },
           };
           await record(companyId, actor, request, result, Date.now() - startedAt);
-          return result;
+          return { kind: "terminal", result };
         }
 
-        // The selected id, not the requested one: under capacity enforce those
-        // differ, and the budget has to follow the model actually being invoked.
-        const selectedEntry = config.models.find((model) => model.id === decision.modelId);
+        return {
+          kind: "ready",
+          prepared: {
+            requestId,
+            startedAt,
+            actor,
+            config,
+            request,
+            decision: decision as RoutingDecision & { modelId: string },
+            credential,
+            selectedEntry,
+          },
+        };
+      };
+
+      const invokeFor = async (
+        companyId: string,
+        raw: unknown,
+        actorContext: { agentId?: string | null; runId?: string | null } = {},
+      ): Promise<InferenceResult> => {
+        const prepared = await prepareInvocation(companyId, raw, "sync", actorContext);
+        if (prepared.kind === "terminal") return prepared.result;
+        const { requestId, startedAt, actor, config, request, decision, credential, selectedEntry } = prepared.prepared;
+
         const transport = await invokeCompatibleUpstream({
           http: ctx.http,
           config: config.upstream,
@@ -548,13 +716,101 @@ export function createPlugin() {
             ? { modelTimeoutMs: selectedEntry.requestTimeoutMs }
             : {}),
         });
-        result = transport.error
+        const result: InferenceResult = transport.error
           ? { outcome: "error", requestId, decision, response: null, error: transport.error }
           : { outcome: "completed", requestId, decision, response: transport.response, error: null };
         await record(companyId, actor, request, result, Date.now() - startedAt);
         return result;
       };
+
+      const invokeAsyncFor = async (
+        companyId: string,
+        raw: unknown,
+        actorContext: { agentId?: string | null; runId?: string | null } = {},
+      ): Promise<AsyncInvokeResult> => {
+        const prepared = await prepareInvocation(companyId, raw, "async", actorContext);
+        if (prepared.kind === "terminal") return prepared.result;
+        const { requestId, startedAt, actor, config, request, decision, credential, selectedEntry } = prepared.prepared;
+
+        const startedAtIso = new Date(startedAt).toISOString();
+        const expiresAt = new Date(startedAt + PENDING_INVOCATION_TTL_MS).toISOString();
+        await writePendingInvocation(companyId, {
+          status: "pending",
+          requestId,
+          decision,
+          startedAt: startedAtIso,
+          expiresAt,
+        });
+
+        // Deliberately not awaited: the handler returns "pending" now while
+        // this keeps running in the same long-lived worker process (spike
+        // confirmed both assumptions this relies on, see TOG-3419 comments).
+        // Transport, terminal-state, and audit failures are isolated so a
+        // bookkeeping error can never rewrite a successful upstream outcome.
+        void (async () => {
+          let result: InferenceResult;
+          try {
+            const transport = await invokeCompatibleUpstream({
+              // Direct worker `fetch`, not `ctx.http`: the host bridge aborts at
+              // 30s, which is the exact cap async invoke exists to escape. See
+              // directFetchHttpClient for the SSRF/timeout rationale. The sync
+              // path above deliberately keeps `ctx.http` and its 30s ceiling.
+              http: directFetchHttpClient,
+              config: config.upstream,
+              credential,
+              request,
+              modelId: decision.modelId,
+              ...(selectedEntry?.requestTimeoutMs !== undefined
+                ? { modelTimeoutMs: selectedEntry.requestTimeoutMs }
+                : {}),
+            });
+            result = transport.error
+              ? { outcome: "error", requestId, decision, response: null, error: transport.error }
+              : { outcome: "completed", requestId, decision, response: transport.response, error: null };
+          } catch {
+            result = {
+              outcome: "error",
+              requestId,
+              decision,
+              response: null,
+              error: {
+                code: "upstream-connect",
+                message: "The async invocation failed unexpectedly.",
+                retryable: true,
+                upstreamStatus: null,
+                upstreamRequestId: null,
+              },
+            };
+          }
+
+          const terminal: PendingInvocationRecord = result.outcome === "completed"
+            ? { status: "completed", requestId, decision, outcome: "completed", response: result.response, error: null, startedAt: startedAtIso, expiresAt }
+            : { status: "error", requestId, decision, outcome: "error", response: null, error: result.error, startedAt: startedAtIso, expiresAt };
+          try {
+            await writePendingInvocation(companyId, terminal);
+          } catch {
+            ctx.logger.error("Failed to persist async invocation outcome", { requestId });
+          }
+          try {
+            await record(companyId, actor, request, result, Date.now() - startedAt);
+          } catch {
+            ctx.logger.error("Failed to persist async invocation audit record", { requestId });
+          }
+        })().catch(() => {
+          ctx.logger.error("Async invocation continuation failed unexpectedly", { requestId });
+        });
+
+        return { status: "pending", requestId, decision };
+      };
+
+      const invokeResultFor = async (companyId: string, requestId: string): Promise<PollResult> => {
+        if (!requestId) return { status: "not-found" };
+        return await readPendingInvocation(companyId, requestId) ?? { status: "not-found" };
+      };
+
       invoke = invokeFor;
+      invokeAsync = invokeAsyncFor;
+      invokeResult = invokeResultFor;
       await pruneDecisionRecords();
 
       ctx.tools.register(
@@ -574,6 +830,52 @@ export function createPlugin() {
         if (!actionCtx.companyId) throw new Error("host-authorized company context is required");
         const { companyId: _hostInjectedCompanyId, ...request } = params;
         return invokeFor(actionCtx.companyId, request, actionCtx.actor);
+      });
+
+      ctx.tools.register(
+        TOOL_NAMES.invokeAsync,
+        {
+          displayName: "Invoke a routed model asynchronously",
+          description: "Select, submit the generation in the background, and return a requestId immediately. Poll model_router_invoke_result for the outcome.",
+          parametersSchema: { type: "object" },
+        },
+        async (params, runCtx): Promise<ToolResult> => {
+          const result = await invokeAsyncFor(runCtx.companyId, params, runCtx);
+          return {
+            content: "status" in result
+              ? `Invocation ${result.requestId} accepted; poll ${TOOL_NAMES.invokeResult} for its result.`
+              : summary(result),
+            data: result,
+          };
+        },
+      );
+
+      ctx.tools.register(
+        TOOL_NAMES.invokeResult,
+        {
+          displayName: "Poll an async model invocation",
+          description: "Read the current status of a model_router_invoke_async submission by requestId.",
+          parametersSchema: { type: "object" },
+        },
+        async (params, runCtx): Promise<ToolResult> => {
+          const requestId = typeof (params as Record<string, unknown>).requestId === "string"
+            ? (params as Record<string, unknown>).requestId as string
+            : "";
+          const result = await invokeResultFor(runCtx.companyId, requestId);
+          return { content: `Invocation ${requestId || "(missing)"} is ${result.status}.`, data: result };
+        },
+      );
+
+      ctx.actions.register(ACTION_KEYS.invokeAsync, async (params, actionCtx) => {
+        if (!actionCtx.companyId) throw new Error("host-authorized company context is required");
+        const { companyId: _hostInjectedCompanyId, ...request } = params;
+        return invokeAsyncFor(actionCtx.companyId, request, actionCtx.actor);
+      });
+
+      ctx.actions.register(ACTION_KEYS.invokeResult, async (params, actionCtx) => {
+        if (!actionCtx.companyId) throw new Error("host-authorized company context is required");
+        const requestId = typeof params.requestId === "string" ? params.requestId : "";
+        return invokeResultFor(actionCtx.companyId, requestId);
       });
 
       ctx.actions.register(ACTION_KEYS.refreshCapacity, async (_params, actionCtx) => {
@@ -612,6 +914,10 @@ export function createPlugin() {
               model.requestTimeoutMs < MIN_REQUEST_TIMEOUT_MS ||
               model.requestTimeoutMs > MAX_REQUEST_TIMEOUT_MS)) {
           errors.push(`model ${model.id} requestTimeoutMs must be an integer from ${MIN_REQUEST_TIMEOUT_MS} through ${MAX_REQUEST_TIMEOUT_MS}`);
+        }
+        if (model.maxSyncOutputTokens !== undefined &&
+            (!Number.isInteger(model.maxSyncOutputTokens) || model.maxSyncOutputTokens < 1)) {
+          errors.push(`model ${model.id} maxSyncOutputTokens must be a positive integer`);
         }
       }
       for (const entry of config.taskClasses) {
@@ -660,19 +966,35 @@ export function createPlugin() {
     },
 
     async onApiRequest(input) {
-      if (!context || !invoke) return { status: 503, body: { error: "worker is not initialised" } };
-      if (input.routeKey !== ROUTE_KEYS.invoke && input.routeKey !== ROUTE_KEYS.invokeIssue) {
-        return { status: 404, body: { error: `unknown route ${input.routeKey}` } };
+      if (!context || !invoke || !invokeAsync || !invokeResult) {
+        return { status: 503, body: { error: "worker is not initialised" } };
       }
-      const body = asRecord(input.body);
-      const request = input.routeKey === ROUTE_KEYS.invokeIssue
-        ? { ...body, task: { ...asRecord(body.task), issueId: input.params.issueId } }
-        : body;
-      const result = await invoke(input.companyId, request, {
+      const actor = {
         agentId: input.actor.agentId ?? (input.actor.actorType === "agent" ? input.actor.actorId : null),
         runId: input.actor.runId ?? null,
-      });
-      return { status: result.outcome === "error" && result.error.code === "invalid-request" ? 400 : 200, body: result };
+      };
+      if (input.routeKey === ROUTE_KEYS.invoke || input.routeKey === ROUTE_KEYS.invokeIssue) {
+        const body = asRecord(input.body);
+        const request = input.routeKey === ROUTE_KEYS.invokeIssue
+          ? { ...body, task: { ...asRecord(body.task), issueId: input.params.issueId } }
+          : body;
+        const result = await invoke(input.companyId, request, actor);
+        return { status: result.outcome === "error" && result.error.code === "invalid-request" ? 400 : 200, body: result };
+      }
+      if (input.routeKey === ROUTE_KEYS.invokeAsync) {
+        const body = asRecord(input.body);
+        const result = await invokeAsync(input.companyId, body, actor);
+        const status = "status" in result
+          ? 202
+          : result.outcome === "error" && result.error.code === "invalid-request" ? 400 : 200;
+        return { status, body: result };
+      }
+      if (input.routeKey === ROUTE_KEYS.invokeResult) {
+        const requestId = typeof input.params.requestId === "string" ? input.params.requestId : "";
+        const result = await invokeResult(input.companyId, requestId);
+        return { status: 200, body: result };
+      }
+      return { status: 404, body: { error: `unknown route ${input.routeKey}` } };
     },
   });
 }

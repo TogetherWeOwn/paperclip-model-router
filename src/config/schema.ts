@@ -138,6 +138,12 @@ export const ROUTER_CONFIG_SCHEMA = {
             description:
               "Overrides upstream.requestTimeoutMs when this model is selected. Omit to inherit. Set it on reasoning models, which overrun a shared ceiling that suits the rest of the table.",
           },
+          maxSyncOutputTokens: {
+            type: "integer",
+            minimum: 1,
+            description:
+              "Caps maxOutputTokens on the synchronous /invoke path only, rejecting unreachable requests in milliseconds. Omit to derive a default from this model's request timeout and a measured throughput baseline. model_router_invoke_async ignores this field.",
+          },
           enabled: { type: "boolean", default: true },
         },
       },
