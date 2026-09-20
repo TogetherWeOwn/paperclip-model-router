@@ -59,6 +59,14 @@ export const ROUTER_CONFIG_SCHEMA = {
           maximum: 128000,
           default: 16384,
         },
+        pinBlocklist: {
+          type: "array",
+          title: "Pin blocklist",
+          description:
+            "Model ids that must never be honored as a pin, whatever the routing mode or capacity evidence (known-unserved / payment_required ids).",
+          items: { type: "string", minLength: 1 },
+          default: [],
+        },
       },
     },
     upstream: {

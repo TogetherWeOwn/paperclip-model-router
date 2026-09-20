@@ -630,6 +630,44 @@ describe("one select-invoke-normalize-record path", () => {
     expect(harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.capacitySnapshot })).toMatchObject({ evidence: valid.evidence, lastRefreshError: "capacity-refresh-incomplete" });
   });
 
+  // TOG-3551 (scope 4): the refresh publishes a per-lane `laneDown` map keyed by
+  // SOURCE id into plugin_state for the host dispatch-sweep / repinPass. A lane
+  // is down when its source errored or its evidence cannot serve; a total fetch
+  // failure must OVERWRITE a prior "up" rather than leave it stale.
+  it("publishes a per-lane laneDown map and overwrites it on a failed refresh", async () => {
+    const { harness, configs } = await sharedWorker();
+    const config = structuredClone(configs.get(COMPANY_A)!);
+    config.capacityRouting = {
+      enabled: true, mode: "enforce", unknownTelemetry: "fail-open",
+      sources: [
+        { id: "healthy-lane", statusUrl: "https://capacity.example/healthy", modelIds: ["minimax-m2.5"], healthFields: ["status"], requestTimeoutMs: 5000, maxResponseBytes: 262144, windows: [{ name: "weekly", utilizationFields: ["used"], resetFields: [] }] },
+        { id: "dead-lane", statusUrl: "https://capacity.example/dead", modelIds: ["claude-sonnet-5"], healthFields: ["status"], requestTimeoutMs: 5000, maxResponseBytes: 262144, windows: [{ name: "weekly", utilizationFields: ["used"], resetFields: [] }] },
+      ],
+    };
+    configs.set(COMPANY_A, config);
+    let fail = false;
+    harness.ctx.http.fetch = async (url) => {
+      const target = String(url);
+      if (!target.includes("capacity.example")) return success("openai");
+      if (fail) return new Response("{}", { status: 503, headers: { "content-type": "application/json" } });
+      const rows = target.endsWith("/dead") ? [{ status: "exhausted", used: 0.99 }] : [{ status: "ok", used: 0.2 }];
+      return new Response(JSON.stringify({ rows }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+
+    const refreshed = await harness.performAction(ACTION_KEYS.refreshCapacity, {}, { companyId: COMPANY_A }) as { laneDown: Record<string, boolean> };
+    expect(refreshed.laneDown).toEqual({ "healthy-lane": false, "dead-lane": true });
+    expect(harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.capacitySnapshot })).toMatchObject({
+      lastRefreshError: null,
+      laneDown: { "healthy-lane": false, "dead-lane": true },
+    });
+
+    fail = true;
+    await harness.performAction(ACTION_KEYS.refreshCapacity, {}, { companyId: COMPANY_A });
+    expect(harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.capacitySnapshot })).toMatchObject({
+      laneDown: { "healthy-lane": true, "dead-lane": true },
+    });
+  });
+
   it("fails closed on a stale stored capacity snapshot", async () => {
     const { harness, configs, httpCalls } = await sharedWorker();
     const config = structuredClone(configs.get(COMPANY_A)!);

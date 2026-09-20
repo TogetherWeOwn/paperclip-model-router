@@ -22,6 +22,15 @@ export interface RoutingConfig {
   fallbackModelId: string | null;
   stickyModelWithinIssue: boolean;
   maxOutputTokens: number;
+  /**
+   * TOG-3551 (scope 3): model ids that must never be honored as a pin, whatever
+   * the routing mode or capacity evidence. This is the operator-maintained list
+   * of known-unserved / payment_required ids (e.g. deepseek-v4-flash,
+   * qwen3.8-max, cliproxy/* label pins, devin payment_required ids) that a
+   * label-only pin must not resurrect. Empty by default — the guard ships inert
+   * until an operator populates it.
+   */
+  pinBlocklist: string[];
 }
 
 export interface CompatibleUpstreamConfig {
