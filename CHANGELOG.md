@@ -20,15 +20,19 @@ version is not present here.
   `POST /invoke-async` runs selection and credential resolution
   synchronously, writes a pending record, fires the compatible-upstream call
   in the background, and returns `{status: "pending", requestId, decision}`
-  immediately. `model_router_invoke_result` / `GET /invoke/:requestId` polls
-  that record: `pending` while the call runs, `not-found` once its TTL
-  elapses, or the terminal `completed`/`error` outcome. The background call
-  uses the selected model's own `requestTimeoutMs` (up to the worker's 300s
-  ceiling) instead of the 28s sync ceiling, so a generation that would
-  overrun Paperclip's 30s host RPC cap can still complete.
+  immediately. Every request has its own company-scoped state row, so
+  concurrent submissions cannot lose one another. `model_router_invoke_result`
+  / `GET /invoke/:requestId` polls that record: `pending` while the call runs,
+  `not-found` once its TTL elapses, or the terminal `completed`/`error`
+  outcome. The background call uses the selected model's own
+  `requestTimeoutMs` (up to the worker's 300s ceiling) instead of the 28s sync
+  ceiling, so a generation that would overrun Paperclip's 30s host RPC cap can
+  still complete. Audit persistence is isolated from the terminal transport
+  outcome, and decision records preserve the full async latency instead of
+  truncating it at 60 seconds.
 - **`maxSyncOutputTokens`, a new optional per-model config field.** The
-  synchronous `/invoke` path now rejects, in milliseconds and before any
-  credential resolution or upstream call, a `maxOutputTokens` that could not
+  synchronous `/invoke` path now rejects, in milliseconds and before issue
+  stickiness, credential resolution, or any upstream call, a `maxOutputTokens` that could not
   finish inside `min(selectedModel.requestTimeoutMs ?? upstream.requestTimeoutMs,
   28_000)` at a 43 tok/s baseline (1200 tokens / 28s, TOG-1035). Its error
   message names the model and points the caller at

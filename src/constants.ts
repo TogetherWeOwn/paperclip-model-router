@@ -30,6 +30,7 @@ export const STATE_KEYS = {
   issueStickiness: "issue-stickiness",
   legacyDecisionLog: "decision-log",
   decisionLogMigration: "decision-log-database-migration-v1",
+  /** Prefix for one company-scoped state row per async request id. */
   pendingInvocations: "pending-invocations",
 } as const;
 
@@ -38,6 +39,7 @@ export const DECISION_LOG_RETENTION_DAYS = 90;
 /**
  * TOG-3419: how long a `model_router_invoke_async` submission stays pollable
  * after it finishes (or while it is still running). `ctx.state` has no native
- * TTL, so this is enforced by hand at read time in the poll handler.
+ * TTL, so the worker schedules deletion and the poll handler lazily deletes an
+ * expired row if a worker restart interrupted that timer.
  */
 export const PENDING_INVOCATION_TTL_MS = 15 * 60 * 1_000;

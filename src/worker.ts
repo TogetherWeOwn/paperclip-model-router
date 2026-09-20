@@ -368,37 +368,65 @@ export function createPlugin() {
         return result;
       };
 
-      const pendingInvocationsKey = (companyId: string) => ({
+      const pendingInvocationKey = (companyId: string, requestId: string) => ({
         scopeKind: "company" as const,
         scopeId: companyId,
-        stateKey: STATE_KEYS.pendingInvocations,
+        stateKey: `${STATE_KEYS.pendingInvocations}:${requestId}`,
       });
+      const pendingInvocationExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-      // ctx.state has no native TTL (get/set/delete only), so expiry is
-      // enforced by hand here: any entry past its expiresAt is dropped from
-      // the map on every read, and a fresh write folds that pruning in too.
-      const prunePendingInvocations = (
-        map: Record<string, PendingInvocationRecord>,
-        now: number,
-      ): Record<string, PendingInvocationRecord> => {
-        const next: Record<string, PendingInvocationRecord> = {};
-        for (const [key, entry] of Object.entries(map)) {
-          if (entry && typeof entry.expiresAt === "string" && Date.parse(entry.expiresAt) > now) {
-            next[key] = entry;
-          }
-        }
-        return next;
+      const deletePendingInvocation = async (companyId: string, requestId: string): Promise<void> => {
+        const timerKey = `${companyId}:${requestId}`;
+        const timer = pendingInvocationExpiryTimers.get(timerKey);
+        if (timer) clearTimeout(timer);
+        pendingInvocationExpiryTimers.delete(timerKey);
+        await ctx.state.delete(pendingInvocationKey(companyId, requestId));
       };
 
-      const readPendingInvocations = async (companyId: string): Promise<Record<string, PendingInvocationRecord>> => {
-        const stored = asRecord(await ctx.state.get(pendingInvocationsKey(companyId)));
-        return prunePendingInvocations(stored as unknown as Record<string, PendingInvocationRecord>, Date.now());
+      // ctx.state has no native TTL. One row per request makes concurrent
+      // submissions independent; a worker-local timer deletes the row at its
+      // deadline, and polling also deletes an expired row if the worker was
+      // restarted before that timer fired.
+      const schedulePendingInvocationExpiry = (
+        companyId: string,
+        requestId: string,
+        expiresAt: string,
+      ): void => {
+        const timerKey = `${companyId}:${requestId}`;
+        const previous = pendingInvocationExpiryTimers.get(timerKey);
+        if (previous) clearTimeout(previous);
+        const delayMs = Math.max(0, Date.parse(expiresAt) - Date.now());
+        const timer = setTimeout(() => {
+          pendingInvocationExpiryTimers.delete(timerKey);
+          void ctx.state.delete(pendingInvocationKey(companyId, requestId)).catch(() => {
+            ctx.logger.error("Failed to delete expired async invocation", { requestId });
+          });
+        }, delayMs);
+        timer.unref?.();
+        pendingInvocationExpiryTimers.set(timerKey, timer);
+      };
+
+      const readPendingInvocation = async (
+        companyId: string,
+        requestId: string,
+      ): Promise<PendingInvocationRecord | null> => {
+        const stored = await ctx.state.get(pendingInvocationKey(companyId, requestId));
+        const entry = stored && typeof stored === "object" && !Array.isArray(stored)
+          ? stored as PendingInvocationRecord
+          : null;
+        if (!entry || typeof entry.expiresAt !== "string") return null;
+        const expiresAtMs = Date.parse(entry.expiresAt);
+        if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+          await deletePendingInvocation(companyId, requestId);
+          return null;
+        }
+        schedulePendingInvocationExpiry(companyId, requestId, entry.expiresAt);
+        return entry;
       };
 
       const writePendingInvocation = async (companyId: string, entry: PendingInvocationRecord): Promise<void> => {
-        const map = await readPendingInvocations(companyId);
-        map[entry.requestId] = entry;
-        await ctx.state.set(pendingInvocationsKey(companyId), map);
+        await ctx.state.set(pendingInvocationKey(companyId, entry.requestId), entry);
+        schedulePendingInvocationExpiry(companyId, entry.requestId, entry.expiresAt);
       };
 
       const record = async (
@@ -428,7 +456,7 @@ export function createPlugin() {
           outcome: result.outcome,
           errorCode: failure?.code ?? null,
           upstreamStatus: failure?.upstreamStatus ?? null,
-          latencyMs: Math.max(0, Math.min(Math.round(latencyMs), 60_000)),
+          latencyMs: Math.max(0, Math.round(latencyMs)),
           inputTokens: response?.usage.inputTokens ?? null,
           outputTokens: response?.usage.outputTokens ?? null,
           stopReason: response?.stopReason ?? null,
@@ -460,13 +488,14 @@ export function createPlugin() {
         | { kind: "terminal"; result: InferenceResult }
         | { kind: "ready"; prepared: PreparedInvocation };
 
-      // Steps 1-6 shared by the sync and async invoke paths: validate config,
-      // parse the request, select a model, and resolve its credential. Every
-      // early exit here is a terminal InferenceResult that has already been
-      // record()-ed, exactly like the old single-function invokeFor did.
+      // Shared fast prefix for sync and async invoke: validate config, parse the
+      // request, select a model, and resolve its credential. The sync-only
+      // output budget check runs immediately after selection, before stickiness
+      // or secret access. Every early exit is already record()-ed.
       const prepareInvocation = async (
         companyId: string,
         raw: unknown,
+        mode: "sync" | "async",
         actorContext: { agentId?: string | null; runId?: string | null } = {},
       ): Promise<PrepareOutcome> => {
         const actor = {
@@ -563,6 +592,34 @@ export function createPlugin() {
           return { kind: "terminal", result };
         }
 
+        // The selected id, not the requested one: under capacity enforce those
+        // differ, and the budget has to follow the model actually being invoked.
+        const selectedEntry = config.models.find((model) => model.id === decision.modelId);
+        if (mode === "sync") {
+          const maxSyncOutputTokens = effectiveMaxSyncOutputTokens(
+            config.upstream.requestTimeoutMs,
+            selectedEntry?.requestTimeoutMs,
+            selectedEntry?.maxSyncOutputTokens,
+          );
+          if (request.maxOutputTokens > maxSyncOutputTokens) {
+            result = {
+              outcome: "error",
+              requestId,
+              decision,
+              response: null,
+              error: {
+                code: "invalid-request",
+                message: `maxOutputTokens (${request.maxOutputTokens}) is not reachable within the synchronous invoke budget for model ${decision.modelId} (up to ${maxSyncOutputTokens} tokens). Use ${TOOL_NAMES.invokeAsync} for longer generations.`,
+                retryable: false,
+                upstreamStatus: null,
+                upstreamRequestId: null,
+              },
+            };
+            await record(companyId, actor, request, result, Date.now() - startedAt);
+            return { kind: "terminal", result };
+          }
+        }
+
         await writeStickyModel(companyId, request.task.issueId, decision.modelId);
         if (!config.upstream.credentialSecretRef) {
           result = {
@@ -606,9 +663,6 @@ export function createPlugin() {
           return { kind: "terminal", result };
         }
 
-        // The selected id, not the requested one: under capacity enforce those
-        // differ, and the budget has to follow the model actually being invoked.
-        const selectedEntry = config.models.find((model) => model.id === decision.modelId);
         return {
           kind: "ready",
           prepared: {
@@ -629,32 +683,9 @@ export function createPlugin() {
         raw: unknown,
         actorContext: { agentId?: string | null; runId?: string | null } = {},
       ): Promise<InferenceResult> => {
-        const prepared = await prepareInvocation(companyId, raw, actorContext);
+        const prepared = await prepareInvocation(companyId, raw, "sync", actorContext);
         if (prepared.kind === "terminal") return prepared.result;
         const { requestId, startedAt, actor, config, request, decision, credential, selectedEntry } = prepared.prepared;
-
-        const maxSyncOutputTokens = effectiveMaxSyncOutputTokens(
-          config.upstream.requestTimeoutMs,
-          selectedEntry?.requestTimeoutMs,
-          selectedEntry?.maxSyncOutputTokens,
-        );
-        if (request.maxOutputTokens > maxSyncOutputTokens) {
-          const result: InferenceResult = {
-            outcome: "error",
-            requestId,
-            decision,
-            response: null,
-            error: {
-              code: "invalid-request",
-              message: `maxOutputTokens (${request.maxOutputTokens}) is not reachable within the synchronous invoke budget for model ${decision.modelId} (up to ${maxSyncOutputTokens} tokens). Use ${TOOL_NAMES.invokeAsync} for longer generations.`,
-              retryable: false,
-              upstreamStatus: null,
-              upstreamRequestId: null,
-            },
-          };
-          await record(companyId, actor, request, result, Date.now() - startedAt);
-          return result;
-        }
 
         const transport = await invokeCompatibleUpstream({
           http: ctx.http,
@@ -678,7 +709,7 @@ export function createPlugin() {
         raw: unknown,
         actorContext: { agentId?: string | null; runId?: string | null } = {},
       ): Promise<AsyncInvokeResult> => {
-        const prepared = await prepareInvocation(companyId, raw, actorContext);
+        const prepared = await prepareInvocation(companyId, raw, "async", actorContext);
         if (prepared.kind === "terminal") return prepared.result;
         const { requestId, startedAt, actor, config, request, decision, credential, selectedEntry } = prepared.prepared;
 
@@ -695,51 +726,55 @@ export function createPlugin() {
         // Deliberately not awaited: the handler returns "pending" now while
         // this keeps running in the same long-lived worker process (spike
         // confirmed both assumptions this relies on, see TOG-3419 comments).
-        invokeCompatibleUpstream({
-          http: ctx.http,
-          config: config.upstream,
-          credential,
-          request,
-          modelId: decision.modelId,
-          ...(selectedEntry?.requestTimeoutMs !== undefined
-            ? { modelTimeoutMs: selectedEntry.requestTimeoutMs }
-            : {}),
-        }).then(async (transport) => {
-          const result: InferenceResult = transport.error
-            ? { outcome: "error", requestId, decision, response: null, error: transport.error }
-            : { outcome: "completed", requestId, decision, response: transport.response, error: null };
-          await writePendingInvocation(
-            companyId,
-            result.outcome === "completed"
-              ? { status: "completed", requestId, decision, outcome: "completed", response: result.response, error: null, startedAt: startedAtIso, expiresAt }
-              : { status: "error", requestId, decision, outcome: "error", response: null, error: result.error, startedAt: startedAtIso, expiresAt },
-          );
-          await record(companyId, actor, request, result, Date.now() - startedAt);
-        }).catch(async (cause) => {
-          const result: InferenceResult = {
-            outcome: "error",
-            requestId,
-            decision,
-            response: null,
-            error: {
-              code: "upstream-connect",
-              message: cause instanceof Error ? cause.message.slice(0, 512) : "The async invocation failed unexpectedly.",
-              retryable: true,
-              upstreamStatus: null,
-              upstreamRequestId: null,
-            },
-          };
-          await writePendingInvocation(companyId, {
-            status: "error",
-            requestId,
-            decision,
-            outcome: "error",
-            response: null,
-            error: result.error,
-            startedAt: startedAtIso,
-            expiresAt,
-          });
-          await record(companyId, actor, request, result, Date.now() - startedAt);
+        // Transport, terminal-state, and audit failures are isolated so a
+        // bookkeeping error can never rewrite a successful upstream outcome.
+        void (async () => {
+          let result: InferenceResult;
+          try {
+            const transport = await invokeCompatibleUpstream({
+              http: ctx.http,
+              config: config.upstream,
+              credential,
+              request,
+              modelId: decision.modelId,
+              ...(selectedEntry?.requestTimeoutMs !== undefined
+                ? { modelTimeoutMs: selectedEntry.requestTimeoutMs }
+                : {}),
+            });
+            result = transport.error
+              ? { outcome: "error", requestId, decision, response: null, error: transport.error }
+              : { outcome: "completed", requestId, decision, response: transport.response, error: null };
+          } catch {
+            result = {
+              outcome: "error",
+              requestId,
+              decision,
+              response: null,
+              error: {
+                code: "upstream-connect",
+                message: "The async invocation failed unexpectedly.",
+                retryable: true,
+                upstreamStatus: null,
+                upstreamRequestId: null,
+              },
+            };
+          }
+
+          const terminal: PendingInvocationRecord = result.outcome === "completed"
+            ? { status: "completed", requestId, decision, outcome: "completed", response: result.response, error: null, startedAt: startedAtIso, expiresAt }
+            : { status: "error", requestId, decision, outcome: "error", response: null, error: result.error, startedAt: startedAtIso, expiresAt };
+          try {
+            await writePendingInvocation(companyId, terminal);
+          } catch {
+            ctx.logger.error("Failed to persist async invocation outcome", { requestId });
+          }
+          try {
+            await record(companyId, actor, request, result, Date.now() - startedAt);
+          } catch {
+            ctx.logger.error("Failed to persist async invocation audit record", { requestId });
+          }
+        })().catch(() => {
+          ctx.logger.error("Async invocation continuation failed unexpectedly", { requestId });
         });
 
         return { status: "pending", requestId, decision };
@@ -747,8 +782,7 @@ export function createPlugin() {
 
       const invokeResultFor = async (companyId: string, requestId: string): Promise<PollResult> => {
         if (!requestId) return { status: "not-found" };
-        const map = await readPendingInvocations(companyId);
-        return map[requestId] ?? { status: "not-found" };
+        return await readPendingInvocation(companyId, requestId) ?? { status: "not-found" };
       };
 
       invoke = invokeFor;

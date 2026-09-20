@@ -742,8 +742,8 @@ describe("scoped routes", () => {
 });
 
 describe("sync budget preflight (TOG-3419)", () => {
-  it("rejects an unreachable maxOutputTokens in milliseconds, without ever calling upstream", async () => {
-    const { harness, httpCalls } = await sharedWorker();
+  it("rejects an unreachable maxOutputTokens before stickiness, secret access, or upstream", async () => {
+    const { harness, httpCalls, secretCalls } = await sharedWorker();
     const request = {
       ...invocation,
       // company-a's default upstream requestTimeoutMs (25s) derives a ~1071
@@ -763,6 +763,12 @@ describe("sync budget preflight (TOG-3419)", () => {
     expect(result.error.message).toContain("claude-sonnet-5");
     expect(result.error.message).toContain(TOOL_NAMES.invokeAsync);
     expect(httpCalls).toHaveLength(0);
+    expect(secretCalls).toHaveLength(0);
+    expect(harness.getState({
+      scopeKind: "company",
+      scopeId: COMPANY_A,
+      stateKey: STATE_KEYS.issueStickiness,
+    })).toBeUndefined();
     expect(elapsedMs).toBeLessThan(50);
   });
 
@@ -779,13 +785,13 @@ describe("async invoke (submit + poll)", () => {
   it("returns pending immediately and completes on poll, using the model's own uncapped timeout", async () => {
     const { harness, configs } = await sharedWorker();
     const mutated = structuredClone(configs.get(COMPANY_A)!);
-    (mutated.models as Array<Record<string, unknown>>).find((m) => m.id === "claude-sonnet-5")!.requestTimeoutMs = 60_000;
+    (mutated.models as Array<Record<string, unknown>>).find((m) => m.id === "claude-sonnet-5")!.requestTimeoutMs = 120_000;
     configs.set(COMPANY_A, mutated);
 
     vi.useFakeTimers();
     try {
       harness.ctx.http.fetch = async () =>
-        await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 45_000));
+        await new Promise<Response>((resolve) => setTimeout(() => resolve(success("openai")), 90_000));
 
       const request = { ...invocation, task: { ...invocation.task, pinnedModelId: "claude-sonnet-5" } };
       const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, request, { companyId: COMPANY_A }) as {
@@ -799,9 +805,9 @@ describe("async invoke (submit + poll)", () => {
       const stillRunning = await harness.performAction(ACTION_KEYS.invokeResult, { requestId: submitted.requestId }, { companyId: COMPANY_A });
       expect(stillRunning).toMatchObject({ status: "pending" });
 
-      // 45s of simulated upstream latency: past the host's 30s RPC cap and
-      // the sync path's 28s ceiling, well within the model's 60s override.
-      await vi.advanceTimersByTimeAsync(45_000);
+      // 90s of simulated upstream latency: past the host's 30s RPC cap and
+      // the sync path's 28s ceiling, within the model's 120s override.
+      await vi.advanceTimersByTimeAsync(90_000);
 
       const finished = await harness.performAction(ACTION_KEYS.invokeResult, { requestId: submitted.requestId }, { companyId: COMPANY_A }) as {
         status: string;
@@ -809,10 +815,84 @@ describe("async invoke (submit + poll)", () => {
         response: { modelId: string };
       };
       expect(finished).toMatchObject({ status: "completed", outcome: "completed", response: { modelId: "claude-sonnet-5" } });
-      expect(companyDecisionRecords(harness, COMPANY_A)).toMatchObject([{ outcome: "completed", modelId: "claude-sonnet-5" }]);
+      expect(companyDecisionRecords(harness, COMPANY_A)).toMatchObject([{
+        outcome: "completed",
+        modelId: "claude-sonnet-5",
+        latencyMs: 90_000,
+      }]);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps concurrent request ids independently pollable", async () => {
+    const { harness } = await sharedWorker();
+    const originalGet = harness.ctx.state.get.bind(harness.ctx.state);
+    let pendingReads = 0;
+    let releaseReads!: () => void;
+    const bothReadsStarted = new Promise<void>((resolve) => { releaseReads = resolve; });
+    harness.ctx.state.get = async (input) => {
+      const value = await originalGet(input);
+      // This barrier deterministically reproduces the old shared-map race. The
+      // per-request implementation never reads this legacy aggregate key.
+      if (input.stateKey === STATE_KEYS.pendingInvocations) {
+        pendingReads += 1;
+        if (pendingReads === 2) releaseReads();
+        await bothReadsStarted;
+      }
+      return structuredClone(value);
+    };
+    harness.ctx.http.fetch = async () => await new Promise<Response>(() => undefined);
+
+    const [first, second] = await Promise.all([
+      harness.performAction(ACTION_KEYS.invokeAsync, {
+        ...invocation,
+        task: { ...invocation.task, issueId: "concurrent-1" },
+      }, { companyId: COMPANY_A }),
+      harness.performAction(ACTION_KEYS.invokeAsync, {
+        ...invocation,
+        task: { ...invocation.task, issueId: "concurrent-2" },
+      }, { companyId: COMPANY_A }),
+    ]) as [{ requestId: string }, { requestId: string }];
+
+    expect(first.requestId).not.toBe(second.requestId);
+    await expect(harness.performAction(
+      ACTION_KEYS.invokeResult,
+      { requestId: first.requestId },
+      { companyId: COMPANY_A },
+    )).resolves.toMatchObject({ status: "pending" });
+    await expect(harness.performAction(
+      ACTION_KEYS.invokeResult,
+      { requestId: second.requestId },
+      { companyId: COMPANY_A },
+    )).resolves.toMatchObject({ status: "pending" });
+  });
+
+  it("keeps a successful terminal outcome when audit persistence fails", async () => {
+    const { harness } = await sharedWorker();
+    const execute = harness.ctx.db.execute.bind(harness.ctx.db);
+    let failedInsert = false;
+    harness.ctx.db.execute = async (sql, params) => {
+      if (!failedInsert && /insert\s+into/i.test(sql)) {
+        failedInsert = true;
+        throw new Error("simulated audit write failure");
+      }
+      return execute(sql, params);
+    };
+
+    const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, invocation, { companyId: COMPANY_A }) as {
+      requestId: string;
+    };
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const polled = await harness.performAction(
+      ACTION_KEYS.invokeResult,
+      { requestId: submitted.requestId },
+      { companyId: COMPANY_A },
+    );
+    expect(failedInsert).toBe(true);
+    expect(polled).toMatchObject({ status: "completed", outcome: "completed" });
+    expect(companyDecisionRecords(harness, COMPANY_A)).toHaveLength(0);
   });
 
   it("records a terminal error on poll when the background upstream call fails", async () => {
@@ -843,6 +923,34 @@ describe("async invoke (submit + poll)", () => {
     expect(polled).toEqual({ status: "not-found" });
   });
 
+  it("physically deletes a terminal response when its TTL expires", async () => {
+    const start = new Date("2026-01-01T00:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(start);
+    try {
+      const { harness } = await sharedWorker();
+      const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, invocation, { companyId: COMPANY_A }) as {
+        requestId: string;
+      };
+      await vi.advanceTimersByTimeAsync(0);
+
+      const stateKey = `${STATE_KEYS.pendingInvocations}:${submitted.requestId}`;
+      expect(harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey }))
+        .toMatchObject({ status: "completed", response: { content: [{ text: "hello a" }] } });
+
+      await vi.advanceTimersByTimeAsync(PENDING_INVOCATION_TTL_MS + 1);
+
+      expect(harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey })).toBeUndefined();
+      await expect(harness.performAction(
+        ACTION_KEYS.invokeResult,
+        { requestId: submitted.requestId },
+        { companyId: COMPANY_A },
+      )).resolves.toEqual({ status: "not-found" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("expires a pending record after its TTL, independent of whether the background call ever finishes", async () => {
     const start = new Date("2026-01-01T00:00:00.000Z");
     vi.useFakeTimers();
@@ -858,6 +966,11 @@ describe("async invoke (submit + poll)", () => {
 
       const polled = await harness.performAction(ACTION_KEYS.invokeResult, { requestId: submitted.requestId }, { companyId: COMPANY_A });
       expect(polled).toEqual({ status: "not-found" });
+      expect(harness.getState({
+        scopeKind: "company",
+        scopeId: COMPANY_A,
+        stateKey: `${STATE_KEYS.pendingInvocations}:${submitted.requestId}`,
+      })).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }

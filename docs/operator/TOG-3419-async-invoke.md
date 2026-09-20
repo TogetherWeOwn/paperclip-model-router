@@ -75,10 +75,20 @@ time curl -sS -X POST "$PAPERCLIP_API_URL/api/plugins/togetherweown.paperclip-mo
 ## Blast radius
 
 Same as the existing plugin: instance-wide worker restart on upgrade;
-company-scoped config, secrets, and state otherwise. A pending async
-invocation is company-scoped plugin state (`ctx.state`) with a bounded TTL —
-it is pruned automatically and holds no credential or full prompt/response
-content beyond what the synchronous path's decision record already retains.
+company-scoped config, secrets, and state otherwise. Each async request uses
+its own company-scoped `ctx.state` row, so concurrent submits cannot overwrite
+one another. The row never contains the credential or prompt, but a terminal
+row does contain the normalized response while it remains pollable.
+
+The poll contract expires after 15 minutes. The worker schedules physical row
+deletion at that deadline, and an expired poll also deletes the row. `ctx.state`
+has no durable native TTL, however: if the worker restarts before its timer
+fires and nobody polls that request again, an abandoned terminal row (including
+its normalized response text) can remain physically stored until host database
+retention removes it. Operators whose response-retention policy cannot tolerate
+that restart edge should not enable async invoke until the host provides native
+state TTL. The API still returns `not-found` after `expiresAt`; it never serves
+an expired value.
 
 ## Rollback
 
