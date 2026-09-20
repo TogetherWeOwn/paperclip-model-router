@@ -253,8 +253,8 @@ export function createPlugin() {
       const refreshCapacity = async (
         companyId: string,
         config: RouterConfig,
-      ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; error: string | null; paceVerdicts: Record<string, LanePaceVerdict> }> => {
-        if (!config.capacityRouting.enabled) return { snapshots: [], evidence: [], error: null, paceVerdicts: {} };
+      ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; error: string | null; paceVerdicts: Record<string, LanePaceVerdict>; laneDown: Record<string, boolean> }> => {
+        if (!config.capacityRouting.enabled) return { snapshots: [], evidence: [], error: null, paceVerdicts: {}, laneDown: {} };
         const snapshots: CapacitySnapshot[] = [];
         for (let index = 0; index < config.capacityRouting.sources.length; index += 1) {
           const source = config.capacityRouting.sources[index]!;
@@ -304,6 +304,20 @@ export function createPlugin() {
           paceVerdicts: Object.fromEntries(snapshots
             .filter((snapshot) => snapshot.pace && typeof snapshot.pace.state === "string")
             .map((snapshot) => [snapshot.source, snapshot.pace!])),
+          // TOG-3551: publish a per-lane down flag keyed by SOURCE id so the
+          // host dispatch-sweep / repinPass can read it straight from
+          // plugin_state. A lane is down when its source fetch errored or any
+          // of its evidence says the lane cannot serve (exhausted/unavailable
+          // health, or an unavailable posture). Computed from the CURRENT
+          // snapshots so a failed attempt flips the flag rather than serving a
+          // stale "up".
+          laneDown: Object.fromEntries(snapshots.map((snapshot) => [
+            snapshot.source,
+            Boolean(snapshot.error) || snapshot.evidence.some((entry) =>
+              entry.posture === "unavailable" ||
+              entry.health === "exhausted" ||
+              entry.health === "unavailable"),
+          ])),
         };
         const key = capacityStateKey(companyId);
         const previous = asRecord(await ctx.state.get(key));
@@ -315,6 +329,7 @@ export function createPlugin() {
             lastRefreshError: null,
             paceVerdicts: result.paceVerdicts,
             paceRefreshedAt: refreshedAt,
+            laneDown: result.laneDown,
           });
         } else {
           await ctx.state.set(key, {
@@ -325,6 +340,10 @@ export function createPlugin() {
             // verdict immediately instead of steering with stale pace.
             paceVerdicts: result.paceVerdicts,
             paceRefreshedAt: refreshedAt,
+            // TOG-3551: overwrite (never merge) laneDown from the current
+            // attempt so a lane that just went down is not masked by a prior
+            // "up" flag persisted in `previous`.
+            laneDown: result.laneDown,
           });
         }
         return result;
