@@ -1,7 +1,7 @@
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ACTION_KEYS, PENDING_INVOCATION_TTL_MS, ROUTE_KEYS, STATE_KEYS, TOOL_NAMES } from "../src/constants.js";
+import { ACTION_KEYS, JOB_KEYS, PENDING_INVOCATION_TTL_MS, ROUTE_KEYS, STATE_KEYS, TOOL_NAMES } from "../src/constants.js";
 import manifest from "../src/manifest.js";
 import { createPlugin } from "../src/worker.js";
 import { companyDecisionRecords, readFixture } from "./helpers.js";
@@ -998,6 +998,80 @@ describe("async invoke (submit + poll)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("TOG-3419: reaches a terminal state on poll immediately, and reconcileAsyncInvocations persists it, even though the host denies the background continuation's own state writes", async () => {
+    // Reproduces the reopened production bug: the host clears a plugin's
+    // invocation scope the instant it sends back the RPC response, but
+    // invokeAsync's background continuation is an unawaited promise that
+    // keeps running after that response — every ctx.state call it makes is
+    // rejected with "the worker referenced a missing, expired, or unknown
+    // invocation scope". Submitting and getting 202/pending back was never
+    // the problem; a terminal result was never reachable. A build that only
+    // asserts submit returns 202 would pass despite that.
+    const { harness } = await sharedWorker();
+
+    let scopeIsDead = false;
+    const originalSet = harness.ctx.state.set.bind(harness.ctx.state);
+    const originalGet = harness.ctx.state.get.bind(harness.ctx.state);
+    harness.ctx.state.set = async (key, value) => {
+      if (scopeIsDead) {
+        throw new Error(
+          "Plugin \"test-plugin\" is not allowed to perform \"state.set\": the worker referenced a missing, expired, or unknown invocation scope",
+        );
+      }
+      return originalSet(key, value);
+    };
+    harness.ctx.state.get = async (key) => {
+      if (scopeIsDead) {
+        throw new Error(
+          "Plugin \"test-plugin\" is not allowed to perform \"state.get\": the worker referenced a missing, expired, or unknown invocation scope",
+        );
+      }
+      return originalGet(key);
+    };
+
+    const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, invocation, { companyId: COMPANY_A }) as {
+      requestId: string;
+    };
+    // The host tears the invocation scope down the instant this response
+    // goes out — exactly when the background continuation is still running.
+    scopeIsDead = true;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const stateKey = `${STATE_KEYS.pendingInvocations}:${submitted.requestId}`;
+    const polledWhileScopeDead = await harness.performAction(
+      ACTION_KEYS.invokeResult,
+      { requestId: submitted.requestId },
+      { companyId: COMPANY_A },
+    );
+    expect(polledWhileScopeDead).toMatchObject({ status: "completed", outcome: "completed" });
+
+    // Nothing durable yet: the continuation's own state.set/state.get calls
+    // were denied, so ctx.state was never updated by it.
+    expect(harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey }))
+      .toMatchObject({ status: "pending" });
+    expect(companyDecisionRecords(harness, COMPANY_A)).toHaveLength(0);
+
+    // A scheduled job dispatch carries no invocation id, so the host grants
+    // it proactive access to the plugin's configured companies instead of
+    // denying it — simulate that recovery and confirm reconcileAsyncInvocations
+    // flushes both the terminal state and the audit record.
+    scopeIsDead = false;
+    await harness.runJob(JOB_KEYS.reconcileAsyncInvocations);
+
+    expect(harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey }))
+      .toMatchObject({ status: "completed", outcome: "completed" });
+    expect(companyDecisionRecords(harness, COMPANY_A)).toMatchObject([{ outcome: "completed" }]);
+
+    // Once durably persisted, the in-memory fallback is no longer needed —
+    // a poll still resolves correctly straight from ctx.state.
+    const polledAfterReconcile = await harness.performAction(
+      ACTION_KEYS.invokeResult,
+      { requestId: submitted.requestId },
+      { companyId: COMPANY_A },
+    );
+    expect(polledAfterReconcile).toMatchObject({ status: "completed", outcome: "completed" });
   });
 
   it("expires a pending record after its TTL, independent of whether the background call ever finishes", async () => {

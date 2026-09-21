@@ -49,6 +49,7 @@ describe("manifest", () => {
       "database.namespace.read",
       "database.namespace.write",
       "http.outbound",
+      "jobs.schedule",
       "metrics.write",
       "plugin.state.read",
       "plugin.state.write",

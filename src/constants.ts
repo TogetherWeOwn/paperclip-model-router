@@ -1,7 +1,7 @@
 export const PLUGIN_ID = "togetherweown.paperclip-model-router";
 
 /** Kept in sync with package.json by `npm run verify`. */
-export const PLUGIN_VERSION = "0.5.0";
+export const PLUGIN_VERSION = "0.6.0";
 
 export const PLUGIN_API_VERSION = 1 as const;
 
@@ -23,6 +23,20 @@ export const ROUTE_KEYS = {
   invokeIssue: "invoke-issue",
   invokeAsync: "invoke-async",
   invokeResult: "invoke-result",
+} as const;
+
+export const JOB_KEYS = {
+  /**
+   * TOG-3419: the host clears a plugin's invocation scope the instant it
+   * receives the worker's RPC response, but `invokeAsync`'s background
+   * continuation (an unawaited promise started during that response) keeps
+   * running afterward. Node's AsyncLocalStorage still attaches the
+   * now-cleared invocation id to any `ctx.state`/`ctx.db` call it makes, so
+   * the host rejects it. A scheduled job's dispatch carries no invocation id
+   * at all, so its handler runs under the host's proactive-company grant
+   * instead and can flush what the continuation could not persist.
+   */
+  reconcileAsyncInvocations: "reconcile-async-invocations",
 } as const;
 
 export const STATE_KEYS = {
