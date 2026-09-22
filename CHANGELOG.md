@@ -10,6 +10,29 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-22
+
+### Fixed
+
+- **Margin-aware serviceability hard stop (TOG-3983).** Any fresh serviceability
+  window at `1 - pacePolicy.margin` (default 0.9, existing milli precision)
+  stops the lane, even with a healthy peer account. Verdicts report
+  `serviceability-window-exhausted` and the earliest known tripped reset.
+  Unknown resets remain unknown; allowance-only aggregation is unchanged.
+- Enforced pace routing excludes this positive trip from ordinary selection,
+  pins, stickiness and fallback. Refresh publishes the trip in `laneDown` and
+  persists the verdict for subsequent invocations.
+
+### Compatibility
+
+- With `capacityRouting.enabled`, `mode: enforce` and `paceOrdering: true`, pace
+  now excludes serviceability-tripped lanes instead of merely ranking them last.
+  Shadow selection and flag-off selection remain unchanged. `laneDown` reports
+  observed trips regardless of the selection flag, like other lane-health facts.
+- No configuration, roster, capability or migration changes. No live flags are
+  flipped by upgrading. This entry does not authorize installation or release;
+  the reviewed versioned operator handoff follows merge.
+
 ## [0.6.0] - 2026-09-21
 
 ### Fixed

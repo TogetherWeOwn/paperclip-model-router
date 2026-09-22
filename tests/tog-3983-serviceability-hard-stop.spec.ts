@@ -32,7 +32,6 @@ const CLAUDE: LanePaceDefinition = {
   ],
 };
 
-const TRIPPED_FIVE_HOUR = "2026-09-16T23:20:00.443210Z";
 const PEER_FIVE_HOUR_RESET = "2026-09-17T03:30:00.666229Z";
 
 const TRIPPED_RECORD = {
@@ -71,6 +70,8 @@ function verdictFor(records: unknown[], margin?: number): LanePaceVerdict {
 describe("TOG-3983: margin-aware trip ceiling", () => {
   it.each([
     [0.899, 0.1, true],
+    [0.8994, 0.1, true],
+    [0.8995, 0.1, false],
     [0.9, 0.1, false],
     [0.799, 0.2, true],
     [0.8, 0.2, false],
@@ -90,8 +91,35 @@ describe("TOG-3983: margin-aware trip ceiling", () => {
   });
 });
 
+describe("TOG-3983: unrelated pace behavior stays unchanged", () => {
+  it("does not apply the serviceability margin to an allowance window", () => {
+    expect(verdictFor([{ ...HEALTHY_PEER_RECORD, seven_day_utilization: 0.99 }])).toMatchObject({
+      serviceable: true, reason: "ok",
+    });
+  });
+
+  it("allows a healthy peer to rescue an allowance-only exhaustion", () => {
+    expect(verdictFor([{ ...HEALTHY_PEER_RECORD, seven_day_utilization: 1 }, HEALTHY_PEER_RECORD])).toMatchObject({
+      serviceable: true, serviceableAccountCount: 1, reason: "ok",
+    });
+  });
+
+  it("keeps stale and free observations neutral to the hard stop", () => {
+    const observation = normalizeLaneDocument({
+      document: { observedAt: OBSERVED_AT, staleAfterSeconds: 300, records: [TRIPPED_RECORD] },
+      definition: CLAUDE,
+    });
+    expect(evaluateLanePace({ observation, asOf: "2026-09-17T00:00:00Z" })).toMatchObject({
+      state: "unknown", serviceable: null, reason: "snapshot-stale",
+    });
+    expect(evaluateLanePace({ observation: { ...observation, free: true }, asOf: OBSERVED_AT })).toMatchObject({
+      state: "free", serviceable: true, reason: "free-lane",
+    });
+  });
+});
+
 describe("TOG-3983: a tripped serviceability window is a lane hard stop", () => {
-  it("reads the exact storm document (7d 0.84 + 5h 1.0) as not serviceable", () => {
+  it("hard-stops the synthetic storm-shaped record (7d 0.84 + 5h 1.0)", () => {
     const verdict = verdictFor([TRIPPED_RECORD]);
     expect(verdict.serviceable).toBe(false);
     expect(verdict.state).toBe("exhausted");
@@ -116,9 +144,23 @@ describe("TOG-3983: a tripped serviceability window is a lane hard stop", () => 
     expect(verdict.urgentResetAt).toBe("2026-09-16T23:20:00.443Z");
   });
 
+  it("checks every serviceability window, not just the first or governing window", () => {
+    const observation = normalizeLaneDocument({
+      document: { observedAt: OBSERVED_AT, records: [HEALTHY_PEER_RECORD] },
+      definition: CLAUDE,
+    });
+    observation.accounts[0]!.windows.push({
+      name: "burst", role: "serviceability", utilization: 0.9,
+      resetsAt: "2026-09-16T23:15:00.000Z", windowSeconds: null, sourcePath: null,
+    });
+    expect(evaluateLanePace({ observation, asOf: OBSERVED_AT })).toMatchObject({
+      serviceable: false, reason: "serviceability-window-exhausted", urgentResetAt: "2026-09-16T23:15:00.000Z",
+    });
+  });
+
   it("trips without a reset or computable governor and does not invent relief", () => {
     const verdict = verdictFor([
-      { ...TRIPPED_RECORD, five_hour_resets_at: null, governing_window: "missing" },
+      { ...TRIPPED_RECORD, five_hour_resets_at: null, seven_day_resets_at: null, governing_window: "missing" },
     ]);
     expect(verdict).toMatchObject({
       state: "exhausted",
@@ -221,6 +263,42 @@ describe("TOG-3983: selection excludes the tripped lane in enforce mode", () => 
     expect(decision.outcome).toBe("selected");
     expect(decision.modelId).toBe("zai-model");
     expect(decision.rejections.some((r) => r.modelId === "claude-model" && r.stage === "capacity")).toBe(true);
+  });
+
+  it.each(["fail-open", "fail-closed", "exclude-lane"] as const)("cannot pin, stick or fall back to a tripped sole candidate under %s", (policy) => {
+    const config = selectionConfig(true);
+    config.capacityRouting.unknownTelemetry = policy;
+    config.models = config.models.filter((model) => model.id === "claude-model");
+    config.routing.fallbackModelId = "claude-model";
+    config.routing.stickyModelWithinIssue = true;
+    const decision = selectModel({
+      descriptor: { taskClass: "implementation", pinnedModelId: "claude-model" },
+      config,
+      signals: {
+        stickyModelId: "claude-model",
+        capacityEvidence: [healthyEvidence("claude-model")],
+        paceVerdicts: { claude: verdictFor([HEALTHY_PEER_RECORD, TRIPPED_RECORD]) },
+        modelLaneByPace: { "claude-model": "claude" },
+      },
+    });
+    expect(decision.outcome).toBe("no-eligible-model");
+    expect(decision.modelId).toBeNull();
+  });
+
+  it("control: shadow capacity does not enforce a serviceability exclusion", () => {
+    const config = selectionConfig(true);
+    config.capacityRouting.mode = "shadow";
+    const decision = selectModel({
+      descriptor: { taskClass: "implementation" },
+      config,
+      signals: {
+        capacityEvidence: [healthyEvidence("claude-model"), healthyEvidence("zai-model")],
+        paceVerdicts: { claude: verdictFor([TRIPPED_RECORD]), zai: zaiVerdict() },
+        modelLaneByPace: { "claude-model": "claude", "zai-model": "zai" },
+      },
+    });
+    expect(decision.modelId).toBe("claude-model");
+    expect(decision.rejections.some((r) => r.modelId === "claude-model" && r.stage === "capacity")).toBe(false);
   });
 
   it("control: a healthy claude lane wins back the pick, so the trip is what excludes it", () => {

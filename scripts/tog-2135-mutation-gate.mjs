@@ -27,11 +27,25 @@ const mutations = [
     command: ["npx", "vitest", "run", "tests/lane-capacity-pace.spec.ts", "-t", "unknown fail-neutral"],
   },
   {
-    name: "one exhausted account stops pool",
+    name: "one allowance-exhausted account stops pool",
     file: pace,
     from: "if (serviceableAccountCount === 0) {",
     to: "if (serviceableAccountCount < internal.length) {",
-    command: ["npx", "vitest", "run", "tests/lane-capacity-pace.spec.ts", "-t", "one five-hour-exhausted"],
+    command: ["npx", "vitest", "run", "tests/tog-3983-serviceability-hard-stop.spec.ts", "-t", "allowance-only exhaustion"],
+  },
+  {
+    name: "healthy peer masks a serviceability trip",
+    file: pace,
+    from: "if (tripped.length > 0) {",
+    to: "if (tripped.length > 0 && serviceableAccountCount === 0) {",
+    command: ["npx", "vitest", "run", "tests/tog-3983-serviceability-hard-stop.spec.ts", "-t", "healthy peer account rescue"],
+  },
+  {
+    name: "serviceability margin is ignored",
+    file: pace,
+    from: "const tripCeilingMilli = SCALE - marginMilli;",
+    to: "const tripCeilingMilli = SCALE;",
+    command: ["npx", "vitest", "run", "tests/tog-3983-serviceability-hard-stop.spec.ts", "-t", "margin-aware trip ceiling"],
   },
   {
     name: "missing weight becomes zero",
@@ -49,7 +63,7 @@ const mutations = [
   },
 ];
 
-const baseline = run("npx", ["vitest", "run", "tests/lane-capacity-pace.spec.ts"]);
+const baseline = run("npx", ["vitest", "run", "tests/lane-capacity-pace.spec.ts", "tests/tog-3983-serviceability-hard-stop.spec.ts"]);
 if (baseline.status !== 0) {
   process.stderr.write(baseline.stdout + baseline.stderr);
   throw new Error("pace baseline is red");

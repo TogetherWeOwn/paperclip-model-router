@@ -347,12 +347,13 @@ export function createPlugin() {
           // host dispatch-sweep / repinPass can read it straight from
           // plugin_state. A lane is down when its source fetch errored or any
           // of its evidence says the lane cannot serve (exhausted/unavailable
-          // health, or an unavailable posture). Computed from the CURRENT
+          // health, an unavailable posture, or a margin-aware serviceability
+          // window trip). Computed from the CURRENT
           // snapshots so a failed attempt flips the flag rather than serving a
           // stale "up".
           laneDown: Object.fromEntries(snapshots.map((snapshot) => [
             snapshot.source,
-            Boolean(snapshot.error) || snapshot.evidence.some((entry) =>
+            Boolean(snapshot.error) || snapshot.pace?.reason === "serviceability-window-exhausted" || snapshot.evidence.some((entry) =>
               entry.posture === "unavailable" ||
               entry.health === "exhausted" ||
               entry.health === "unavailable"),

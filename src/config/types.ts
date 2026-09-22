@@ -85,7 +85,9 @@ export interface CapacityRoutingConfig {
    * lane furthest BEHIND its governing-window pace line wins, deviation next,
    * then the existing evidence ordering. Within the survivor pool only: pace
    * never reorders across `qualityFloor`, capability, context-window, or tier
-   * gates, and adds no rejection stage of its own. Off by default.
+   * gates. In enforce mode, a positive serviceability-window trip is rejected
+   * by the existing capacity gate, including pins, stickiness and fallback.
+   * Off by default.
    */
   paceOrdering: boolean;
   /**

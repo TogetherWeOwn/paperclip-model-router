@@ -18,6 +18,18 @@ Enforce defaults to `fail-closed`. Evidence is usable only when telemetry is ava
 health/posture are known and serviceable. The same rule applies to ordinary selection, pins,
 stickiness, and fallback. A failed refresh never replaces the last valid snapshot.
 
+## Serviceability parity amendment — v0.7.0
+
+With pace ordering enabled, enforce excludes a fresh
+`serviceability-window-exhausted` verdict through the existing capacity gate,
+including pins, sticky incumbents and fallback. A single serviceability window
+at the margin-aware ceiling (`1 - margin`, default 0.9, milli precision) stops
+its lane; healthy peers do not establish upstream account failover. Missing or
+stale pace remains neutral, and allowance-only roll-up is unchanged. Shadow and
+flag-off selection remain unchanged. Refresh publishes the same positive trip
+in the diagnostic `laneDown` map regardless of the ordering flag. No config or
+host change is part of this amendment.
+
 ## Promotion policy
 
 Promotion is an operator decision, not an automatic state transition or release gate. Do not
