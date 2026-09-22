@@ -76,7 +76,7 @@ describe("TOG-2135 pace model", () => {
     expect(verdict.serviceable).toBe(true);
   });
 
-  it("does not let one five-hour-exhausted account stop a serviceable pool", () => {
+  it("hard-stops the lane when one account's serviceability window trips", () => {
     const verdict = evaluateLanePace({
       observation: normalizeLaneDocument({
         definition: CLAUDE,
@@ -91,9 +91,10 @@ describe("TOG-2135 pace model", () => {
       }),
       asOf: OBSERVED_AT,
     });
-    expect(verdict.serviceable).toBe(true);
+    expect(verdict.serviceable).toBe(false);
     expect(verdict.serviceableAccountCount).toBe(1);
-    expect(verdict.state).not.toBe("exhausted");
+    expect(verdict.state).toBe("exhausted");
+    expect(verdict.reason).toBe("serviceability-window-exhausted");
   });
 
   it("defaults an absent legacy weight to one, never zero", () => {

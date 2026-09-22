@@ -79,10 +79,9 @@ function capacityOrder(a: Ranked, b: Ranked): number { return (a.evidence ? evid
 // behind lane, and everything else falls through to the comparator that pool
 // used before this flag existed (baseline in shadow, capacity in enforce), so
 // the flag only ever PREFIXES pace onto the existing order. Models without a
-// usable verdict rank last together (fail-neutral), so enabling this flag can
-// reorder candidates but never change WHICH models are eligible — qualityFloor,
-// capability, context-window, tier-ceiling, and capacity gates all run before
-// this comparator sees a row.
+// usable verdict rank last together (fail-neutral). The comparator never changes
+// eligibility; in enforce mode the capacity gate also rejects a positive
+// serviceability-window trip before this comparator sees a row.
 function paceOrder(next: (a: Ranked, b: Ranked) => number): (a: Ranked, b: Ranked) => number {
   return (a, b) => {
     const rankA = a.pace ? PACE_STATE_RANK[a.pace.state] : PACE_STATE_RANK.unknown;
@@ -208,14 +207,18 @@ export function selectModel(input: SelectInput): RoutingDecision {
   // TOG-1040: under `fail-open`, missing/unknown evidence no longer excludes a
   // model — it only sorts it last. Under the stricter policies, absence excludes
   // exactly as before.
+  const serviceabilityTripped = (entry: Ranked): boolean =>
+    paceFor(entry.model.id)?.reason === "serviceability-window-exhausted";
   const usable = (entry: Ranked): boolean => {
     if (!capacityEnabled) return true;
+    // Resolve by id: pins, sticky incumbents and fallbacks need not be in `ranked`.
+    if (serviceabilityTripped(entry)) return false;
     if (config.capacityRouting.unknownTelemetry === "fail-open") return !positivelyUnavailable(entry);
     return covered(entry);
   };
   const unusableSurvivors = ranked.filter((candidate) => !usable(candidate));
   const usageAware = ranked.filter(usable).sort(paceActive ? paceOrder(capacityOrder) : capacityOrder);
-  if (capacityEnabled && config.capacityRouting.mode === "enforce") for (const entry of unusableSurvivors) rejections.push({ modelId: entry.model.id, stage: "capacity", reason: entry.evidence ? `capacity evidence ${entry.evidence.source}/${entry.evidence.laneLabel} is ${entry.evidence.telemetryAvailable ? entry.evidence.posture : "unknown"}` : "no capacity evidence covers this model" });
+  if (capacityEnabled && config.capacityRouting.mode === "enforce") for (const entry of unusableSurvivors) rejections.push({ modelId: entry.model.id, stage: "capacity", reason: serviceabilityTripped(entry) ? "serviceability-window-exhausted" : entry.evidence ? `capacity evidence ${entry.evidence.source}/${entry.evidence.laneLabel} is ${entry.evidence.telemetryAvailable ? entry.evidence.posture : "unknown"}` : "no capacity evidence covers this model" });
   // TOG-1040: this used to refuse whenever ANY qualified model had missing or
   // unknown evidence — even when another model had healthy evidence and was
   // ready to serve. That is what produced `no-eligible-model` on records that

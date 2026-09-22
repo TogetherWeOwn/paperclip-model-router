@@ -79,7 +79,7 @@ export interface LanePaceVerdict {
   knownWeight: number;
   serviceableAccountCount: number;
   urgentResetAt: string | null;
-  reason: "ok" | "free-lane" | "document-unavailable" | "snapshot-stale" | "no-records" | "no-computable-governing-window" | "all-accounts-unserviceable";
+  reason: "ok" | "free-lane" | "document-unavailable" | "snapshot-stale" | "no-records" | "no-computable-governing-window" | "all-accounts-unserviceable" | "serviceability-window-exhausted";
 }
 
 export interface PacePolicy {
@@ -206,12 +206,16 @@ function governingWindow(account: PaceAccountObservation): PaceWindowObservation
   return fallback;
 }
 
-function serviceable(account: PaceAccountObservation, governing: PaceWindowObservation | null): boolean {
+function trippedServiceabilityWindows(account: PaceAccountObservation, tripCeilingMilli: number): PaceWindowObservation[] {
+  return account.windows.filter((window) =>
+    window.role === "serviceability" && window.utilization !== null && toMilli(window.utilization) >= tripCeilingMilli
+  );
+}
+
+function serviceable(account: PaceAccountObservation, governing: PaceWindowObservation | null, tripped: PaceWindowObservation[]): boolean {
   if (account.health === "exhausted" || account.health === "unavailable") return false;
   if (governing?.utilization !== null && governing && governing.utilization >= 1) return false;
-  return account.windows.every((window) =>
-    window.role !== "serviceability" || window.utilization === null || window.utilization < 1
-  );
+  return tripped.length === 0;
 }
 
 function stateFor(deviationMilli: number, marginMilli: number): "ahead" | "behind" | "on" {
@@ -246,12 +250,15 @@ export function evaluateLanePace(input: {
     return { laneId: input.observation.laneId, observedAt: input.observation.observedAt, state: "unknown", serviceable: null, score: null, accounts: [], knownAccountCount: 0, knownWeight: 0, serviceableAccountCount: 0, urgentResetAt: null, reason: "snapshot-stale" };
   }
 
+  const tripCeilingMilli = SCALE - marginMilli;
   const internal = input.observation.accounts.map((account) => {
     const governing = governingWindow(account);
-    const accountServiceable = serviceable(account, governing);
+    const tripped = trippedServiceabilityWindows(account, tripCeilingMilli);
+    const accountServiceable = serviceable(account, governing, tripped);
     if (!governing) {
-      const exhausted = account.health === "exhausted" || account.health === "unavailable";
+      const exhausted = !accountServiceable;
       return {
+        tripped,
         verdict: { accountKey: account.accountKey, health: account.health, weight: account.weight, weightSource: account.weightSource, governingWindow: null, governingResetAt: null, serviceable: accountServiceable, state: exhausted ? "exhausted" as const : "unknown" as const, score: null },
         utilizationMilli: null,
         elapsedMilli: null,
@@ -262,11 +269,12 @@ export function evaluateLanePace(input: {
     const remainingSeconds = (Date.parse(governing.resetsAt!) - observedAtMs) / 1_000;
     const elapsedMilli = toMilli(1 - Math.min(1, Math.max(0, remainingSeconds / governing.windowSeconds!)));
     const accountScore = score(utilizationMilli, elapsedMilli);
-    const exhausted = account.health === "exhausted" || account.health === "unavailable" || governing.utilization! >= 1;
+    const exhausted = !accountServiceable;
     let state: PaceAccountVerdict["state"] = exhausted ? "exhausted" : stateFor(utilizationMilli - elapsedMilli, marginMilli);
     const resetSeconds = (Date.parse(governing.resetsAt!) - asOfMs) / 1_000;
     if (state === "behind" && resetSeconds >= 0 && resetSeconds < urgentResetSeconds) state = "behind-urgent";
     return {
+      tripped,
       verdict: { accountKey: account.accountKey, health: account.health, weight: account.weight, weightSource: account.weightSource, governingWindow: governing.name, governingResetAt: governing.resetsAt, serviceable: accountServiceable, state, score: accountScore },
       utilizationMilli,
       elapsedMilli,
@@ -276,6 +284,25 @@ export function evaluateLanePace(input: {
 
   const serviceableAccountCount = internal.filter((entry) => entry.verdict.serviceable).length;
   const accounts = internal.map((entry) => entry.verdict);
+  // A peer cannot rescue a serviceability trip: upstream account failover is not guaranteed.
+  const tripped = internal.flatMap((entry) => entry.tripped);
+  if (tripped.length > 0) {
+    const resets = tripped.flatMap((window) => window.resetsAt === null ? [] : [window.resetsAt]).sort();
+    const known = internal.filter((entry) => entry.utilizationMilli !== null);
+    return {
+      laneId: input.observation.laneId,
+      observedAt: input.observation.observedAt,
+      state: "exhausted",
+      serviceable: false,
+      score: null,
+      accounts,
+      knownAccountCount: known.length,
+      knownWeight: known.reduce((sum, entry) => sum + entry.verdict.weight, 0),
+      serviceableAccountCount,
+      urgentResetAt: resets[0] ?? null,
+      reason: "serviceability-window-exhausted",
+    };
+  }
   if (serviceableAccountCount === 0) {
     return { laneId: input.observation.laneId, observedAt: input.observation.observedAt, state: "exhausted", serviceable: false, score: null, accounts, knownAccountCount: internal.filter((entry) => entry.utilizationMilli !== null).length, knownWeight: internal.filter((entry) => entry.utilizationMilli !== null).reduce((sum, entry) => sum + entry.verdict.weight, 0), serviceableAccountCount, urgentResetAt: null, reason: "all-accounts-unserviceable" };
   }

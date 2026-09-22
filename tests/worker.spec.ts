@@ -653,6 +653,54 @@ describe("one select-invoke-normalize-record path", () => {
   // SOURCE id into plugin_state for the host dispatch-sweep / repinPass. A lane
   // is down when its source errored or its evidence cannot serve; a total fetch
   // failure must OVERWRITE a prior "up" rather than leave it stale.
+  it("persists a serviceability hard stop despite healthy capacity and clears it after recovery", async () => {
+    const { harness, configs } = await sharedWorker();
+    const config = structuredClone(configs.get(COMPANY_A)!);
+    (config.routing as { stickyModelWithinIssue: boolean }).stickyModelWithinIssue = false;
+    const expensive = (config.models as Array<{ id: string; tier: string }>).find((model) => model.id === "claude-sonnet-5")!;
+    expensive.tier = "standard";
+    config.capacityRouting = {
+      enabled: true, mode: "enforce", unknownTelemetry: "fail-open", paceOrdering: true,
+      sources: [{
+        id: "source-id", statusUrl: "https://capacity.example/serviceability", modelIds: ["minimax-m2.5"],
+        healthFields: ["health"], requestTimeoutMs: 5000, maxResponseBytes: 262144,
+        windows: [{ name: "legacy", utilizationFields: ["legacy_used"], resetFields: [] }],
+        pace: {
+          laneId: "distinct-lane-id", healthFields: ["health"],
+          windows: [{ name: "burst", role: "serviceability", utilizationFields: ["burst_used"], resetFields: ["burst_reset"] }],
+        },
+      }],
+    };
+    configs.set(COMPANY_A, config);
+    let tripped = true;
+    harness.ctx.http.fetch = async (url) => {
+      if (!String(url).includes("capacity.example")) return success("openai");
+      return new Response(JSON.stringify({
+        observedAt: new Date().toISOString(), staleAfterSeconds: 300,
+        records: [
+          { health: "healthy", legacy_used: 0.2, burst_used: tripped ? 0.9 : 0.1, burst_reset: new Date(Date.now() + 60_000).toISOString() },
+          { health: "healthy", legacy_used: 0.2, burst_used: 0.1 },
+        ],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const refreshed = await harness.performAction(ACTION_KEYS.refreshCapacity, {}, { companyId: COMPANY_A });
+    expect(refreshed).toMatchObject({
+      error: null, laneDown: { "source-id": true },
+      evidence: expect.arrayContaining([expect.objectContaining({ health: "healthy", posture: "available" })]),
+      paceVerdicts: { "source-id": expect.objectContaining({ reason: "serviceability-window-exhausted" }) },
+    });
+    expect(harness.getState({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.capacitySnapshot })).toMatchObject({
+      laneDown: { "source-id": true }, paceVerdicts: { "source-id": expect.objectContaining({ serviceable: false }) },
+    });
+    const stopped = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A });
+    expect(stopped).toMatchObject({ decision: { modelId: "claude-sonnet-5", rejections: expect.arrayContaining([
+      { modelId: "minimax-m2.5", stage: "capacity", reason: "serviceability-window-exhausted" },
+    ]) } });
+    tripped = false;
+    expect(await harness.performAction(ACTION_KEYS.refreshCapacity, {}, { companyId: COMPANY_A })).toMatchObject({ laneDown: { "source-id": false } });
+    expect(await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A })).toMatchObject({ decision: { modelId: "minimax-m2.5" } });
+  });
+
   it("publishes a per-lane laneDown map and overwrites it on a failed refresh", async () => {
     const { harness, configs } = await sharedWorker();
     const config = structuredClone(configs.get(COMPANY_A)!);
