@@ -75,22 +75,41 @@ jobs:
       # to ERR_MODULE_NOT_FOUND at worker start — which is a terrible place to
       # find out. Reuses the `npm ci` and `npm run build` already done above
       # instead of re-running them in a fresh job.
+      # TOG-2941: this step used to unpack into a hard-coded `/tmp/installed` and
+      # glob `artifacts/*.tgz`. On `ubuntu-latest` both were safe by construction
+      # — every job got a fresh VM. The self-hosted runners are persistent, so a
+      # path outside the workspace survives into the next job on the same box and
+      # `actions/checkout`'s clean never sees it: two runs could share, or read,
+      # each other's tarball. Unpack into a run-unique directory instead, and
+      # name the tarball rather than globbing, so the artifact this step loads is
+      # always the one this run just packed.
       - name: Pack, unpack, install runtime deps, load
+        env:
+          INSTALL_DIR: ${{ runner.temp }}/installed-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          mkdir -p artifacts
+          rm -rf artifacts "$INSTALL_DIR"
+          mkdir -p artifacts "$INSTALL_DIR"
+          tarball="$(node -p "const p=require('./package.json'); p.name.replace('@','').replace('/','-') + '-' + p.version + '.tgz'")"
           npm pack --pack-destination ./artifacts
-          mkdir -p /tmp/installed
-          tar -xzf artifacts/*.tgz -C /tmp/installed --strip-components=1
-          cd /tmp/installed
+          test -f "artifacts/$tarball" || { echo "npm pack did not produce artifacts/$tarball"; ls -A artifacts; exit 1; }
+          tar -xzf "artifacts/$tarball" -C "$INSTALL_DIR" --strip-components=1
+          cd "$INSTALL_DIR"
           npm install --omit=dev --ignore-scripts --no-audit --no-fund
           node --input-type=module -e "
-            const manifest = (await import('/tmp/installed/dist/manifest.js')).default;
-            const worker = await import('/tmp/installed/dist/worker.js');
+            const root = process.env.INSTALL_DIR;
+            const manifest = (await import(root + '/dist/manifest.js')).default;
+            const worker = await import(root + '/dist/worker.js');
             if (typeof worker.default?.definition?.setup !== 'function') {
               throw new Error('packed worker has no setup handler');
             }
             console.log('packed artifact loads:', manifest.id, 'v' + manifest.version);
           "
+
+      # Persistent runners keep whatever the job leaves behind, so clean up even
+      # when the step above failed.
+      - name: Remove the unpacked artifact
+        if: always()
+        run: rm -rf "${{ runner.temp }}/installed-${{ github.run_id }}-${{ github.run_attempt }}"
 
   secret-scan:
     name: secret scan
