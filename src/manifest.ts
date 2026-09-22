@@ -2,6 +2,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 import { ROUTER_CONFIG_SCHEMA } from "./config/schema.js";
 import {
+  JOB_KEYS,
   PLUGIN_API_VERSION,
   PLUGIN_ID,
   PLUGIN_VERSION,
@@ -80,8 +81,18 @@ const manifest: PaperclipPluginManifestV1 = {
     "metrics.write",
     "agent.tools.register",
     "api.routes.register",
+    "jobs.schedule",
   ],
   entrypoints: { worker: "./dist/worker.js" },
+  jobs: [
+    {
+      jobKey: JOB_KEYS.reconcileAsyncInvocations,
+      displayName: "Reconcile async invocations",
+      description:
+        "Flushes terminal outcomes and audit records for model_router_invoke_async submissions that finished while the host had already torn down the invocation scope that started them.",
+      schedule: "* * * * *",
+    },
+  ],
   database: {
     namespaceSlug: "model_router",
     migrationsDir: "migrations",

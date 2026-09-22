@@ -10,6 +10,50 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-21
+
+### Fixed
+
+- **Async invoke could submit but never reach a terminal state (TOG-3419).**
+  Paperclip tears down a plugin worker's invocation scope the instant the host
+  receives the worker's RPC response — but `model_router_invoke_async`'s
+  background continuation (an unawaited promise started during that response)
+  keeps running after that teardown. Its scoped `ctx.state.set`/`ctx.state.get`
+  calls (persisting the terminal outcome, and `migrateLegacyDecisionLog`'s read
+  ahead of the decision-record write) were then rejected by the host with
+  `Plugin "..." is not allowed to perform "state.set": the worker referenced a
+  missing, expired, or unknown invocation scope`. Submit still returned 202
+  and the upstream generation still completed, but the pending record could
+  never advance past `pending` and its audit record was never written — the
+  result was permanently unreadable. This is a host-scoping design constraint,
+  not a plugin-side retry gap: the scope really is gone, so no amount of
+  catching or retrying inside the same continuation can recover it.
+  - The background continuation now caches a completed/error outcome
+    in-memory the instant it has one, so polling (`model_router_invoke_result`
+    / `GET /invoke/:requestId`) returns the correct terminal result
+    immediately regardless of whether the state write behind it succeeded.
+  - A new scheduled job, `reconcile-async-invocations` (capability
+    `jobs.schedule`, added to this release), runs every minute. A job
+    dispatch carries no invocation id, so the host grants it access under the
+    plugin's ordinary proactive per-company scope instead of a (by then
+    long-dead) invocation scope. The job flushes any cached terminal outcome
+    and audit record that the continuation could not persist, so both survive
+    a worker restart, not just an in-memory cache.
+  - **Capability change:** this release adds `jobs.schedule` to the plugin's
+    declared capabilities (new — nothing else changed). Upgrading past
+    v0.5.0 therefore needs the capability-escalating install path, the same
+    one [TOG-2922](../docs/operator/TOG-2922-pace-ordering.md) required for
+    its database-capability increase, not the ordinary
+    `POST /api/plugins/:pluginId/upgrade` path. See
+    [TOG-3419-async-invoke.md](../docs/operator/TOG-3419-async-invoke.md).
+  - Added a regression test asserting a terminal state is actually reachable
+    end-to-end (submit → background failure to persist while the scope is
+    dead → scheduled job recovers it → poll returns the terminal outcome),
+    not merely that submit returns 202. The v0.5.0 acceptance criteria did
+    not cover this and shipped a build that could not complete a request.
+  - The synchronous `model_router_invoke` / `POST /invoke` path is
+    unaffected; v0.5.0 was correct there and stays deployed.
+
 ## [0.5.0] - 2026-09-19
 
 ### Added

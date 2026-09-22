@@ -16,6 +16,7 @@ import type { RouterConfig } from "./config/types.js";
 import {
   ACTION_KEYS,
   DECISION_LOG_RETENTION_DAYS,
+  JOB_KEYS,
   PENDING_INVOCATION_TTL_MS,
   PLUGIN_VERSION,
   ROUTE_KEYS,
@@ -448,6 +449,49 @@ export function createPlugin() {
         schedulePendingInvocationExpiry(companyId, entry.requestId, entry.expiresAt);
       };
 
+      // TOG-3419: the host clears a plugin's invocation scope the instant it
+      // sends the worker's RPC response back, but invokeAsync's background
+      // continuation is an unawaited promise that keeps running afterward —
+      // any ctx.state/ctx.db call it makes still carries that now-stale
+      // invocation id (Node's AsyncLocalStorage follows the causal chain,
+      // detached promises included) and the host rejects it. These two caches
+      // hold what the continuation could not persist so polling stays correct
+      // immediately, and `reconcileAsyncInvocations` (run from a scheduled
+      // job, which carries no invocation id and so runs under the host's
+      // proactive-company grant instead) flushes them for real once it can.
+      const terminalResultCache = new Map<string, { companyId: string; terminal: PendingInvocationRecord }>();
+      const pendingAuditFlushes = new Map<string, {
+        companyId: string;
+        actor: { agentId: string | null; runId: string | null };
+        request: InvokeRequest | null;
+        result: InferenceResult;
+        latencyMs: number;
+      }>();
+      const terminalCacheKey = (companyId: string, requestId: string): string => `${companyId}:${requestId}`;
+
+      const reconcileAsyncInvocations = async (): Promise<void> => {
+        for (const [key, { companyId, terminal }] of terminalResultCache) {
+          if (Date.parse(terminal.expiresAt) <= Date.now()) {
+            terminalResultCache.delete(key);
+            continue;
+          }
+          try {
+            await writePendingInvocation(companyId, terminal);
+            terminalResultCache.delete(key);
+          } catch {
+            // Still unpersistable (or a transient failure) — retry next tick.
+          }
+        }
+        for (const [requestId, pending] of pendingAuditFlushes) {
+          try {
+            await record(pending.companyId, pending.actor, pending.request, pending.result, pending.latencyMs);
+            pendingAuditFlushes.delete(requestId);
+          } catch {
+            // Retry next tick.
+          }
+        }
+      };
+
       const record = async (
         companyId: string,
         actor: { agentId: string | null; runId: string | null },
@@ -786,15 +830,33 @@ export function createPlugin() {
           const terminal: PendingInvocationRecord = result.outcome === "completed"
             ? { status: "completed", requestId, decision, outcome: "completed", response: result.response, error: null, startedAt: startedAtIso, expiresAt }
             : { status: "error", requestId, decision, outcome: "error", response: null, error: result.error, startedAt: startedAtIso, expiresAt };
+          // Always cache the terminal result locally first: polling must see
+          // it immediately regardless of whether the host lets this detached
+          // continuation persist it (see TOG-3419 — it usually can't).
+          terminalResultCache.set(terminalCacheKey(companyId, requestId), { companyId, terminal });
           try {
             await writePendingInvocation(companyId, terminal);
+            terminalResultCache.delete(terminalCacheKey(companyId, requestId));
           } catch {
-            ctx.logger.error("Failed to persist async invocation outcome", { requestId });
+            ctx.logger.warn(
+              "Could not persist async invocation outcome from its own continuation; reconcileAsyncInvocations will retry",
+              { requestId },
+            );
           }
           try {
             await record(companyId, actor, request, result, Date.now() - startedAt);
           } catch {
-            ctx.logger.error("Failed to persist async invocation audit record", { requestId });
+            pendingAuditFlushes.set(requestId, {
+              companyId,
+              actor,
+              request,
+              result,
+              latencyMs: Date.now() - startedAt,
+            });
+            ctx.logger.warn(
+              "Could not persist async invocation audit record from its own continuation; reconcileAsyncInvocations will retry",
+              { requestId },
+            );
           }
         })().catch(() => {
           ctx.logger.error("Async invocation continuation failed unexpectedly", { requestId });
@@ -805,6 +867,8 @@ export function createPlugin() {
 
       const invokeResultFor = async (companyId: string, requestId: string): Promise<PollResult> => {
         if (!requestId) return { status: "not-found" };
+        const cached = terminalResultCache.get(terminalCacheKey(companyId, requestId));
+        if (cached && Date.parse(cached.terminal.expiresAt) > Date.now()) return cached.terminal;
         return await readPendingInvocation(companyId, requestId) ?? { status: "not-found" };
       };
 
@@ -882,6 +946,8 @@ export function createPlugin() {
         if (!actionCtx.companyId) throw new Error("host-authorized company context is required");
         return refreshCapacity(actionCtx.companyId, await companyConfig(actionCtx.companyId)) as unknown as Record<string, unknown>;
       });
+
+      ctx.jobs.register(JOB_KEYS.reconcileAsyncInvocations, reconcileAsyncInvocations);
 
       ctx.logger.info("Model Router worker ready", { version: PLUGIN_VERSION });
     },

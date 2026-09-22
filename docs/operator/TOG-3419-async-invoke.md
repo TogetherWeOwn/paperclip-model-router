@@ -1,17 +1,21 @@
-# TOG-3419 — async invoke (submit + poll), v0.5.0
+# TOG-3419 — async invoke (submit + poll), v0.5.0 / v0.6.0
 
 ## Scope
 
-This is a plain feature release, not a capability-escalating one. The plugin's
-declared capabilities are unchanged (`plugin.state.read/write` and
+v0.5.0 was a plain feature release, not a capability-escalating one: its
+declared capabilities were unchanged (`plugin.state.read/write` and
 `http.outbound` already covered the old synchronous path; the async path
-reuses both, nothing new). **The ordinary `POST /api/plugins/:pluginId/upgrade`
-path is sufficient** — this does not need the instance-admin install path that
-[TOG-2922](TOG-2922-pace-ordering.md) required for its database-capability
-increase.
+reused both, nothing new), so the ordinary `POST /api/plugins/:pluginId/upgrade`
+path was sufficient for it.
 
-No company config needs to change to adopt v0.5.0. `maxSyncOutputTokens` is an
-optional per-model field; every model without it keeps deriving its
+**v0.6.0 is capability-escalating.** It adds `jobs.schedule` (see
+[Persistence fix](#persistence-fix-v060) below) and therefore needs the
+instance-admin install path — the same one
+[TOG-2922](TOG-2922-pace-ordering.md) required for its database-capability
+increase — not the ordinary upgrade endpoint.
+
+No company config needs to change to adopt v0.5.0 or v0.6.0. `maxSyncOutputTokens`
+is an optional per-model field; every model without it keeps deriving its
 synchronous budget exactly as before.
 
 ## What's new
@@ -57,6 +61,38 @@ but the only URL this path ever constructs is derived from the company's
 already-validated `upstream.baseUrl` — config validation requires an absolute
 `https://` URL, credential-free, that does not resolve to a private or reserved
 range. There is no caller-supplied URL on this path.
+
+## Persistence fix (v0.6.0)
+
+v0.5.0 shipped a design flaw: Paperclip tears down a plugin worker's
+invocation scope the instant the host receives the worker's RPC response, but
+the async background continuation (an unawaited promise started during that
+response) keeps running afterward. Its scoped `ctx.state` calls — persisting
+the terminal outcome, and the legacy-log read that runs ahead of the audit
+write — were rejected by the host once that scope was gone
+(`the worker referenced a missing, expired, or unknown invocation scope`).
+Submit still returned 202 and the upstream generation still completed, but
+the pending record could never advance past `pending` and no audit record was
+written. This was a host-scoping design constraint, not a plugin retry gap:
+retrying the same write inside the same continuation cannot help, because the
+scope really is gone.
+
+v0.6.0 fixes this with two changes, no host or SDK change required:
+
+- The background continuation now caches a completed/error outcome in-memory
+  the moment it has one. Polling returns the correct terminal result
+  immediately even if the state write behind it failed.
+- A new scheduled job, `reconcile-async-invocations`, runs every minute
+  (capability `jobs.schedule`). A job dispatch carries no invocation id, so
+  the host grants it access under the plugin's ordinary proactive
+  per-company scope rather than a dead invocation scope. The job flushes any
+  cached terminal outcome and audit record the continuation could not
+  persist, so both survive a worker restart rather than only living in the
+  in-memory cache.
+
+A company on v0.5.0 sees no behavior change from this fix until upgraded —
+v0.5.0's pending records that never resolved stay stuck exactly as before;
+there is no backfill for requests submitted before the upgrade.
 
 ## Verify a configured company
 
@@ -117,8 +153,11 @@ an expired value.
 
 `git revert` plus reinstalling the previous artifact, same as any other
 version — see [OPERATIONS.md](../OPERATIONS.md#reversibility). No config
-migration needs to be undone: nothing in v0.5.0 writes to a company's stored
-config.
+migration needs to be undone: nothing in v0.5.0 or v0.6.0 writes to a
+company's stored config. Rolling back from v0.6.0 to v0.5.0 drops the
+`jobs.schedule` capability and stops the reconcile job; it reintroduces the
+v0.5.0 persistence bug but does not require an instance-admin path itself
+(a capability downgrade is not capability-escalating).
 
 ## Scope note
 
