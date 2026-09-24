@@ -10,6 +10,14 @@ version is not present here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release-pin credential resolution (TOG-4372).** Use Git's noninteractive
+  `credential fill` plumbing instead of space-splitting a helper command. Inline
+  shell functions, quoted arguments, configured helper ordering and resets now
+  follow Git's own semantics. Missing credentials still fail gates 4–6; no release
+  gate or host-verification requirement is relaxed.
+
 ## [0.7.0] - 2026-09-22
 
 ### Fixed
