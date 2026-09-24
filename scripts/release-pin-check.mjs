@@ -71,6 +71,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { readReceipt } from "./lib/host-probes.mjs";
+import { githubToken } from "./lib/github-token.mjs";
 
 const REPO = "TogetherWeOwn/paperclip-model-router";
 const DIST_FILES = ["dist/worker.js", "dist/manifest.js"];
@@ -129,35 +130,6 @@ function parseArgs(argv) {
     process.exit(2);
   }
   return opts;
-}
-
-/**
- * Ask this repository's own credential helper for a GitHub token, the same way
- * `git fetch` does. Returns null when no helper is configured or it declines,
- * which the caller turns into a FAIL rather than a silent pass.
- */
-function githubToken() {
-  const helper = gitOrNull("config", "--get-all", "credential.https://github.com.helper");
-  if (!helper) return null;
-  const path = helper
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((l) => (l.startsWith("!") ? l.slice(1) : null))
-    .filter(Boolean)
-    .pop();
-  if (!path) return null;
-  const [cmd, ...rest] = path.split(/\s+/);
-  try {
-    const out = execFileSync(cmd, [...rest, "get"], {
-      input: "protocol=https\nhost=github.com\n\n",
-      encoding: "utf8",
-    });
-    const line = out.split("\n").find((l) => l.startsWith("password="));
-    return line ? line.slice("password=".length).trim() : null;
-  } catch {
-    return null;
-  }
 }
 
 async function gh(token, path, accept = "application/vnd.github+json") {
