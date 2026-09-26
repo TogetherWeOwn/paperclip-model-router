@@ -33,6 +33,21 @@ const CAPABILITIES = new Set<ModelCapability>([
 
 export class InvocationValidationError extends Error {}
 
+// TOG-5247: portable tool-name ceiling. A 64-capped lane (CLIProxy
+// `capResponsesChatToolName` on the Muse lane) truncates longer gateway names
+// into indistinguishable aliases, so the router rejects overlong caller names
+// as invalid-request BEFORE selection. Rejection messages carry only the
+// length and position — never the offending name itself.
+export const MAX_TOOL_NAME_LENGTH = 64;
+
+function checkToolNameLength(name: string, path: string): void {
+  if (name.length > MAX_TOOL_NAME_LENGTH) {
+    throw new InvocationValidationError(
+      `${path}.name exceeds the 64-character tool-name ceiling (${name.length} characters)`,
+    );
+  }
+}
+
 function record(value: unknown, path: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new InvocationValidationError(`${path} must be an object`);
@@ -134,6 +149,7 @@ function parseBlock(
     if (typeof raw.id !== "string" || typeof raw.name !== "string" || raw.arguments === undefined) {
       throw new InvocationValidationError(`${path} must include id, name, and structured arguments`);
     }
+    checkToolNameLength(raw.name, path);
     return { type: "tool_call", id: raw.id, name: raw.name, arguments: raw.arguments };
   }
   if (raw.type === "tool_result") {
@@ -193,6 +209,7 @@ function parseTool(value: unknown, index: number): ToolDefinition {
   if (typeof raw.name !== "string" || raw.name.length === 0) {
     throw new InvocationValidationError(`${path}.name must be a non-empty string`);
   }
+  checkToolNameLength(raw.name, path);
   const description = optionalString(raw.description, `${path}.description`);
   const inputSchema = record(raw.inputSchema, `${path}.inputSchema`);
   return { name: raw.name, ...(description !== undefined ? { description } : {}), inputSchema };
@@ -252,6 +269,7 @@ export function parseInvokeRequest(
       if (typeof choice.name !== "string" || choice.name.length === 0) {
         throw new InvocationValidationError("toolChoice.name must be a non-empty string");
       }
+      checkToolNameLength(choice.name, "toolChoice");
       request.toolChoice = { name: choice.name };
     }
   }
