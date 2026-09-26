@@ -75,9 +75,9 @@ sha256sum cliproxy_usage_snapshot.py   # expect e252456acc992333394c3da351207d6f
 
 systemctl --user start cliproxy-usage-snapshot.service
 systemctl --user status cliproxy-usage-snapshot.service --no-pager
-curl -sS -H "X-Api-Key: $CLIPROXY_USAGE_LANE_KEY" https://router.infextion.net/telemetry/cliproxy/opencode-go.json
-curl -sS -H "X-Api-Key: $CLIPROXY_USAGE_LANE_KEY" https://router.infextion.net/telemetry/cliproxy/_status.json
-python3 packages/lane-capacity/scripts/check_lane_docs.py --base-url https://router.infextion.net/telemetry/cliproxy --api-key "$CLIPROXY_USAGE_LANE_KEY"
+curl -sS -H "X-Api-Key: $CLIPROXY_USAGE_LANE_KEY" https://router.example.invalid/telemetry/cliproxy/opencode-go.json
+curl -sS -H "X-Api-Key: $CLIPROXY_USAGE_LANE_KEY" https://router.example.invalid/telemetry/cliproxy/_status.json
+python3 packages/lane-capacity/scripts/check_lane_docs.py --base-url https://router.example.invalid/telemetry/cliproxy --api-key "$CLIPROXY_USAGE_LANE_KEY"
 ```
 
 No Caddy change is required — this patch only changes which upstream management route the

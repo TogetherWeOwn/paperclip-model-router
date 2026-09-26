@@ -43,7 +43,7 @@ capability-approval boundary and applies migrations transactionally.
 ```bash
 set -euo pipefail
 PLUGIN='togetherweown.paperclip-model-router'
-COMPANY_ID='ef993a7e-5ea7-445f-ba88-27a6a2690c3a'
+COMPANY_ID="$PAPERCLIP_COMPANY_ID"
 BUNDLE='/secure/path/tog-2922-model-router-v0.4.5'
 TGZ="$BUNDLE/togetherweown-paperclip-model-router-0.4.5.tgz"
 NEW_DIR='/paperclip/plugin-packages-root/model-router-0.4.5'
@@ -123,7 +123,7 @@ and the pre-migration company config.
 ```bash
 set -euo pipefail
 PLUGIN='togetherweown.paperclip-model-router'
-COMPANY_ID='ef993a7e-5ea7-445f-ba88-27a6a2690c3a'
+COMPANY_ID="$PAPERCLIP_COMPANY_ID"
 OLD_DIR='/paperclip/plugin-packages-root/model-router-0.3.0'
 BACKUP='/secure/path/model-router-config-before-tog-2922.json'
 ROLLBACK='/secure/path/model-router-config-rollback.payload.json'

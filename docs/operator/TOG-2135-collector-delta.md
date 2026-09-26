@@ -51,8 +51,8 @@ sudo systemctl reload caddy
 cd /home/ubuntu/paperclip-enterprise-company
 systemctl --user start cliproxy-usage-snapshot.service
 systemctl --user status cliproxy-usage-snapshot.service --no-pager
-curl -sS -H "X-Api-Key: $CLIPROXY_USAGE_LANE_KEY" https://router.infextion.net/telemetry/cliproxy/zai.json
-python3 packages/lane-capacity/scripts/check_lane_docs.py --base-url https://router.infextion.net/telemetry/cliproxy --api-key "$CLIPROXY_USAGE_LANE_KEY"
+curl -sS -H "X-Api-Key: $CLIPROXY_USAGE_LANE_KEY" https://router.example.invalid/telemetry/cliproxy/zai.json
+python3 packages/lane-capacity/scripts/check_lane_docs.py --base-url https://router.example.invalid/telemetry/cliproxy --api-key "$CLIPROXY_USAGE_LANE_KEY"
 ```
 
 <a id="caddy-target-the-real-path"></a>
@@ -90,7 +90,7 @@ The operator applied both deltas and reported:
 | `/etc/caddy/Caddyfile` | one line replaced (single asserted match); `caddy validate` → Valid configuration; reloaded |
 | collector one-shot | `ExecMainStatus=0` |
 
-End-to-end through `https://router.infextion.net/telemetry/cliproxy/`: `zai.json` → 200 (514 bytes), `claude.json` → 200 (739 bytes, unchanged regression check), and a request with no `X-Api-Key` → 401, so auth is still enforced. `zai.json` now carries a real record — `weekly_utilization 0.7183`, `weekly_credits_used 43098/60000`, `weekly_resets_at 2026-09-15T04:09:05Z`, `governing_window: weekly`, `five_hour_utilization 0.0`, source `api.z.ai/monitor/usage/quota/limit`. `kimi.json` still lacks `weekly_resets_at`, exactly as Residual gap predicts.
+End-to-end through `https://router.example.invalid/telemetry/cliproxy/`: `zai.json` → 200 (514 bytes), `claude.json` → 200 (739 bytes, unchanged regression check), and a request with no `X-Api-Key` → 401, so auth is still enforced. `zai.json` now carries a real record — `weekly_utilization 0.7183`, `weekly_credits_used 43098/60000`, `weekly_resets_at 2026-09-15T04:09:05Z`, `governing_window: weekly`, `five_hour_utilization 0.0`, source `api.z.ai/monitor/usage/quota/limit`. `kimi.json` still lacks `weekly_resets_at`, exactly as Residual gap predicts.
 
 Independently corroborated from an agent container without the lane key: `zai.json` returns **401** (an auth challenge, so the path is now in `@telemetryKnown`) while an unknown path under the same prefix returns **404**. Before this delta `zai.json` was in the 404 class, so the route change is confirmed by a party that did not perform the deploy.
 

@@ -187,4 +187,4 @@ npm run rehearse
 
 `npm run verify:host` runs the built manifest through Paperclip's install-time validators. `npm run rehearse` loads the built worker once and invokes two isolated company configurations through different compatible protocols.
 
-This repository is private and unlicensed for public distribution. No install or release is performed by the build or test commands.
+Licensed under the [MIT License](./LICENSE). No install or release is performed by the build or test commands.
