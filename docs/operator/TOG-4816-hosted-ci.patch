@@ -1,0 +1,35 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index b2b0ed7..6a727c4 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -25,7 +25,7 @@ jobs:
+   # build never pays for a tarball nobody can now trust anyway.
+   verify:
+     name: typecheck, test, build, package, version
+-    runs-on: [self-hosted, two-selfhosted]
++    runs-on: ubuntu-latest
+     steps:
+       - uses: actions/checkout@v4
+ 
+@@ -113,7 +113,7 @@ jobs:
+ 
+   secret-scan:
+     name: secret scan
+-    runs-on: [self-hosted, two-selfhosted]
++    runs-on: ubuntu-latest
+     steps:
+       - uses: actions/checkout@v4
+         with:
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 53539d2..d465889 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -19,7 +19,7 @@ permissions:
+ 
+ jobs:
+   release:
+-    runs-on: [self-hosted, two-selfhosted]
++    runs-on: ubuntu-latest
+     steps:
+       - uses: actions/checkout@v4
+         with:
