@@ -126,12 +126,20 @@ export async function invokeCompatibleUpstream(input: {
   } catch {
     return error("upstream-url-rejected", "The configured compatible upstream is invalid.", false);
   }
-  const request = input.http.fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    redirect: "manual",
-  });
+  // A synchronously-throwing fetch never produced a request: it is a network
+  // failure before headers (§8: network or DNS failure -> upstream-connect),
+  // not a reason for the caller to see a throw.
+  let request: Promise<Response>;
+  try {
+    request = input.http.fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      redirect: "manual",
+    });
+  } catch {
+    return error("upstream-connect", "The router could not connect to the compatible upstream.", true);
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   let response: Response;
   try {

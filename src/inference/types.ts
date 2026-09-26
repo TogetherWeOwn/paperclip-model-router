@@ -63,6 +63,7 @@ export interface NormalizedResponse {
 export type InferenceErrorCode =
   | "invalid-request"
   | "secret-unavailable"
+  | "internal-error"
   | "upstream-url-rejected"
   | "upstream-redirect"
   | "upstream-connect"

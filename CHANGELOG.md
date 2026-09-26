@@ -12,6 +12,19 @@ version is not present here.
 
 ### Fixed
 
+- **MCP tools never throw on failure paths (TOG-4883).** `model_router_invoke`
+  and `model_router_invoke_async` resolve unexpected infrastructure failures
+  (unavailable config, unreadable state, unwritable stickiness, failing audit)
+  to `{ outcome: "error", error: { code: "internal-error", retryable: true } }`
+  with a fixed router-authored message — the same envelope agents already
+  handle, with no exception text, secret material, or URLs leaked. A
+  synchronously-throwing upstream fetch maps to `upstream-connect` (a network
+  failure before headers, §8). `model_router_invoke_result` with missing
+  params resolves `{ status: "not-found" }`; an unreadable pending store
+  resolves `{ status: "error", error: { code: "internal-error" } }` so agents
+  retry the poll. Actions and HTTP routes are unchanged and still throw/return
+  real statuses as the host contract requires.
+
 - **Release-pin credential resolution (TOG-4372).** Use Git's noninteractive
   `credential fill` plumbing instead of space-splitting a helper command. Inline
   shell functions, quoted arguments, configured helper ordering and resets now
