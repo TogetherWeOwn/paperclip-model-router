@@ -3,7 +3,7 @@
   "version": "0.7.0",
   "private": true,
   "description": "Paperclip plugin: select a model, invoke a company-compatible upstream once, and return a normalized audited result.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -19,6 +19,7 @@
   "files": [
     "dist",
     "migrations",
+    "LICENSE",
     "README.md",
     "CHANGELOG.md",
     "scripts/tog-2922-config-delta.mjs",
