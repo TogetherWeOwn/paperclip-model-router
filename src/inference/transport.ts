@@ -163,13 +163,21 @@ export async function invokeCompatibleUpstream(input: {
   // fetch and the harness/test doubles see it. A test fake that ignores the
   // init still terminates when the reap path resolves the race, so an abort
   // is never hostage to a fake honoring AbortSignal.
-  const request = input.http.fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    redirect: "manual",
-    ...(input.signal ? { signal: input.signal } : {}),
-  });
+  // A synchronously-throwing fetch never produced a request: it is a network
+  // failure before headers (§8: network or DNS failure -> upstream-connect),
+  // not a reason for the caller to see a throw.
+  let request: Promise<Response>;
+  try {
+    request = input.http.fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      redirect: "manual",
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+  } catch {
+    return error("upstream-connect", "The router could not connect to the compatible upstream.", true);
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   let response: Response;
   try {

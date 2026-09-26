@@ -85,7 +85,10 @@ type PendingInvocationRecord =
       agentId: string | null;
     };
 
-type PollResult = { status: "not-found" } | PendingInvocationRecord;
+type PollResult =
+  | { status: "not-found" }
+  | PendingInvocationRecord
+  | { status: "error"; error: InferenceError };
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -229,6 +232,44 @@ function healthFlipMessage(flip: HealthFlip): string {
   if (flip.to === "degraded") return `Model Router degraded ${flip.modelId}: ${flip.reason}.`;
   if (flip.to === "healthy") return `Model Router confirmed ${flip.modelId} healthy: ${flip.reason}.`;
   return `Model Router put ${flip.modelId} into probation: ${flip.reason}.`;
+}
+
+// MCP tools must never throw. Unexpected infrastructure failures
+// (config/state/db/metrics stores the prepare/record path does not already
+// classify) resolve to `internal-error` data on the same `InferenceResult`
+// envelope agents already handle. The message is fixed and router-authored:
+// it never copies exception text, secret material, URLs, or IPs, so logging
+// the caught failure here (for the operator) cannot leak it to the caller.
+const INTERNAL_ERROR_MESSAGE =
+  "The router encountered an internal error and could not complete this invocation.";
+
+function internalError(): InferenceError {
+  return {
+    code: "internal-error",
+    message: INTERNAL_ERROR_MESSAGE,
+    retryable: true,
+    upstreamStatus: null,
+    upstreamRequestId: null,
+  };
+}
+
+// A `prepare` failure (unavailable config, unreadable state, unwritable
+// stickiness, failing audit on a terminal path) cannot be attributed the
+// attempt's own request id, so the boundary mints one.
+function internalErrorResult(): InferenceResult {
+  return {
+    outcome: "error",
+    requestId: randomUUID(),
+    decision: null,
+    response: null,
+    error: internalError(),
+  };
+}
+
+function logInternalError(ctx: PluginContext, where: string, cause: unknown): void {
+  ctx.logger.error(`Model Router ${where} failed unexpectedly`, {
+    message: cause instanceof Error ? cause.message : String(cause),
+  });
 }
 
 export function createPlugin() {
@@ -1534,7 +1575,15 @@ export function createPlugin() {
           parametersSchema: { type: "object" },
         },
         async (params, runCtx): Promise<ToolResult> => {
-          const result = await invokeFor(runCtx.companyId, params, runCtx);
+          // Never throw — unexpected infrastructure failures resolve
+          // to `internal-error` data on the same envelope agents handle.
+          let result: InferenceResult;
+          try {
+            result = await invokeFor(runCtx.companyId, params, runCtx);
+          } catch (cause) {
+            logInternalError(ctx, TOOL_NAMES.invoke, cause);
+            result = internalErrorResult();
+          }
           return { content: summary(result), data: result };
         },
       );
@@ -1553,7 +1602,14 @@ export function createPlugin() {
           parametersSchema: { type: "object" },
         },
         async (params, runCtx): Promise<ToolResult> => {
-          const result = await invokeAsyncFor(runCtx.companyId, params, runCtx);
+          // Never throw — see the invoke handler above.
+          let result: AsyncInvokeResult;
+          try {
+            result = await invokeAsyncFor(runCtx.companyId, params, runCtx);
+          } catch (cause) {
+            logInternalError(ctx, TOOL_NAMES.invokeAsync, cause);
+            result = internalErrorResult();
+          }
           return {
             content: "status" in result
               ? `Invocation ${result.requestId} accepted; poll ${TOOL_NAMES.invokeResult} for its result.`
@@ -1571,10 +1627,21 @@ export function createPlugin() {
           parametersSchema: { type: "object" },
         },
         async (params, runCtx): Promise<ToolResult> => {
-          const requestId = typeof (params as Record<string, unknown>).requestId === "string"
-            ? (params as Record<string, unknown>).requestId as string
-            : "";
-          const result = await invokeResultFor(runCtx.companyId, requestId);
+          // Never throw — null/undefined params read as a missing
+          // requestId (not-found, same as an unknown id); an unreadable pending
+          // store resolves `{ status: "error", error: internal-error }` so the
+          // agent retries the poll instead of abandoning it.
+          const record = params && typeof params === "object" && !Array.isArray(params)
+            ? params as Record<string, unknown>
+            : {};
+          const requestId = typeof record.requestId === "string" ? record.requestId : "";
+          let result: PollResult;
+          try {
+            result = await invokeResultFor(runCtx.companyId, requestId);
+          } catch (cause) {
+            logInternalError(ctx, TOOL_NAMES.invokeResult, cause);
+            result = { status: "error", error: internalError() };
+          }
           return { content: `Invocation ${requestId || "(missing)"} is ${result.status}.`, data: result };
         },
       );
