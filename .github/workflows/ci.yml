@@ -25,7 +25,7 @@ jobs:
   # build never pays for a tarball nobody can now trust anyway.
   verify:
     name: typecheck, test, build, package, version
-    runs-on: [self-hosted, two-selfhosted]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -113,7 +113,7 @@ jobs:
 
   secret-scan:
     name: secret scan
-    runs-on: [self-hosted, two-selfhosted]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
