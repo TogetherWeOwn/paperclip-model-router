@@ -1,0 +1,319 @@
+{
+  "$schema": "pinned prompt-regression corpus for TOG-5466",
+  "notes": [
+    "Baseline = v0.7.0 bundle. Candidate = HEAD bundle. Runner expands $repeat nodes.",
+    "Rows P22-P26 pin the TOG-5247 behavior change: overlong caller tool names are",
+    "rejected as invalid-request BEFORE selection. Every other row must be identical",
+    "across baseline and candidate: any diff there is a regression."
+  ],
+  "cases": [
+    {
+      "id": "P01-plain-minimal",
+      "request": {
+        "task": { "taskClass": "mechanical", "summary": "fix typo" },
+        "messages": [{ "role": "user", "content": "fix the typo in README" }],
+        "maxOutputTokens": 100
+      }
+    },
+    {
+      "id": "P02-system-prompt",
+      "request": {
+        "task": { "taskClass": "mechanical", "summary": "fix typo" },
+        "system": "You are a careful editor.",
+        "messages": [{ "role": "user", "content": "fix the typo in README" }],
+        "maxOutputTokens": 100
+      }
+    },
+    {
+      "id": "P03-stop-sequences",
+      "request": {
+        "task": { "taskClass": "mechanical", "summary": "stop test" },
+        "messages": [{ "role": "user", "content": "say hello" }],
+        "maxOutputTokens": 100,
+        "stopSequences": ["###", "END"]
+      }
+    },
+    {
+      "id": "P04-tools-short-auto",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "add helper" },
+        "messages": [{ "role": "user", "content": "add a helper function" }],
+        "maxOutputTokens": 500,
+        "tools": [
+          { "name": "read_file", "description": "read a file", "inputSchema": { "type": "object" } },
+          { "name": "write_file", "description": "write a file", "inputSchema": { "type": "object" } }
+        ],
+        "toolChoice": "auto"
+      }
+    },
+    {
+      "id": "P05-toolchoice-object-short",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "add helper" },
+        "messages": [{ "role": "user", "content": "add a helper function" }],
+        "maxOutputTokens": 500,
+        "tools": [
+          { "name": "read_file", "description": "read a file", "inputSchema": { "type": "object" } }
+        ],
+        "toolChoice": { "name": "read_file" }
+      }
+    },
+    {
+      "id": "P06-metadata",
+      "request": {
+        "task": { "taskClass": "mechanical", "summary": "tag run" },
+        "messages": [{ "role": "user", "content": "hello" }],
+        "maxOutputTokens": 100,
+        "metadata": { "runId": "run-123", "issueId": "TOG-5466" }
+      }
+    },
+    {
+      "id": "P07-image-escalates-vision",
+      "protocol": "openai-chat-completions",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "describe screenshot" },
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              { "type": "text", "text": "what is in this screenshot" },
+              { "type": "image_url", "url": "https://example.invalid/shot.png" }
+            ]
+          }
+        ],
+        "maxOutputTokens": 500
+      }
+    },
+    {
+      "id": "P08-image-anthropic-reject",
+      "protocol": "anthropic-messages",
+      "expectParse": "invalid-request",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "describe screenshot" },
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              { "type": "text", "text": "what is in this screenshot" },
+              { "type": "image_url", "url": "https://example.invalid/shot.png" }
+            ]
+          }
+        ],
+        "maxOutputTokens": 500
+      }
+    },
+    {
+      "id": "P09-tool-loop-turn",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "call then answer" },
+        "messages": [
+          { "role": "user", "content": "what is 2+2" },
+          {
+            "role": "assistant",
+            "content": [{ "type": "tool_call", "id": "c1", "name": "calc", "arguments": { "expr": "2+2" } }]
+          },
+          { "role": "tool", "toolCallId": "c1", "content": [{ "type": "tool_result", "toolCallId": "c1", "content": "4" }] }
+        ],
+        "maxOutputTokens": 100,
+        "tools": [{ "name": "calc", "inputSchema": { "type": "object" } }]
+      }
+    },
+    {
+      "id": "P10-signals-tier",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "ambiguous refactor", "signals": { "ambiguity": 5 } },
+        "messages": [{ "role": "user", "content": "refactor this unclear module" }],
+        "maxOutputTokens": 2000
+      }
+    },
+    {
+      "id": "P11-pin-honored",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "pinned run", "pinnedModelId": "minimax-m2.5", "pinReason": "eval pin" },
+        "messages": [{ "role": "user", "content": "hello pinned" }],
+        "maxOutputTokens": 100
+      }
+    },
+    {
+      "id": "P12-pin-unknown-id",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "ghost pin", "pinnedModelId": "ghost-model-9", "pinReason": "eval ghost pin" },
+        "messages": [{ "role": "user", "content": "hello ghost" }],
+        "maxOutputTokens": 100
+      }
+    },
+    {
+      "id": "P13-pin-blocklisted",
+      "configPatch": { "routing": { "pinBlocklist": ["minimax-m2.5"] } },
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "blocked pin", "pinnedModelId": "minimax-m2.5", "pinReason": "eval blocked pin" },
+        "messages": [{ "role": "user", "content": "hello blocked" }],
+        "maxOutputTokens": 100
+      }
+    },
+    {
+      "id": "P14-estimates-cost",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "costed run", "estimatedInputTokens": 50000, "estimatedOutputTokens": 4000 },
+        "messages": [{ "role": "user", "content": "big context task" }],
+        "maxOutputTokens": 4000
+      }
+    },
+    {
+      "id": "P15-architecture-floor",
+      "request": {
+        "task": { "taskClass": "architecture", "summary": "design review" },
+        "messages": [{ "role": "user", "content": "review this design" }],
+        "maxOutputTokens": 2000
+      }
+    },
+    {
+      "id": "P16-context-unmet",
+      "expectOutcome": "no-eligible-model",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "huge context", "requiredContextTokens": 10000000 },
+        "messages": [{ "role": "user", "content": "read everything" }],
+        "maxOutputTokens": 100
+      }
+    },
+    {
+      "id": "P17-rule0-hit",
+      "expectOutcome": "no-model-needed",
+      "request": {
+        "task": { "taskClass": "mechanical", "summary": "run the unit tests" },
+        "messages": [{ "role": "user", "content": "run the unit tests" }],
+        "maxOutputTokens": 100
+      }
+    },
+    {
+      "id": "P18-unknown-top-field",
+      "expectParse": "invalid-request",
+      "request": {
+        "task": { "taskClass": "mechanical", "summary": "bogus" },
+        "messages": [{ "role": "user", "content": "hi" }],
+        "maxOutputTokens": 100,
+        "bogusField": true
+      }
+    },
+    {
+      "id": "P19-empty-messages",
+      "expectParse": "invalid-request",
+      "request": {
+        "task": { "taskClass": "mechanical", "summary": "empty" },
+        "messages": [],
+        "maxOutputTokens": 100
+      }
+    },
+    {
+      "id": "P20-maxtokens-over-cap",
+      "expectParse": "invalid-request",
+      "request": {
+        "task": { "taskClass": "mechanical", "summary": "over cap" },
+        "messages": [{ "role": "user", "content": "hi" }],
+        "maxOutputTokens": 20000
+      }
+    },
+    {
+      "id": "P21-name-64-def",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "ceiling name" },
+        "messages": [{ "role": "user", "content": "use the ceiling tool" }],
+        "maxOutputTokens": 500,
+        "tools": [{ "name": { "$repeat": { "ch": "t", "n": 64 } }, "inputSchema": { "type": "object" } }],
+        "toolChoice": "auto"
+      }
+    },
+    {
+      "id": "P22-name-65-def",
+      "intendedChange": "candidate rejects: invalid-request, no model, no upstream, length-only message",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "one over ceiling" },
+        "messages": [{ "role": "user", "content": "use the long tool" }],
+        "maxOutputTokens": 500,
+        "tools": [{ "name": { "$repeat": { "ch": "t", "n": 65 } }, "inputSchema": { "type": "object" } }],
+        "toolChoice": "auto"
+      }
+    },
+    {
+      "id": "P23-name-90-def-gateway",
+      "intendedChange": "candidate rejects: gateway-shaped 90-char name never forwards",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "gateway name" },
+        "messages": [{ "role": "user", "content": "act via gateway tool" }],
+        "maxOutputTokens": 500,
+        "tools": [
+          {
+            "name": { "$concat": [{ "$repeat": { "ch": "g", "n": 62 } }, "-create-branch-action-alpha"] },
+            "inputSchema": { "type": "object" }
+          }
+        ],
+        "toolChoice": "auto"
+      }
+    },
+    {
+      "id": "P24-name-65-toolchoice-object",
+      "intendedChange": "candidate rejects: overlong object-form toolChoice name",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "long choice" },
+        "messages": [{ "role": "user", "content": "choose the long tool" }],
+        "maxOutputTokens": 500,
+        "tools": [{ "name": "short_tool", "inputSchema": { "type": "object" } }],
+        "toolChoice": { "name": { "$repeat": { "ch": "c", "n": 65 } } }
+      }
+    },
+    {
+      "id": "P25-name-90-toolcall-block",
+      "intendedChange": "candidate rejects: overlong assistant tool_call name",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "long call" },
+        "messages": [
+          { "role": "user", "content": "do the long action" },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "tool_call",
+                "id": "c9",
+                "name": { "$concat": [{ "$repeat": { "ch": "g", "n": 62 } }, "-create-repository-action-beta"] },
+                "arguments": { "repo": "x" }
+              }
+            ]
+          }
+        ],
+        "maxOutputTokens": 500,
+        "tools": [{ "name": "short_tool", "inputSchema": { "type": "object" } }]
+      }
+    },
+    {
+      "id": "P26-name-65-second-of-two",
+      "intendedChange": "candidate rejects and message names position tools[1]",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "second tool long" },
+        "messages": [{ "role": "user", "content": "use tools" }],
+        "maxOutputTokens": 500,
+        "tools": [
+          { "name": "short_tool", "inputSchema": { "type": "object" } },
+          { "name": { "$repeat": { "ch": "u", "n": 65 } }, "inputSchema": { "type": "object" } }
+        ],
+        "toolChoice": "auto"
+      }
+    },
+    {
+      "id": "P27-sticky-incumbent",
+      "signals": { "stickyModelId": "minimax-m2.5" },
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "sticky run" },
+        "messages": [{ "role": "user", "content": "continue prior work" }],
+        "maxOutputTokens": 500
+      }
+    },
+    {
+      "id": "P28-vision-required-cap",
+      "request": {
+        "task": { "taskClass": "implementation", "summary": "needs vision", "requiredCapabilities": ["vision"] },
+        "messages": [{ "role": "user", "content": "look at this" }],
+        "maxOutputTokens": 500
+      }
+    }
+  ]
+}
