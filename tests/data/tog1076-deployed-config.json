@@ -1440,7 +1440,7 @@
     "signalWeights": {}
   },
   "upstream": {
-    "baseUrl": "https://router.infextion.net",
+    "baseUrl": "https://router.example.invalid",
     "protocol": "openai-chat-completions",
     "extraHeaders": {},
     "maxResponseBytes": 8388608,
@@ -1515,7 +1515,7 @@
           "cliproxy/claude-haiku-4-5-20251001",
           "cliproxy/claude-fable-5-1"
         ],
-        "statusUrl": "https://router.infextion.net/telemetry/cliproxy/claude.json",
+        "statusUrl": "https://router.example.invalid/telemetry/cliproxy/claude.json",
         "healthFields": [
           "health"
         ],
@@ -1566,7 +1566,7 @@
           "cliproxy/gpt-5.6-terra",
           "cliproxy/gpt-5.3-codex-spark"
         ],
-        "statusUrl": "https://router.infextion.net/telemetry/cliproxy/codex.json",
+        "statusUrl": "https://router.example.invalid/telemetry/cliproxy/codex.json",
         "healthFields": [
           "health"
         ],
@@ -1600,7 +1600,7 @@
           "cliproxy/kimi-k3",
           "cliproxy/kimi-k3-256k"
         ],
-        "statusUrl": "https://router.infextion.net/telemetry/cliproxy/kimi.json",
+        "statusUrl": "https://router.example.invalid/telemetry/cliproxy/kimi.json",
         "healthFields": [
           "health"
         ],
@@ -1679,7 +1679,7 @@
           "cliproxy/qwen3.8-flash",
           "cliproxy/qwen3.8-max"
         ],
-        "statusUrl": "https://router.infextion.net/telemetry/cliproxy/opencode-go.json",
+        "statusUrl": "https://router.example.invalid/telemetry/cliproxy/opencode-go.json",
         "healthFields": [
           "health"
         ],

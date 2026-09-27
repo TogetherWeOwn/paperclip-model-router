@@ -51,7 +51,7 @@ const WINDOWS = [
 function sourceFor(modelId: string, slug: string): CapacitySourceConfig {
   return {
     id: `telemetry-${slug}`,
-    statusUrl: `https://router.infextion.net/telemetry/model-usage/${slug}`,
+    statusUrl: `https://router.example.invalid/telemetry/model-usage/${slug}`,
     apiKeySecretRef: null,
     modelIds: [modelId],
     healthFields: ["state"],
@@ -154,7 +154,7 @@ describe("nested `models` map: the shape the v0.4.0 consumer cannot read", () =>
     },
   };
   const source: CapacitySourceConfig = {
-    id: "nested", statusUrl: "https://router.infextion.net/telemetry/model-usage",
+    id: "nested", statusUrl: "https://router.example.invalid/telemetry/model-usage",
     apiKeySecretRef: null, modelIds: ["oc/claude-opus-5", "oc/claude-sonnet-5"],
     healthFields: ["state"], requestTimeoutMs: 5000, maxResponseBytes: 262144,
     windows: [{ name: "five-hour", utilizationFields: ["utilization"], resetFields: ["resetsAt"] }],

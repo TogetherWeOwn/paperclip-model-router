@@ -68,7 +68,7 @@ const LIVE_SHAPED_PAYLOAD = {
       provider: "openai-compatible",
       accountEmail: "payg@togetherweown.invalid",
       apiKey: "sk-EXAMPLE-NOT-A-REAL-KEY-CCCC",
-      baseUrl: "https://router.infextion.net/v1",
+      baseUrl: "https://router.example.invalid/v1",
       status: "quota_exhausted",
       models: ["oc/gpt-5.6-sol"],
       fiveHourUtilization: 1.0,

@@ -2,7 +2,7 @@
  * TOG-1076 — the uncovered-model tail under `fail-open`.
  *
  * Driven by the REAL deployed production config row (company
- * ef993a7e-5ea7-445f-ba88-27a6a2690c3a, plugin_config.updated_at
+ * $PAPERCLIP_COMPANY_ID, plugin_config.updated_at
  * 2026-09-05T10:32:45.959Z), dumped read-only from the database and read
  * through the shipped `resolveConfig`. Nothing here is a hand-built fixture:
  * the model table, the four capacity sources and their modelIds are exactly
