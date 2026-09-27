@@ -266,6 +266,12 @@ export const ROUTER_CONFIG_SCHEMA = {
                 items: { type: "string", minLength: 1 },
                 default: ["health", "status", "unifiedStatus"],
               },
+              modelIdentityFields: {
+                type: "array",
+                items: { type: "string", minLength: 1 },
+                description:
+                  "TOG-7163: fields carrying the model identity on a per-model quota group inside one payload record. When set, a grouped record projects onto exactly the model it names; records naming another model are that model's evidence, not absent telemetry. Absent = legacy fan-out.",
+              },
               windows: {
                 type: "array",
                 minItems: 1,
