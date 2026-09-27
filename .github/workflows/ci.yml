@@ -13,6 +13,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# This repo is public: org self-hosted runners do not serve public repos (runner group
+# policy, and fork PRs must never run on our boxes), so jobs use GitHub-hosted runners,
+# which are free for public repos. The run-unique paths below stay harmless there.
+
 jobs:
   # TOG-2547: this used to be three separate jobs — "verify", "packaged-artifact"
   # and "version-sync" — each paying its own checkout + setup-node + npm ci before
@@ -25,7 +29,7 @@ jobs:
   # build never pays for a tarball nobody can now trust anyway.
   verify:
     name: typecheck, test, build, package, version
-    runs-on: [self-hosted, two-selfhosted]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -113,7 +117,7 @@ jobs:
 
   secret-scan:
     name: secret scan
-    runs-on: [self-hosted, two-selfhosted]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
