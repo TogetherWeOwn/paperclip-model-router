@@ -10,13 +10,28 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-27
+
 ### Fixed
 
+- **Portable tool-name ceiling (TOG-5247).** Reject tool definitions, tool-call
+  blocks and named tool choices longer than 64 characters before selection.
+  This prevents truncation into indistinguishable upstream aliases. Validation
+  errors report only the position and length, not the caller's tool name.
 - **Release-pin credential resolution (TOG-4372).** Use Git's noninteractive
   `credential fill` plumbing instead of space-splitting a helper command. Inline
   shell functions, quoted arguments, configured helper ordering and resets now
   follow Git's own semantics. Missing credentials still fail gates 4–6; no release
   gate or host-verification requirement is relaxed.
+
+### Compatibility
+
+- Retains v0.7.0's margin-aware serviceability hard stop; this patch release
+  packages the already-merged fixes above without additional routing changes.
+- No new capabilities, migrations, configuration defaults or live flag changes.
+  Tool names over 64 characters now fail validation rather than reaching the
+  upstream. Private release authorization does not authorize host installation;
+  a reviewed, versioned install/verify/rollback handoff is still required.
 
 ## [0.7.0] - 2026-09-22
 

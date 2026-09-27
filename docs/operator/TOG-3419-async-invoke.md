@@ -3,6 +3,8 @@
 The async protocol and persistence behavior below also apply to v0.7.0.
 That version adds the margin-aware serviceability hard stop before invocation;
 see the v0.7.0 changelog for selection compatibility, not an async API change.
+The same async protocol applies to v0.7.1; its tool-name validation fix is
+recorded in the changelog. This compatibility note is not install approval.
 
 ## Scope
 
