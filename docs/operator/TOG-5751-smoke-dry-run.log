@@ -1,0 +1,11 @@
+repo: TogetherWeOwn/paperclip-model-router
+date (UTC): 2026-09-27T03:23:19Z
+STEP visibility: PASS - private=false visibility=public, unauth REST=200
+STEP ci-green-on-default-sha: FAIL - run 36286599997 on 3a33c5a is queued/null, want completed/success (https://github.com/TogetherWeOwn/paperclip-model-router/actions/runs/36286599997)
+STEP ci-hosted-runners: FAIL - run 36286599997 used self-hosted labels: secret scan|queued|null|self-hosted,two-selfhosted;typecheck, test, build, package, version|queued|null|self-hosted,two-selfhosted
+STEP secret-scan-green: FAIL - run 36286599997 secret scan: secret scan|queued|null|self-hosted,two-selfhosted
+STEP workflows-hosted-only: FAIL - self-hosted still pinned: .github/workflows/ci.yml:28:    runs-on: [self-hosted, two-selfhosted];.github/workflows/ci.yml:116:    runs-on: [self-hosted, two-selfhosted];.github/workflows/release.yml:22:    runs-on: [self-hosted, two-selfhosted]
+STEP license-mit: PASS - LICENSE present, MIT header
+STEP tracked-markers: PASS - zero tenant-marker hits outside docs/operator
+STEP pr-exposure-vectors: PASS - no pull_request_target/workflow_run/secrets. in workflows
+RESULT: 4 failing step(s) (default SHA 3a33c5a, green run none)
