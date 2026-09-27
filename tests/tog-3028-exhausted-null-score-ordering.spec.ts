@@ -98,9 +98,11 @@ function healthyEvidence(modelId: string, utilization: number): CapacityEvidence
     utilization,
     remainingFraction: 1 - utilization,
     resetsAt: null,
+    resetInSeconds: null,
+    windows: [],
     telemetryAvailable: true,
-    observedAt: NOW,
-  } as CapacityEvidence;
+    reason: "test",
+  };
 }
 
 describe("TOG-3028: an exhausted lane with a null score", () => {
