@@ -10,6 +10,35 @@ version is not present here.
 
 ## [Unreleased]
 
+### Added
+
+- **`npm run check:ci` — "CI is green" and "CI ran" are now separate questions
+  (TOG-489, rebuilt as TOG-7158).** On 2026-08-25 the organisation crossed its
+  GitHub Actions spending limit and every job in every workflow began failing
+  two seconds in, before checkout. That renders as red checks, one of them
+  `secret scan` — visually identical to a committed credential, and in fact a
+  billing problem that had scanned nothing at all. `docs/PROCESS.md` rule 1
+  hangs merge decisions on a green build, and there was no way to apply it
+  honestly.
+
+  `scripts/ci-health.mjs` reads `commits/{sha}/check-runs`, asserts HTTP 200
+  (the Actions API 403s for our App token, so a naive poll reads "no runs yet"
+  rather than "cannot see"), and classifies each check from its annotations:
+  exit `0` green, `1` genuinely red, `2` the job was refused and verified
+  nothing, `3` cannot tell. No path exits `0` without a passing check run for
+  every check named — zero check runs is `3`, and so is a *skipped* required
+  check, which scanned nothing but reads as an absence on a PR page.
+
+  Duration is deliberately not a classifier: this repo's green history includes
+  6- and 8-second checks, so any threshold catching a 2-second refusal would
+  fire on healthy runs. Annotations decide, which means an unannotated refusal
+  is reported as a genuine failure — the asymmetry is intentional and recorded
+  in [`docs/decisions/0012`](docs/decisions/0012-a-check-name-is-not-a-verdict.md).
+  A real failure mistaken for infrastructure teaches the company to wave red
+  builds through; the reverse costs an hour and ends in the truth. The required
+  names follow the TOG-2547 two-job CI (read from `.github/workflows/ci.yml`
+  at rebuild time).
+
 ## [0.7.1] - 2026-09-27
 
 ### Fixed
