@@ -109,6 +109,14 @@ export async function invokeCompatibleUpstream(input: {
   modelId: string;
   /** Per-model override from the selected model's table entry; absent means inherit. */
   modelTimeoutMs?: number;
+  /**
+   * TOG-7417: abort signal for run-end reap. Only the async background
+   * continuation supplies one (one AbortController per request, owned by the
+   * worker); the synchronous path never aborts and passes nothing, so its
+   * wire shape is unchanged. When the signal fires the outcome is
+   * `invocation-cancelled`, never an upstream error code.
+   */
+  signal?: AbortSignal;
 }): Promise<TransportResult> {
   let url: string;
   let headers: Record<string, string>;
@@ -126,11 +134,16 @@ export async function invokeCompatibleUpstream(input: {
   } catch {
     return error("upstream-url-rejected", "The configured compatible upstream is invalid.", false);
   }
+  // TOG-7417: the signal travels on the fetch init so both the real worker
+  // fetch and the harness/test doubles see it. A test fake that ignores the
+  // init still terminates when the reap path resolves the race, so an abort
+  // is never hostage to a fake honoring AbortSignal.
   const request = input.http.fetch(url, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
     redirect: "manual",
+    ...(input.signal ? { signal: input.signal } : {}),
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let response: Response;
@@ -148,6 +161,18 @@ export async function invokeCompatibleUpstream(input: {
     if (cause instanceof Error && cause.message === "router-request-timeout") {
       request.catch(() => undefined);
       return error("upstream-timeout", "The compatible upstream exceeded the configured request timeout.", true);
+    }
+    // TOG-7417: run-end reap. A rejection with an already-aborted signal is
+    // the caller's cancellation, not an upstream failure — report it under
+    // its own non-retryable code so retry logic never replays a run the host
+    // has declared finished. Checked before the host-URL and connect
+    // fallthroughs, which would otherwise misclassify the abort.
+    if (input.signal?.aborted) {
+      request.catch(() => undefined);
+      return {
+        response: null,
+        error: { code: "invocation-cancelled", message: "The invocation was cancelled when its agent run ended.", retryable: false, upstreamStatus: null, upstreamRequestId: null },
+      };
     }
     const emptyStatus = sdkReconstructedEmptyResponseStatus(cause);
     if (emptyStatus !== null) {

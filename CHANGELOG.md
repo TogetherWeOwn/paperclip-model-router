@@ -10,6 +10,44 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-27
+
+### Added
+
+- **Authoritative run-budget fraction + run-end reap (TOG-7417).** The
+  TOG-7138 CISO D3 precondition on widening router-invoke access.
+  - The host injects the authoritative spent fraction through the
+    tool/action context — a channel the caller cannot write to — and
+    `prepareInvocation` (`src/worker.ts`) prefers it over the
+    caller-claimed `task.signals.budgetSpentFraction`, which any caller can
+    forge to dodge the halt gate or force a downshift. Resolution is
+    `authoritative ?? caller` (`src/budget-authority.ts`); the
+    `selectModel` gate movement is unchanged. The stock SDK types do not
+    declare the field yet, so extraction is structural (finite-number
+    validation) against the context object.
+  - Async invocations stamp their run (`runId`, plus `agentId` for the
+    reap-time audit row) on the pending record, the worker keeps one
+    `AbortController` per in-flight call threaded through
+    `invokeCompatibleUpstream` as an optional `signal`, and a new
+    `cancel-run-invocations {runId}` action — called by the host when an
+    agent run ends — aborts still-open sockets and settles their rows to
+    terminal `error` / `invocation-cancelled` (new `InferenceErrorCode`,
+    non-retryable, never produced by the transport itself) with an audit
+    record. A per-run state index (`pending-invocations-by-run:{runId}`)
+    enumerates the open requests because `ctx.state` has no listing
+    primitive. The reap is idempotent, never throws on storage failure,
+    prunes stale index entries, and a late upstream outcome can never
+    overwrite a reaped terminal (abort flag plus a settle-time re-read).
+  - The synchronous `/invoke` path sends no abort signal; its wire shape is
+    unchanged.
+
+### Compatibility
+
+- Drop-in over v0.7.1. No config changes; rows written by older workers
+  (no `runId`) are treated as null and reap skips them. No new plugin
+  capability is required, so this upgrades through the ordinary
+  `plugin upgrade` path.
+
 ### Added
 
 - **`npm run check:ci` — "CI is green" and "CI ran" are now separate questions
