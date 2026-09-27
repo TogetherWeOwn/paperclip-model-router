@@ -12,16 +12,25 @@ import { selectModel } from "../src/engine/select.js";
  *
  * `pace-ordering.spec.ts:267` exercises an exhausted lane, but it builds the
  * verdict as `{ ...BEHIND, state: "exhausted" }`, which KEEPS a non-null score.
- * So the combination the engine actually emits at pace.ts:280 was never
- * ordered in a test, and the install gate's `score is null` clause fired on it.
+ * So the combination the engine actually emits (the `all-accounts-unserviceable`
+ * return in `packages/lane-capacity/src/pace.ts`) was never ordered in a test,
+ * and the install gate's `score is null` clause fired on it.
+ *
+ * Fixture choice is deliberate: five_hour sits BELOW the TOG-3983 trip ceiling
+ * so the lane takes the allowance-exhaustion path (`all-accounts-unserviceable`),
+ * which stays in the ordering pool. A tripped serviceability window takes the
+ * `serviceability-window-exhausted` path instead, which the TOG-3983 hard stop
+ * excludes from the pool outright -- that contract is pinned by
+ * `tog-3983-serviceability-hard-stop.spec.ts`, not here.
  *
  * These assertions pin two separate facts:
  *   1. the engine really does emit `exhausted` + null score + a full
  *      `knownAccountCount` for a genuinely exhausted lane (so the install-gate
  *      relaxation in TOG-3028 keys off something real), and
  *   2. a null score does not poison pace ordering -- `paceDeviation()` returns
- *      NaN and the comparator's `Number.isFinite` guard (select.ts:87) falls
- *      through to the next comparator instead of subtracting NaN.
+ *      NaN and the comparator's `Number.isFinite` guard in `paceOrder`
+ *      (`src/engine/select.ts`) falls through to the next comparator instead
+ *      of subtracting NaN.
  */
 
 const NOW = "2026-09-16T21:49:55.000Z";
@@ -43,7 +52,14 @@ function verdictFor(document: unknown, asOf = NOW): LanePaceVerdict {
   return evaluateLanePace({ observation: normalizeLaneDocument({ document, definition: LANE }), asOf });
 }
 
-/** All three codex accounts at weekly 1.0, reset 2026-09-19T11:12Z. */
+/**
+ * All three codex accounts at weekly 1.0 (allowance exhausted), reset
+ * 2026-09-19T11:12Z. five_hour stays WELL below the TOG-3983 trip ceiling
+ * (default margin 0.1 trips at milli 900) so the lane takes the
+ * allowance-exhaustion path -- `all-accounts-unserviceable` -- which remains
+ * in the ordering pool. At five_hour 1.0 the lane would instead take the
+ * `serviceability-window-exhausted` path and be hard-stop excluded outright.
+ */
 function exhaustedAccount(key: string) {
   return {
     account_key: key,
@@ -51,7 +67,7 @@ function exhaustedAccount(key: string) {
     weight: 1,
     governing_window: "weekly",
     window_seconds: { five_hour: 18000, weekly: 604800 },
-    five_hour_utilization: 1,
+    five_hour_utilization: 0.5,
     five_hour_resets_at: "2026-09-17T00:00:00Z",
     weekly_utilization: 1,
     weekly_resets_at: "2026-09-19T11:12:00Z",
