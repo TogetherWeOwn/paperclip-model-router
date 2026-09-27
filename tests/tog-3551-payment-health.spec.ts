@@ -34,7 +34,7 @@ describe("TOG-3551 payment-exhaustion health strings", () => {
   it("a payment-blocked lane normalizes to posture unavailable with telemetry available", () => {
     const source: CapacitySourceConfig = {
       id: "telemetry-devin",
-      statusUrl: "https://router.infextion.net/telemetry/model-usage/devin",
+      statusUrl: "https://router.example.invalid/telemetry/model-usage/devin",
       apiKeySecretRef: null,
       modelIds: ["devin/swe-1-6-slow"],
       healthFields: ["state"],
@@ -65,7 +65,7 @@ describe("TOG-3551 payment-exhaustion health strings", () => {
   it("explicit payment block overrides a low-utilization window", () => {
     const source: CapacitySourceConfig = {
       id: "telemetry-devin",
-      statusUrl: "https://router.infextion.net/telemetry/model-usage/devin",
+      statusUrl: "https://router.example.invalid/telemetry/model-usage/devin",
       apiKeySecretRef: null,
       modelIds: ["devin/swe-1-6-slow"],
       healthFields: ["state"],

@@ -56,8 +56,8 @@ https://<caddy-edge-host>/telemetry/model-usage/<model-slug>
 Worked example on the intended TOG-952 lane:
 
 ```
-https://router.infextion.net/telemetry/model-usage/opus-5
-https://router.infextion.net/telemetry/model-usage/sonnet-5
+https://router.example.invalid/telemetry/model-usage/opus-5
+https://router.example.invalid/telemetry/model-usage/sonnet-5
 ```
 
 `<model-slug>` is an opaque path token the deployment picks per model id. It is
@@ -104,7 +104,7 @@ The `sources[]` entry that reads it:
 ```json
 {
   "id": "telemetry-opus-5",
-  "statusUrl": "https://router.infextion.net/telemetry/model-usage/opus-5",
+  "statusUrl": "https://router.example.invalid/telemetry/model-usage/opus-5",
   "modelIds": ["oc/claude-opus-5"],
   "healthFields": ["state"],
   "requestTimeoutMs": 5000,
