@@ -1402,10 +1402,11 @@ export function createPlugin() {
     },
 
     async onValidateConfig(raw: Record<string, unknown>) {
-      // TOG-7880 (gap G1): resolveConfig now fails closed on duplicate model
-      // ids (exact and case-variant). A duped table must surface here as a
-      // structured refusal naming both entries — never as a thrown 500, and
-      // never as ok:true with the fallback/pin checks masking it.
+      // TOG-7880 (gap G1) + TOG-7881 (gap G2): resolveConfig fails closed
+      // on duplicate model ids and on Rule 0 patterns (Rule0PatternError
+      // carries the operator-visible pattern index). Either must surface
+      // here as a structured refusal — never as a thrown 500, and never as
+      // ok:true with the checks below masking it.
       let config: RouterConfig;
       try {
         config = resolveConfig(raw);
@@ -1460,9 +1461,10 @@ export function createPlugin() {
       if (config.routing.fallbackModelId && !ids.has(config.routing.fallbackModelId)) {
         errors.push(`routing.fallbackModelId ${config.routing.fallbackModelId} is not in the model table`);
       }
-      for (const entry of config.rule0.deterministicPatterns) {
-        try { new RegExp(entry.pattern, "i"); } catch { errors.push(`rule0 pattern ${entry.pattern} is not a valid regular expression`); }
-      }
+      // TOG-7881 (G2): Rule 0 patterns are validated at resolve time above —
+      // resolveConfig throws Rule0PatternError (caught into errors) on an
+      // invalid, malformed, or catastrophically-backtracking pattern, so there
+      // is nothing left to re-check per pattern here.
       if (!(config.budget.warnFraction <= config.budget.downshiftFraction && config.budget.downshiftFraction <= config.budget.haltFraction)) {
         errors.push("budget fractions must satisfy warn <= downshift <= halt");
       }

@@ -1,4 +1,5 @@
 import type { ModelEntry } from "../engine/types.js";
+import { compileRule0Pattern, Rule0PatternError } from "./rule0.js";
 import {
   DEFAULT_REQUEST_TIMEOUT_MS,
   FORBIDDEN_EXTRA_HEADERS,
@@ -256,11 +257,25 @@ function resolveRule0(value: unknown): Rule0Config {
   if (!isRecord(value)) return { ...DEFAULT_RULE0, deterministicPatterns: [] };
   const patterns: Rule0Config["deterministicPatterns"] = [];
   if (Array.isArray(value.deterministicPatterns)) {
-    for (const raw of value.deterministicPatterns) {
-      if (!isRecord(raw)) continue;
+    // TOG-7881 (G2): fail-closed with the operator-visible array index.
+    // A malformed, invalid, or pathologically backtracking pattern throws
+    // Rule0PatternError here — at config load — instead of silently never
+    // matching or becoming a per-request ReDoS.
+    for (let index = 0; index < value.deterministicPatterns.length; index += 1) {
+      const raw = value.deterministicPatterns[index];
+      if (!isRecord(raw)) {
+        throw new Rule0PatternError(index, "", "entry must be an object with a non-empty pattern and tool");
+      }
       const pattern = pickString(raw.pattern, "");
       const tool = pickString(raw.tool, "");
-      if (pattern && tool) patterns.push({ pattern, tool });
+      if (!pattern || !tool) {
+        throw new Rule0PatternError(
+          index,
+          typeof raw.pattern === "string" ? raw.pattern : "",
+          "entry must define a non-empty pattern and tool",
+        );
+      }
+      patterns.push(compileRule0Pattern(pattern, tool, index));
     }
   }
   return {
