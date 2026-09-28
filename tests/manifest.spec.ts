@@ -108,6 +108,7 @@ describe("network and secret discipline", () => {
       "src/worker.ts",
       "tests/fixtures/company-a.json",
       "tests/fixtures/company-b.json",
+      "tests/fixtures/company-c.json",
     ]) {
       const content = readFileSync(join(root, file), "utf8");
       expect(content).not.toMatch(/\bsk-[A-Za-z0-9_-]{16,}/);

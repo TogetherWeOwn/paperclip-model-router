@@ -1,0 +1,75 @@
+{
+  "routing": {
+    "enabled": true,
+    "mode": "enforce",
+    "fallbackModelId": null,
+    "stickyModelWithinIssue": true,
+    "maxOutputTokens": 16384
+  },
+  "upstream": {
+    "protocol": "openai-chat-completions",
+    "baseUrl": "https://company-c.example/api",
+    "credentialSecretRef": {
+      "type": "secret_ref",
+      "secretId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    },
+    "requestTimeoutMs": 25000,
+    "maxResponseBytes": 8388608,
+    "extraHeaders": { "X-Company-Lane": "c" }
+  },
+  "models": [
+    {
+      "id": "qwen3-coder",
+      "tier": "small",
+      "quality": 45,
+      "costPerMTokIn": 0.08,
+      "costPerMTokOut": 0.32,
+      "contextWindow": 262144,
+      "capabilities": ["tools", "structured-output", "long-context"],
+      "enabled": true
+    },
+    {
+      "id": "minimax-m2.5",
+      "tier": "standard",
+      "quality": 62,
+      "costPerMTokIn": 0.25,
+      "costPerMTokOut": 1,
+      "contextWindow": 200000,
+      "capabilities": ["tools", "structured-output"],
+      "enabled": true
+    },
+    {
+      "id": "claude-sonnet-5",
+      "tier": "strong",
+      "quality": 88,
+      "costPerMTokIn": 3,
+      "costPerMTokOut": 15,
+      "contextWindow": 1000000,
+      "capabilities": ["tools", "structured-output", "vision", "long-context"],
+      "enabled": true
+    }
+  ],
+  "taskClasses": [
+    { "key": "mechanical", "qualityFloor": 40, "maxTier": "small" },
+    { "key": "implementation", "qualityFloor": 60 },
+    { "key": "architecture", "qualityFloor": 85 }
+  ],
+  "tiering": {
+    "signalWeights": { "filesTouched": 4, "ambiguity": 20 },
+    "thresholds": { "small": 0, "standard": 30, "strong": 60, "frontier": 85 },
+    "defaultTier": "standard"
+  },
+  "budget": {
+    "monthlyCapUsd": 250,
+    "warnFraction": 0.6,
+    "downshiftFraction": 0.8,
+    "haltFraction": 0.95
+  },
+  "rule0": {
+    "enabled": true,
+    "deterministicPatterns": [
+      { "pattern": "^(run|re-?run) the (unit )?tests\\b", "tool": "the test runner" },
+      { "pattern": "\\b(lint|format|prettier|gofmt)\\b", "tool": "the linter/formatter" }
+    ]
+  }
+}
