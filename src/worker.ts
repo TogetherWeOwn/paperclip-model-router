@@ -16,6 +16,7 @@ import type { RouterConfig } from "./config/types.js";
 import {
   ACTION_KEYS,
   DECISION_LOG_RETENTION_DAYS,
+  ISSUE_STICKINESS_MAX_ENTRIES,
   JOB_KEYS,
   PENDING_INVOCATION_TTL_MS,
   PLUGIN_VERSION,
@@ -245,15 +246,29 @@ export function createPlugin() {
         return typeof map[issueId] === "string" ? (map[issueId] as string) : undefined;
       };
 
+      // TOG-7877 (G15): bounded insertion-ordered LRU. The written issue
+      // moves to most-recent; entries past ISSUE_STICKINESS_MAX_ENTRIES are
+      // dropped oldest-first. Also prunes junk from malformed rows (a legacy
+      // or hand-edited row may carry non-string values that would otherwise
+      // hold a slot forever). Reads never move recency, so the sticky hot
+      // path (same issue, same model) performs no state write.
       const writeStickyModel = async (
         companyId: string,
         issueId: string | undefined,
         modelId: string | null,
       ): Promise<void> => {
         if (!issueId || !modelId) return;
-        const map = asRecord(await ctx.state.get(stickyKey(companyId)));
-        if (map[issueId] === modelId) return;
+        const stored = asRecord(await ctx.state.get(stickyKey(companyId)));
+        if (stored[issueId] === modelId) return;
+        const map: Record<string, string> = {};
+        for (const [key, value] of Object.entries(stored)) {
+          if (key !== issueId && typeof value === "string") map[key] = value;
+        }
         map[issueId] = modelId;
+        const excess = Object.keys(map).length - ISSUE_STICKINESS_MAX_ENTRIES;
+        if (excess > 0) {
+          for (const key of Object.keys(map).slice(0, excess)) delete map[key];
+        }
         await ctx.state.set(stickyKey(companyId), map);
       };
 
