@@ -62,6 +62,18 @@ export const STATE_KEYS = {
   pendingInvocationsByRun: "pending-invocations-by-run",
 } as const;
 
+/**
+ * TOG-7877 (G15): bound on the per-company issue-stickiness map
+ * (`issue-stickiness` state row). Without a cap the row grows one entry per
+ * issue id forever. Eviction is insertion-ordered LRU on the write path: the
+ * written issue moves to most-recent, and the oldest entries past the cap are
+ * dropped. Reads never move recency, so the sticky hot path (same issue, same
+ * model) performs no state write. An evicted issue is not an error — its next
+ * invocation simply re-selects. 1000 entries ≈ ~100 KB worst case per company
+ * row, far above any realistic active-issue count.
+ */
+export const ISSUE_STICKINESS_MAX_ENTRIES = 1000;
+
 export const DECISION_LOG_RETENTION_DAYS = 90;
 
 /**
