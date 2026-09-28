@@ -31,6 +31,7 @@ import {
 } from "./decision-records.js";
 import type { RoutingDecision } from "./engine/types.js";
 import { selectModel } from "./engine/select.js";
+import { extractAuthoritativeBudgetSpentFraction, resolveBudgetSpentFraction } from "./budget-authority.js";
 import { validateUpstreamConfig } from "./inference/adapters.js";
 import { effectiveMaxSyncOutputTokens } from "./inference/sync-budget.js";
 import { directFetchHttpClient, invokeCompatibleUpstream } from "./inference/transport.js";
@@ -41,8 +42,13 @@ type AsyncInvokeResult =
   | InferenceResult
   | { status: "pending"; requestId: string; decision: RoutingDecision };
 
+// TOG-7417: `runId` makes run-scoped reap expressible — the run-end hook
+// enumerates a run's still-open invocations through the by-run index and
+// settles them. `agentId` rides along so the reap-time audit row keeps its
+// submitter. Rows written by older workers lack both; every reader treats a
+// missing value as null.
 type PendingInvocationRecord =
-  | { status: "pending"; requestId: string; decision: RoutingDecision; startedAt: string; expiresAt: string }
+  | { status: "pending"; requestId: string; decision: RoutingDecision; startedAt: string; expiresAt: string; runId: string | null; agentId: string | null }
   | {
       status: "completed";
       requestId: string;
@@ -52,6 +58,8 @@ type PendingInvocationRecord =
       error: null;
       startedAt: string;
       expiresAt: string;
+      runId: string | null;
+      agentId: string | null;
     }
   | {
       status: "error";
@@ -62,6 +70,8 @@ type PendingInvocationRecord =
       error: InferenceError;
       startedAt: string;
       expiresAt: string;
+      runId: string | null;
+      agentId: string | null;
     };
 
 type PollResult = { status: "not-found" } | PendingInvocationRecord;
@@ -450,6 +460,53 @@ export function createPlugin() {
         schedulePendingInvocationExpiry(companyId, entry.requestId, entry.expiresAt);
       };
 
+      // TOG-7417: one AbortController per in-flight async upstream call, so
+      // the run-end reap aborts the actual socket instead of merely marking a
+      // row. Keyed like the expiry timers. Synchronous invoke never registers
+      // here and its wire shape is unchanged.
+      const pendingInvocationControllers = new Map<string, AbortController>();
+      const pendingInvocationControllerKey = (companyId: string, requestId: string): string =>
+        `${companyId}:${requestId}`;
+      // TOG-7417: flags for invocations the reap settled while their
+      // continuation was still in flight. The continuation checks this before
+      // persisting so a late upstream outcome can never overwrite the
+      // `invocation-cancelled` terminal the reap already wrote.
+      const cancelledInvocationFlags = new Set<string>();
+
+      // TOG-7417: ctx.state has no listing primitive, so the reap cannot
+      // enumerate "all pending rows for run R" on its own. This index — one
+      // company-scoped row per agent run holding its still-open request ids —
+      // makes that enumeration explicit. Best-effort by design: a submit
+      // whose index write fails still returns pending (the pending row is the
+      // source of truth), and the reap prunes entries whose record is already
+      // terminal or gone, so a missed removal heals on the next reap.
+      const pendingRunIndexKey = (companyId: string, runId: string) => ({
+        scopeKind: "company" as const,
+        scopeId: companyId,
+        stateKey: `${STATE_KEYS.pendingInvocationsByRun}:${runId}`,
+      });
+
+      const readRunIndex = async (companyId: string, runId: string): Promise<string[]> => {
+        const stored = asRecord(await ctx.state.get(pendingRunIndexKey(companyId, runId)));
+        if (!Array.isArray(stored.requestIds)) return [];
+        return (stored.requestIds as unknown[]).filter((id): id is string => typeof id === "string");
+      };
+
+      const addToRunIndex = async (companyId: string, runId: string | null, requestId: string): Promise<void> => {
+        if (!runId) return;
+        const requestIds = await readRunIndex(companyId, runId);
+        if (requestIds.includes(requestId)) return;
+        await ctx.state.set(pendingRunIndexKey(companyId, runId), { requestIds: [...requestIds, requestId] });
+      };
+
+      const removeFromRunIndex = async (companyId: string, runId: string | null, requestId: string): Promise<void> => {
+        if (!runId) return;
+        const remaining = (await readRunIndex(companyId, runId)).filter((id) => id !== requestId);
+        const key = pendingRunIndexKey(companyId, runId);
+        if (remaining.length === 0) await ctx.state.delete(key);
+        else await ctx.state.set(key, { requestIds: remaining });
+      };
+
       // TOG-3419: the host clears a plugin's invocation scope the instant it
       // sends the worker's RPC response back, but invokeAsync's background
       // continuation is an unawaited promise that keeps running afterward —
@@ -560,7 +617,7 @@ export function createPlugin() {
         companyId: string,
         raw: unknown,
         mode: "sync" | "async",
-        actorContext: { agentId?: string | null; runId?: string | null } = {},
+        actorContext: { agentId?: string | null; runId?: string | null; budgetSpentFraction?: unknown } = {},
       ): Promise<PrepareOutcome> => {
         const actor = {
           agentId: actorContext.agentId ?? null,
@@ -628,11 +685,22 @@ export function createPlugin() {
         const capacity = config.capacityRouting.enabled
           ? await storedCapacity(companyId, config)
           : { snapshots: [], evidence: [], error: null, paceVerdicts: {}, modelLaneByPace: {} };
+        // TOG-7417: the host injects the authoritative spent fraction through
+        // the tool/action context (a channel the caller cannot write to) and
+        // it wins over the caller-claimed task.signals value, which any
+        // caller can forge to dodge the halt gate or force a downshift. The
+        // engine (gate movement in selectModel) is unchanged — only the
+        // fraction's source changes here.
+        const authoritativeBudgetSpentFraction =
+          extractAuthoritativeBudgetSpentFraction(actorContext);
         const decision = selectModel({
           descriptor: request.task,
           config,
           signals: {
-            budgetSpentFraction: request.task.signals?.budgetSpentFraction,
+            budgetSpentFraction: resolveBudgetSpentFraction(
+              authoritativeBudgetSpentFraction,
+              request.task.signals?.budgetSpentFraction,
+            ),
             capacityEvidence: capacity.evidence,
             capacityError: capacity.error ?? undefined,
             paceVerdicts: config.capacityRouting.paceOrdering ? capacity.paceVerdicts : undefined,
@@ -745,7 +813,7 @@ export function createPlugin() {
       const invokeFor = async (
         companyId: string,
         raw: unknown,
-        actorContext: { agentId?: string | null; runId?: string | null } = {},
+        actorContext: { agentId?: string | null; runId?: string | null; budgetSpentFraction?: unknown } = {},
       ): Promise<InferenceResult> => {
         const prepared = await prepareInvocation(companyId, raw, "sync", actorContext);
         if (prepared.kind === "terminal") return prepared.result;
@@ -771,11 +839,18 @@ export function createPlugin() {
       const invokeAsyncFor = async (
         companyId: string,
         raw: unknown,
-        actorContext: { agentId?: string | null; runId?: string | null } = {},
+        actorContext: { agentId?: string | null; runId?: string | null; budgetSpentFraction?: unknown } = {},
       ): Promise<AsyncInvokeResult> => {
         const prepared = await prepareInvocation(companyId, raw, "async", actorContext);
         if (prepared.kind === "terminal") return prepared.result;
         const { requestId, startedAt, actor, config, request, decision, credential, selectedEntry } = prepared.prepared;
+
+        // TOG-7417: one AbortController per in-flight call. Register before
+        // the continuation starts; the reap aborts this controller, which is
+        // what terminates the real upstream socket.
+        const abortController = new AbortController();
+        const controllerKey = pendingInvocationControllerKey(companyId, requestId);
+        pendingInvocationControllers.set(controllerKey, abortController);
 
         const startedAtIso = new Date(startedAt).toISOString();
         const expiresAt = new Date(startedAt + PENDING_INVOCATION_TTL_MS).toISOString();
@@ -785,7 +860,17 @@ export function createPlugin() {
           decision,
           startedAt: startedAtIso,
           expiresAt,
+          runId: actor.runId,
+          agentId: actor.agentId,
         });
+        // Best-effort: a submit whose index write fails still returns pending
+        // (the pending row is the source of truth); the reap prunes stale
+        // index entries against the record, so a failure heals on next reap.
+        try {
+          await addToRunIndex(companyId, actor.runId, requestId);
+        } catch {
+          ctx.logger.warn("Could not index async invocation by run; run-end reap may miss it", { requestId });
+        }
 
         // Deliberately not awaited: the handler returns "pending" now while
         // this keeps running in the same long-lived worker process (spike
@@ -808,6 +893,8 @@ export function createPlugin() {
               ...(selectedEntry?.requestTimeoutMs !== undefined
                 ? { modelTimeoutMs: selectedEntry.requestTimeoutMs }
                 : {}),
+              // TOG-7417: the run-end reap aborts this signal.
+              signal: abortController.signal,
             });
             result = transport.error
               ? { outcome: "error", requestId, decision, response: null, error: transport.error }
@@ -826,11 +913,54 @@ export function createPlugin() {
                 upstreamRequestId: null,
               },
             };
+          } finally {
+            // The call settled: nothing left to abort. Reap-after-settle finds
+            // no controller and goes straight to record inspection.
+            pendingInvocationControllers.delete(controllerKey);
+          }
+
+          // TOG-7417: the reap may have settled this invocation to
+          // `invocation-cancelled` while the call was in flight. A late
+          // upstream outcome must never overwrite it. The flag covers the
+          // common case (the call was still in flight when the reap ran, so
+          // a controller existed to flag); the re-read covers the narrow
+          // interleave where the call settled between the reap's settle and
+          // this write. Either way the observed outcome is still audited —
+          // the decision record is history, the pending row is state.
+          let reaped = cancelledInvocationFlags.has(controllerKey);
+          if (!reaped) {
+            try {
+              const current = await readPendingInvocation(companyId, requestId);
+              reaped = !!current && current.status !== "pending";
+            } catch {
+              // Detached-scope read failure (TOG-3419): fall through and
+              // persist; the reconcile job converges the row.
+              reaped = false;
+            }
+          }
+          if (reaped) {
+            cancelledInvocationFlags.delete(controllerKey);
+            try {
+              await record(companyId, actor, request, result, Date.now() - startedAt);
+            } catch {
+              pendingAuditFlushes.set(requestId, {
+                companyId,
+                actor,
+                request,
+                result,
+                latencyMs: Date.now() - startedAt,
+              });
+              ctx.logger.warn(
+                "Could not persist async invocation audit record from its own continuation; reconcileAsyncInvocations will retry",
+                { requestId },
+              );
+            }
+            return;
           }
 
           const terminal: PendingInvocationRecord = result.outcome === "completed"
-            ? { status: "completed", requestId, decision, outcome: "completed", response: result.response, error: null, startedAt: startedAtIso, expiresAt }
-            : { status: "error", requestId, decision, outcome: "error", response: null, error: result.error, startedAt: startedAtIso, expiresAt };
+            ? { status: "completed", requestId, decision, outcome: "completed", response: result.response, error: null, startedAt: startedAtIso, expiresAt, runId: actor.runId, agentId: actor.agentId }
+            : { status: "error", requestId, decision, outcome: "error", response: null, error: result.error, startedAt: startedAtIso, expiresAt, runId: actor.runId, agentId: actor.agentId };
           // Always cache the terminal result locally first: polling must see
           // it immediately regardless of whether the host lets this detached
           // continuation persist it (see TOG-3419 — it usually can't).
@@ -841,6 +971,17 @@ export function createPlugin() {
           } catch {
             ctx.logger.warn(
               "Could not persist async invocation outcome from its own continuation; reconcileAsyncInvocations will retry",
+              { requestId },
+            );
+          }
+          // TOG-7417: the record reached its terminal state — leave the run
+          // index (and the reap's view of this run) even when persistence of
+          // the terminal row itself is still queued for the reconcile job.
+          try {
+            await removeFromRunIndex(companyId, actor.runId, requestId);
+          } catch {
+            ctx.logger.warn(
+              "Could not remove async invocation from the run index; the run-end reap prunes stale index entries",
               { requestId },
             );
           }
@@ -864,6 +1005,128 @@ export function createPlugin() {
         });
 
         return { status: "pending", requestId, decision };
+      };
+
+      // TOG-7417: run-end reap. The host calls this when an agent run
+      // finishes so async invocations that run outlives are aborted and
+      // settled to a terminal outcome instead of lingering to TTL (the CISO
+      // D3 precondition on widening router-invoke access). For every request
+      // id in the run's index:
+      // - still pending: abort its in-flight upstream socket (when the worker
+      //   that started it is still alive to hold the controller), mark the
+      //   late-outcome flag so the continuation cannot overwrite the terminal
+      //   below, and settle the row to error/invocation-cancelled with an
+      //   audit record;
+      // - already terminal or gone (TTL, another reap, a worker restart that
+      //   lost the controllers): prune the index entry and report it as
+      //   already-terminal, never as cancelled.
+      // Idempotent: a second call for the same run finds empty/index-miss
+      // rows and reports zeroes. Never throws on storage failures — it
+      // reports how many it could not settle so the host can retry.
+      const cancelRunInvocationsFor = async (
+        companyId: string,
+        runId: string,
+      ): Promise<{ runId: string; cancelled: string[]; alreadyTerminal: string[]; failed: string[] }> => {
+        const outcome: { runId: string; cancelled: string[]; alreadyTerminal: string[]; failed: string[] } = {
+          runId,
+          cancelled: [],
+          alreadyTerminal: [],
+          failed: [],
+        };
+        let requestIds: string[];
+        try {
+          requestIds = await readRunIndex(companyId, runId);
+        } catch {
+          ctx.logger.warn("Could not read the run invocation index for run-end reap", { runId });
+          return outcome;
+        }
+        for (const requestId of requestIds) {
+          const controllerKey = pendingInvocationControllerKey(companyId, requestId);
+          let stored: PendingInvocationRecord | null = null;
+          try {
+            stored = await readPendingInvocation(companyId, requestId);
+          } catch {
+            outcome.failed.push(requestId);
+            continue;
+          }
+          if (!stored || stored.status !== "pending") {
+            try {
+              await removeFromRunIndex(companyId, runId, requestId);
+            } catch {
+              // Pruning is hygiene; the stale entry heals on the next reap.
+            }
+            outcome.alreadyTerminal.push(requestId);
+            continue;
+          }
+          const controller = pendingInvocationControllers.get(controllerKey);
+          if (controller) {
+            // Settle the terminal BEFORE aborting: once aborted, the
+            // continuation's transport resolves and it must see the flag.
+            cancelledInvocationFlags.add(controllerKey);
+            controller.abort();
+            pendingInvocationControllers.delete(controllerKey);
+          }
+          const cancelledTerminal: PendingInvocationRecord = {
+            status: "error",
+            requestId,
+            decision: stored.decision,
+            outcome: "error",
+            response: null,
+            error: {
+              code: "invocation-cancelled",
+              message: "The invocation was cancelled when its agent run ended.",
+              retryable: false,
+              upstreamStatus: null,
+              upstreamRequestId: null,
+            },
+            startedAt: stored.startedAt,
+            expiresAt: stored.expiresAt,
+            runId: stored.runId ?? runId,
+            agentId: stored.agentId ?? null,
+          };
+          const reapActor = { agentId: stored.agentId ?? null, runId: stored.runId ?? runId };
+          terminalResultCache.set(terminalCacheKey(companyId, requestId), { companyId, terminal: cancelledTerminal });
+          try {
+            await writePendingInvocation(companyId, cancelledTerminal);
+            terminalResultCache.delete(terminalCacheKey(companyId, requestId));
+          } catch {
+            outcome.failed.push(requestId);
+            continue;
+          }
+          try {
+            await removeFromRunIndex(companyId, runId, requestId);
+          } catch {
+            ctx.logger.warn(
+              "Could not remove a reaped invocation from the run index; the next reap prunes it",
+              { requestId },
+            );
+          }
+          try {
+            await record(companyId, reapActor, null, {
+              outcome: "error",
+              requestId,
+              decision: stored.decision,
+              response: null,
+              error: cancelledTerminal.error,
+            }, Date.now() - Date.parse(stored.startedAt));
+          } catch {
+            pendingAuditFlushes.set(requestId, {
+              companyId,
+              actor: reapActor,
+              request: null,
+              result: {
+                outcome: "error",
+                requestId,
+                decision: stored.decision,
+                response: null,
+                error: cancelledTerminal.error,
+              },
+              latencyMs: Date.now() - Date.parse(stored.startedAt),
+            });
+          }
+          outcome.cancelled.push(requestId);
+        }
+        return outcome;
       };
 
       const invokeResultFor = async (companyId: string, requestId: string): Promise<PollResult> => {
@@ -946,6 +1209,13 @@ export function createPlugin() {
       ctx.actions.register(ACTION_KEYS.refreshCapacity, async (_params, actionCtx) => {
         if (!actionCtx.companyId) throw new Error("host-authorized company context is required");
         return refreshCapacity(actionCtx.companyId, await companyConfig(actionCtx.companyId)) as unknown as Record<string, unknown>;
+      });
+
+      ctx.actions.register(ACTION_KEYS.cancelRunInvocations, async (params, actionCtx) => {
+        if (!actionCtx.companyId) throw new Error("host-authorized company context is required");
+        const runId = typeof params.runId === "string" && params.runId.length > 0 ? params.runId : "";
+        if (!runId) throw new Error("runId is required");
+        return cancelRunInvocationsFor(actionCtx.companyId, runId);
       });
 
       ctx.jobs.register(JOB_KEYS.reconcileAsyncInvocations, reconcileAsyncInvocations);

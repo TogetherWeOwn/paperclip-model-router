@@ -58,6 +58,13 @@ export interface TaskDescriptor {
 }
 
 export interface RuntimeSignals {
+  /**
+   * TOG-7417: the worker pre-resolves this before calling selectModel — a
+   * host-injected authoritative fraction (tool/action context) wins over the
+   * caller-supplied `task.signals.budgetSpentFraction`, which any caller can
+   * forge. The engine only moves the warn/downshift/halt gates; it cannot
+   * tell the two sources apart.
+   */
   budgetSpentFraction?: number;
   capacityEvidence?: import("../capacity/types.js").CapacityEvidence[];
   capacityError?: string;
