@@ -1,5 +1,15 @@
 export type ModelTier = "small" | "standard" | "strong" | "frontier";
 
+/**
+ * TOG-7896 (R2-14): which throughput baseline a model's derived sync budget
+ * uses. `chat` is the rest of the table — fast, non-thinking generations.
+ * `reasoning` is a model that spends wall-clock (and output budget) on hidden
+ * thinking tokens, so its *visible*-token throughput is strictly lower. The
+ * class only matters when `maxSyncOutputTokens` is absent; an explicit
+ * per-model override always wins over either baseline.
+ */
+export type SyncThroughputClass = "chat" | "reasoning";
+
 export const MODEL_TIER_ORDER: readonly ModelTier[] = [
   "small",
   "standard",
@@ -38,6 +48,15 @@ export interface ModelEntry {
    * this field entirely.
    */
   maxSyncOutputTokens?: number;
+  /**
+   * TOG-7896 (R2-14): selects which row of the per-class throughput table the
+   * derived `maxSyncOutputTokens` default uses. Absent means `chat` — the
+   * measured TOG-1035 baseline — so existing configs keep byte-for-byte the
+   * budget they already had. Set `reasoning` on models that spend wall-clock
+   * on hidden thinking tokens, which a chat-derived ceiling would otherwise
+   * over-admit. An explicit `maxSyncOutputTokens` always wins over either row.
+   */
+  syncThroughputClass?: SyncThroughputClass;
   enabled: boolean;
 }
 

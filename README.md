@@ -175,6 +175,27 @@ completion with `stopReason: "max-tokens"` and an **empty `content` array**, so 
 caller must not assume a completed result has at least one content block. A
 `refusal` or `content-filter` stop reason is preserved rather than rewritten.
 
+### Sync throughput baseline, per model class
+
+The synchronous `/invoke` preflight rejects a `maxOutputTokens` that cannot
+finish inside `min(model.requestTimeoutMs ?? upstream.requestTimeoutMs, 28s)`
+at the model's throughput rate — before any credential resolution or upstream
+call. The rate comes from a per-class table (`syncThroughputClass` on the
+model entry); an explicit `maxSyncOutputTokens` always wins over the table.
+
+| class | rate | provenance |
+|---|---|---|
+| `chat` (default) | 1200 tok / 28s (~43 tok/s) | Measured: glm-5.3-flash, TOG-1035 |
+| `reasoning` | 600 tok / 28s (~21 tok/s) | Uncalibrated conservative estimate: half the chat row |
+
+A model without `syncThroughputClass` uses the `chat` row, so existing
+configs keep exactly the budget they already had. Set `reasoning` on models
+that spend wall-clock on hidden thinking tokens — a chat-derived ceiling
+would over-admit them into sync and risk a discarded generation. The
+reasoning row is deliberately conservative (it steers toward async) until a
+production measurement replaces it; operators with measured numbers for
+their own models should set `maxSyncOutputTokens` explicitly.
+
 ## Development
 
 ```sh
