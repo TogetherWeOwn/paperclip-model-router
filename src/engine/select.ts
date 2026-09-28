@@ -1,5 +1,6 @@
 import type { CapacityEvidence, LanePaceVerdict, PaceState } from "../capacity/types.js";
 import type { RouterConfig } from "../config/types.js";
+import { formatUsd } from "../spend-ledger.js";
 import { MODEL_TIER_ORDER, type Candidate, type GateLevel, type ModelEntry, type ModelTier, type RoutingDecision, type RuntimeSignals, type TaskDescriptor } from "./types.js";
 
 const DEFAULT_INPUT_TOKENS = 8_000;
@@ -103,6 +104,29 @@ export function selectModel(input: SelectInput): RoutingDecision {
   const rejections: RoutingDecision["rejections"] = [];
   const budgetFraction = runtime.budgetSpentFraction;
   const budgetGate = gateLevelFor(budgetFraction, { warn: config.budget.warnFraction, downshift: config.budget.downshiftFraction, halt: config.budget.haltFraction });
+  // TOG-7891 (Gap G4): provenance of the fraction above. The worker resolves
+  // it from the monthly spend ledger, the TOG-7417 host injection, or the
+  // caller claim; direct unit callers hand a fraction straight in and leave
+  // the source absent, which reads `unspecified`. The gate movement itself is
+  // unchanged — only its audit trail is new.
+  const budgetSource = runtime.budgetFractionSource ?? "unspecified";
+  const budgetLedger = runtime.budgetLedger && typeof runtime.budgetLedger.totalUsd === "number" &&
+    Number.isFinite(runtime.budgetLedger.totalUsd) && typeof runtime.budgetLedger.monthLabel === "string"
+    ? { totalUsd: runtime.budgetLedger.totalUsd, monthLabel: runtime.budgetLedger.monthLabel }
+    : null;
+  const budgetAudit: RoutingDecision["budget"] = {
+    source: budgetSource,
+    fraction: typeof budgetFraction === "number" && Number.isFinite(budgetFraction) ? budgetFraction : null,
+    ledger: budgetLedger,
+  };
+  // TOG-7891 (Gap G4): when the gates move off the monthly spend ledger, say
+  // so on the trace with the hand-recomputable inputs (dollars, cap, month).
+  // Other sources keep their existing traces untouched.
+  if (budgetSource === "ledger" && budgetLedger) {
+    trace.push(
+      `budget: $${formatUsd(budgetLedger.totalUsd)} of $${formatUsd(config.budget.monthlyCapUsd)} spent in ${budgetLedger.monthLabel} from the monthly spend ledger — gates move off the ledger fraction`,
+    );
+  }
   const capacityEnabled = config.capacityRouting.enabled;
   const evidence = (runtime.capacityEvidence ?? []).map((entry) => {
     // TOG-1062: an explicit `exhausted`/`unavailable` health IS a positive signal,
@@ -129,7 +153,7 @@ export function selectModel(input: SelectInput): RoutingDecision {
       decisionReason: capacityEnabled ? capacityTelemetry === "available" ? "capacity telemetry available" : `capacity telemetry unavailable${runtime.capacityError ? `: ${runtime.capacityError}` : ""}` : "capacity routing disabled",
       degraded: false,
       servingModelId: runtime.servingModelId ?? descriptor.servingModelId ?? null, fallbackEvents: [],
-    }, gates: { budget: budgetGate },
+    }, gates: { budget: budgetGate }, budget: budgetAudit,
   };
   if (!config.routing.enabled) { trace.push("routing.enabled is false — invocation is disabled"); return { ...base, outcome: "disabled" }; }
   const rule0 = matchRule0(descriptor.summary, config);

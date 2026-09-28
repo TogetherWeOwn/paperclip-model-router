@@ -31,9 +31,10 @@ import {
 } from "./decision-records.js";
 import type { RoutingDecision } from "./engine/types.js";
 import { selectModel } from "./engine/select.js";
-import { extractAuthoritativeBudgetSpentFraction, resolveBudgetSpentFraction } from "./budget-authority.js";
+import { extractAuthoritativeBudgetSpentFraction, resolveEffectiveBudgetSpentFraction } from "./budget-authority.js";
 import { validateUpstreamConfig } from "./inference/adapters.js";
 import { effectiveMaxSyncOutputTokens } from "./inference/sync-budget.js";
+import { readMonthlySpendLedger } from "./spend-ledger.js";
 import { directFetchHttpClient, invokeCompatibleUpstream } from "./inference/transport.js";
 import type { InferenceError, InferenceResult, InvokeRequest, NormalizedResponse } from "./inference/types.js";
 import { InvocationValidationError, parseInvokeRequest } from "./inference/validate.js";
@@ -688,19 +689,33 @@ export function createPlugin() {
         // TOG-7417: the host injects the authoritative spent fraction through
         // the tool/action context (a channel the caller cannot write to) and
         // it wins over the caller-claimed task.signals value, which any
-        // caller can forge to dodge the halt gate or force a downshift. The
-        // engine (gate movement in selectModel) is unchanged — only the
-        // fraction's source changes here.
+        // caller can forge to dodge the halt gate or force a downshift.
+        // TOG-7891 (Gap G4): the company-scoped monthly spend ledger from
+        // decision_records folds in as the primary trusted source — it
+        // measures exactly the capped quantity, so a readable ledger beats a
+        // forged-low caller claim. The host injection stays because the host
+        // may track spend outside decision_records; both trusted sources
+        // count and the HIGHER wins. The engine (gate movement in
+        // selectModel) is unchanged — only the fraction's source changes here.
         const authoritativeBudgetSpentFraction =
           extractAuthoritativeBudgetSpentFraction(actorContext);
+        const monthlyLedger = await readMonthlySpendLedger(
+          ctx.db, ctx.logger, companyId, config, new Date(),
+        );
+        const effectiveBudget = resolveEffectiveBudgetSpentFraction(
+          monthlyLedger.fraction,
+          authoritativeBudgetSpentFraction,
+          request.task.signals?.budgetSpentFraction,
+        );
         const decision = selectModel({
           descriptor: request.task,
           config,
           signals: {
-            budgetSpentFraction: resolveBudgetSpentFraction(
-              authoritativeBudgetSpentFraction,
-              request.task.signals?.budgetSpentFraction,
-            ),
+            budgetSpentFraction: effectiveBudget.fraction,
+            budgetFractionSource: effectiveBudget.source === "none" ? "unspecified" : effectiveBudget.source,
+            ...(monthlyLedger.ledger && effectiveBudget.source === "ledger"
+              ? { budgetLedger: { totalUsd: monthlyLedger.ledger.totalUsd, monthLabel: monthlyLedger.ledger.monthLabel } }
+              : {}),
             capacityEvidence: capacity.evidence,
             capacityError: capacity.error ?? undefined,
             paceVerdicts: config.capacityRouting.paceOrdering ? capacity.paceVerdicts : undefined,

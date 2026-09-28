@@ -66,6 +66,21 @@ export interface RuntimeSignals {
    * tell the two sources apart.
    */
   budgetSpentFraction?: number;
+  /**
+   * TOG-7891 (Gap G4): provenance of the budget fraction for `decision.budget`
+   * and the worker's trace annotation. Set by the worker when the gates moved
+   * off the monthly spend ledger (or the resolved effective fraction); unit
+   * callers that hand a fraction straight in leave it absent, and the decision
+   * reads `unspecified`.
+   */
+  budgetFractionSource?: "ledger" | "authoritative" | "caller" | "unspecified";
+  /**
+   * TOG-7891 (Gap G4): the ledger backing a fraction sourced from the
+   * monthly spend rollup. Absent for every other source; the engine
+   * validates it defensively, so a malformed detail reads as no ledger
+   * rather than a crash.
+   */
+  budgetLedger?: { totalUsd: number; monthLabel: string };
   capacityEvidence?: import("../capacity/types.js").CapacityEvidence[];
   capacityError?: string;
   servingModelId?: string;
@@ -156,6 +171,18 @@ export interface RoutingDecision {
     fallbackEvents: string[];
   };
   gates: { budget: GateLevel };
+  /**
+   * TOG-7891 (Gap G4): which channel the budget gates moved off, plus the
+   * ledger backing when the spend rollup was the source. `budget.fraction`
+   * echoes the resolved spent fraction the gates compared against the
+   * configured thresholds; `ledger` is non-null exactly when the fraction
+   * came from this company's current-month decision_records rollup.
+   */
+  budget: {
+    source: "ledger" | "authoritative" | "caller" | "unspecified";
+    fraction: number | null;
+    ledger: { totalUsd: number; monthLabel: string } | null;
+  };
 }
 
 export type GateLevel = "ok" | "warn" | "downshift" | "halt";

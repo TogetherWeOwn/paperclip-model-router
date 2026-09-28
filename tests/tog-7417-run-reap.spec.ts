@@ -118,6 +118,11 @@ describe("authoritative budget fraction", () => {
 
   it("without an injected fraction the caller signal still drives the halt gate end to end", async () => {
     const { harness } = await sharedWorker();
+    // TOG-7891: the caller claim rules only when no trusted source exists.
+    // A readable ledger with a configured cap is ground truth and beats a
+    // forged caller claim, so this legacy path needs the ledger unreadable
+    // (fail-open) to hold — which also pins the fail-open composition.
+    harness.ctx.db.query = async () => { throw new Error("ledger unavailable"); };
     const result = await harness.performAction(ACTION_KEYS.invoke, {
       ...invocation,
       task: { ...invocation.task, signals: { budgetSpentFraction: 0.99 } },
