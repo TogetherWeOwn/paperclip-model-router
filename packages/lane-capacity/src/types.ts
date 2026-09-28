@@ -28,10 +28,44 @@ export interface CapacityEvidence {
   reason: string;
 }
 
+/**
+ * Bounded reason codes. Closed on purpose: an upstream error string routinely
+ * embeds a connection ID or a URL, so propagating one would reintroduce exactly
+ * the identity leak the contract forbids (§2.2).
+ */
+export type CapacityReasonCode =
+  | "capacity-url-rejected"
+  | "capacity-request-failed"
+  | "capacity-redirect-refused"
+  | "capacity-response-too-large"
+  | "capacity-authentication-failed"
+  | "capacity-http-failed"
+  | "capacity-unexpected-media-type"
+  | "capacity-invalid-json"
+  | "capacity-schema-version-unsupported"
+  | "capacity-contract-malformed"
+  | "capacity-producer-unavailable"
+  | "capacity-snapshot-stale"
+  | "capacity-secret-unavailable"
+  | "capacity-no-recognizable-records";
+
 export interface CapacitySnapshot {
   fetchedAt: string;
   source: string;
   evidence: CapacityEvidence[];
+  /**
+   * Contract §4's required distinction, made structural.
+   *
+   * `"available"` with an empty `evidence` array is a TRUSTWORTHY answer: the
+   * producer is healthy and reports that it governs no model we asked about.
+   * `"unavailable"` is a failure. Collapsing the two — the common bug, where an
+   * outage returns nothing and reads as "nothing is constrained" — lets a
+   * telemetry failure present as unlimited capacity. That is why this is a
+   * required field rather than something inferred from `evidence.length`.
+   */
+  telemetry: "available" | "unavailable";
+  reasonCode: CapacityReasonCode | null;
+  /** Retained for existing consumers; mirrors `reasonCode`. */
   error: string | null;
   /**
    * TOG-2139 (slice 6): pace verdict for this source's lane, evaluated from

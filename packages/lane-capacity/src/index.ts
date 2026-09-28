@@ -1,9 +1,19 @@
+export {
+  CONTRACT_MAX_MODELS,
+  CONTRACT_SCHEMA_VERSION,
+  CONTRACT_WINDOWS,
+  evidenceFromContract,
+  looksLikeModelUsageSnapshot,
+  parseModelUsageSnapshot,
+} from "./contract.js";
+export type { ContractParse, ContractWindowName } from "./contract.js";
 export { normalizeCapacityPayload } from "./normalize.js";
 export { readCapacitySource } from "./read.js";
 export { evaluateLanePace, normalizeLaneDocument } from "./pace.js";
 export type {
   CapacityEvidence,
   CapacityHealth,
+  CapacityReasonCode,
   CapacitySnapshot,
   CapacitySourceDefinition,
   CapacityWindow,
