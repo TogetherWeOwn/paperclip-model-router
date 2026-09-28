@@ -31,22 +31,24 @@ version is not present here.
 ### Changed
 
 - **Gitleaks operator-patch agreement is pinned by a regression spec
-  (TOG-7899, gap G20).** `docs/operator/tog-488-ci-secret-scan.patch`
-  (digest-verified gitleaks install + `scripts/gitleaks-selftest.sh` wiring)
-  still awaits an operator — no agent holds the `workflows` permission
-  ([ADR 0008](docs/decisions/0008-workflow-files-are-operator-applied.md)) —
-  so `npm run check:workflows` stays red by design until the handoff.
-  `tests/tog-7899-gitleaks-patch-agreement.spec.ts` (6 tests) pins the
-  agreement in every lifecycle state: while pending, the patch applies
-  cleanly, targets the live `GITLEAKS_VERSION`, and carries the full
-  hardening with a well-formed digest; once applied (or the patch deleted
-  post-apply), the live workflow carries it instead. A rotted patch, a
-  missing/untracked/unexecutable self-test script, or `.gitleaks.toml`
-  drift (custom rules returning, fixture allowlist changing) fails with the
-  repair named. Mutation-probed: applied-state simulation passes 5/5, a
-  deleted self-test fails exactly the script test.
-  No workflow file is touched by this change — that half remains the
-  operator handoff on this card.
+  (TOG-7899, gap G20).** The digest-verified gitleaks install +
+  `scripts/gitleaks-selftest.sh` wiring landed in the live `secret-scan`
+  job via operator PR #101 (`8d36ffa`), and the handoff patch
+  `docs/operator/tog-488-ci-secret-scan.patch` is deleted — per the
+  operator runbook, an applied patch left in `docs/operator/` reads as
+  still-queued. `tests/tog-7899-gitleaks-patch-agreement.spec.ts` (6 tests
+  while the patch is pending, 4 in the cleaned-up state)
+  pins the agreement in every lifecycle state: while pending, the patch
+  applies cleanly, targets the live `GITLEAKS_VERSION`, and carries the
+  full hardening with a well-formed digest; once applied (or the patch
+  deleted post-apply, the present state), the live workflow carries it
+  instead. A rotted patch, a missing/untracked/unexecutable self-test
+  script, or `.gitleaks.toml` drift (custom rules returning, fixture
+  allowlist changing) fails with the repair named. Mutation-probed:
+  applied-state simulation passes 5/5, a deleted self-test fails exactly
+  the script test. No workflow file is touched by this change — that half
+  stayed the operator handoff ([TOG-8268](/TOG/issues/TOG-8268)) on this
+  card.
 
 - **`refresh-capacity` fetches sources with bounded concurrency (TOG-7893).**
   The old loop awaited each source in turn, so refresh time grew linearly
