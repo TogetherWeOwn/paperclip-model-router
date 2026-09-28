@@ -213,17 +213,34 @@ describe("TOG-7886: async/sync result-envelope parity", () => {
       messages: [{ role: "user", content: "hello" }],
       maxOutputTokens: 100,
     };
-    const sync = await harness.performAction(ACTION_KEYS.invoke, syncRequest, { companyId: COMPANY_A }) as Record<string, unknown>;
-    // Guard the guard: this case only means something when capacity metadata is
-    // actually populated on the sync decision.
-    expect(sync).toMatchObject({
-      outcome: "completed",
-      decision: { capacity: { mode: "enforce", telemetry: "available", selectedSource: "capacity" } },
-    });
+    // `capacity.snapshotAgeMs` is wall-clock time between the refresh above
+    // and each decision. The sync and async invokes are two separate requests
+    // ~1ms apart, so a field-by-field deep-equal across them races: whenever
+    // the millisecond boundary falls between the two decisions the suite goes
+    // red measuring the clock, not the envelopes (main went red this way).
+    // Freeze the clock around both invokes so the comparison measures the
+    // envelopes. Real timers return before polling: `pollTerminal` advances
+    // on `setTimeout(..., 0)`, which never fires under fake timers.
+    const frozenNow = Date.now();
+    vi.useFakeTimers();
+    vi.setSystemTime(frozenNow);
+    let sync: Record<string, unknown>;
+    let submitted: Record<string, unknown>;
+    try {
+      sync = await harness.performAction(ACTION_KEYS.invoke, syncRequest, { companyId: COMPANY_A }) as Record<string, unknown>;
+      // Guard the guard: this case only means something when capacity metadata is
+      // actually populated on the sync decision.
+      expect(sync).toMatchObject({
+        outcome: "completed",
+        decision: { capacity: { mode: "enforce", telemetry: "available", selectedSource: "capacity" } },
+      });
 
-    const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, asyncRequest, { companyId: COMPANY_A }) as Record<string, unknown>;
-    const terminal = await pollTerminal(harness, String(submitted.requestId), COMPANY_A);
-    assertEnvelopeParity(sync, terminal);
+      submitted = await harness.performAction(ACTION_KEYS.invokeAsync, asyncRequest, { companyId: COMPANY_A }) as Record<string, unknown>;
+    } finally {
+      vi.useRealTimers();
+    }
+    const terminal = await pollTerminal(harness, String(submitted!.requestId), COMPANY_A);
+    assertEnvelopeParity(sync!, terminal);
   });
 
   it("error envelope matches when the upstream fails on both paths", async () => {
