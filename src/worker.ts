@@ -1255,7 +1255,20 @@ export function createPlugin() {
     },
 
     async onValidateConfig(raw: Record<string, unknown>) {
-      const config = resolveConfig(raw);
+      // TOG-7880 (gap G1): resolveConfig now fails closed on duplicate model
+      // ids (exact and case-variant). A duped table must surface here as a
+      // structured refusal naming both entries — never as a thrown 500, and
+      // never as ok:true with the fallback/pin checks masking it.
+      let config: RouterConfig;
+      try {
+        config = resolveConfig(raw);
+      } catch (failure) {
+        return {
+          ok: false,
+          errors: [failure instanceof Error ? failure.message : "invalid router configuration"],
+          warnings: [],
+        };
+      }
       const errors = validateUpstreamConfig(config.upstream);
       const warnings: string[] = [];
       if (config.routing.enabled && config.models.length === 0) {
@@ -1269,9 +1282,12 @@ export function createPlugin() {
         "upstream.credentialSecretRef",
       );
       if (secretRefError) errors.push(secretRefError);
+      // The duplicate-id refusal lives in resolveConfig (fail-closed at every
+      // load path, including the runtime companyConfig path that never calls
+      // this hook). Any table reaching this loop is dupe-free by construction;
+      // this set is only the membership index for the pin/fallback checks.
       const ids = new Set<string>();
       for (const model of config.models) {
-        if (ids.has(model.id)) errors.push(`duplicate model id: ${model.id}`);
         ids.add(model.id);
         if (model.requestTimeoutMs !== undefined &&
             (!Number.isInteger(model.requestTimeoutMs) ||

@@ -115,6 +115,12 @@ export const ROUTER_CONFIG_SCHEMA = {
     models: {
       type: "array",
       default: [],
+      // TOG-7880 (gap G1): backstop only. Stock JSON Schema compares whole
+      // elements exactly, so this refuses byte-identical rows but cannot
+      // express per-id or case-insensitive uniqueness (and a custom keyword
+      // would not survive host-side compilation). The real check is the
+      // fail-closed duplicate-id refusal in resolveConfig + onValidateConfig.
+      uniqueItems: true,
       items: {
         type: "object",
         additionalProperties: false,
