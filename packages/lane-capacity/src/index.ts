@@ -22,3 +22,5 @@ export type {
   PaceWindowRole,
 } from "./pace.js";
 export type { CapacityHttpClient } from "./read.js";
+export { checkResolvedHost, defaultHostAddressResolver } from "./url-policy.js";
+export type { HostAddressResolver, ResolvedHostVerdict } from "./url-policy.js";

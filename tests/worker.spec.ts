@@ -6,6 +6,15 @@ import manifest from "../src/manifest.js";
 import { createPlugin } from "../src/worker.js";
 import { companyDecisionRecords, readFixture } from "./helpers.js";
 
+// TOG-7884 (gap G6): the upstream/capacity paths resolve the request hostname
+// at request time and refuse private/reserved answers. Pin DNS to a public
+// address so these tests exercise the transport, not the network: every
+// upstream here is already a stubbed fetch, and a real lookup would only add
+// timing nondeterminism (poll-immediately assertions, fake-timer budgets).
+vi.mock("node:dns/promises", () => ({
+  lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+}));
+
 const COMPANY_A = "11111111-1111-4111-8111-111111111111";
 const COMPANY_B = "22222222-2222-4222-8222-222222222222";
 const SECRET_A = "resolved-secret-a";

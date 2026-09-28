@@ -32,6 +32,15 @@ import manifest from "../src/manifest.js";
 import { createPlugin } from "../src/worker.js";
 import { companyDecisionRecords, fixtureConfig, readFixture } from "./helpers.js";
 
+// TOG-7884 (gap G6): the async continuation resolves the request hostname at
+// request time and refuses private/reserved answers. Pin DNS to a public
+// address so these tests exercise the reap, not the network: every upstream
+// here is already a stubbed fetch, and a real lookup would only add timing
+// nondeterminism (abort-before-fetch races, poll-after-two-ticks assertions).
+vi.mock("node:dns/promises", () => ({
+  lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+}));
+
 const COMPANY_A = "11111111-1111-4111-8111-111111111111";
 const SECRET_A = "resolved-secret-a";
 

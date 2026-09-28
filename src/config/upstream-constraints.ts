@@ -98,4 +98,5 @@ export const FORBIDDEN_EXTRA_HEADER_NAMES = [
 
 export const FORBIDDEN_EXTRA_HEADERS = new Set<string>(FORBIDDEN_EXTRA_HEADER_NAMES);
 
-export { isReservedLiteralHost } from "../../packages/lane-capacity/src/url-policy.js";
+export { checkResolvedHost, defaultHostAddressResolver, isReservedLiteralHost } from "../../packages/lane-capacity/src/url-policy.js";
+export type { HostAddressResolver, ResolvedHostVerdict } from "../../packages/lane-capacity/src/url-policy.js";

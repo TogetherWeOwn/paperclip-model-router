@@ -30,6 +30,15 @@ import type { InvokeRequest } from "../src/inference/types.js";
 import { InvocationValidationError, parseInvokeRequest } from "../src/inference/validate.js";
 import { fixtureConfig } from "./helpers.js";
 
+// TOG-7884 (gap G6): invokeCompatibleUpstream resolves the request hostname at
+// request time and refuses private/reserved answers. Pin DNS to a public
+// address so these tests exercise the transport, not the network: every fetch
+// here is already a stub, and a real lookup would only add timing
+// nondeterminism (fake-timer budgets with millisecond margins).
+vi.mock("node:dns/promises", () => ({
+  lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+}));
+
 const request: InvokeRequest = {
   task: { taskClass: "implementation" },
   system: "System",
