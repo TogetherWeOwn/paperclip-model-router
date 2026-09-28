@@ -12,6 +12,22 @@ version is not present here.
 
 ### Added
 
+- **Duplicate model ids fail closed at config load (TOG-7880, gap G1).** A
+  duplicated id used to double-count one lane in every survivor pool and
+  make rejections ambiguous. `resolveModels` (`src/config/resolve.ts`) now
+  throws naming both entries (`duplicate model id "x" at models[2] (first
+  seen as "x" at models[0])`), which protects every load path — including
+  the runtime invoke path that never calls the validate hook. The fold is
+  case-insensitive because the engine joins evidence on exact `===` while
+  the TOG-7163 grouped-quota projection folds case, so a case-variant dupe
+  is ambiguous on one path or the other either way. `onValidateConfig`
+  surfaces the refusal as `ok:false` instead of a thrown 500, and the schema
+  gains `uniqueItems: true` on `models` as a byte-identical backstop (stock
+  JSON Schema cannot express per-id case-insensitive uniqueness).
+  `tests/tog-7880-duplicate-model-id.spec.ts`: 10 tests (exact dupe,
+  case-variant, dupe-vs-`fallbackModelId`, fallback stays exact, shipped
+  fixtures stay green, schema backstop). Three mutation probes (throw
+  removed / fold removed / validator catch removed) go 5 / 2 / 3 red.
 - **Capacity-snapshot age observability (TOG-7885, gap G8).** Staleness is
   now a surfaced fact, not just a routing input.
   - The served decision carries `capacity.snapshotAgeMs` (wall-clock ms,

@@ -82,10 +82,27 @@ function pickStringArray(value: unknown, fallback: string[]): string[] {
 function resolveModels(value: unknown): ModelEntry[] {
   if (!Array.isArray(value)) return [];
   const models: ModelEntry[] = [];
-  for (const raw of value) {
+  // TOG-7880 (gap G1): fail closed on duplicate model ids. A duplicated id
+  // double-counts one lane in every survivor pool (select.ts) and makes
+  // rejections ambiguous. The fold is case-insensitive on purpose: the engine
+  // joins evidence on exact `===` (aggregateEvidenceFor) while the TOG-7163
+  // grouped-quota projection matches `trim().toLowerCase()`, so a
+  // case-variant dupe is simultaneously two lanes on one path and one lane
+  // on another — ambiguous either way, refused either way.
+  const seenByFoldedId = new Map<string, { id: string; index: number }>();
+  for (let index = 0; index < value.length; index += 1) {
+    const raw = value[index];
     if (!isRecord(raw)) continue;
     const id = pickString(raw.id, "");
     if (!id) continue;
+    const folded = id.toLowerCase();
+    const first = seenByFoldedId.get(folded);
+    if (first) {
+      throw new Error(
+        `duplicate model id "${id}" at models[${index}] (first seen as "${first.id}" at models[${first.index}])`,
+      );
+    }
+    seenByFoldedId.set(folded, { id, index });
     models.push({
       id,
       tier: pickString(raw.tier, "standard") as ModelEntry["tier"],
