@@ -128,6 +128,11 @@ export function selectModel(input: SelectInput): RoutingDecision {
       shadowModelId: null, shadowSource: null, shadowLaneLabel: null,
       decisionReason: capacityEnabled ? capacityTelemetry === "available" ? "capacity telemetry available" : `capacity telemetry unavailable${runtime.capacityError ? `: ${runtime.capacityError}` : ""}` : "capacity routing disabled",
       degraded: false,
+      // TOG-7885 (G8): pass through the worker-computed snapshot age. When
+      // capacity routing is disabled there is no snapshot to age, so both
+      // read null/false regardless of what the caller handed down.
+      snapshotAgeMs: capacityEnabled ? runtime.capacitySnapshotAgeMs ?? null : null,
+      snapshotStale: capacityEnabled ? runtime.capacitySnapshotStale ?? false : false,
       servingModelId: runtime.servingModelId ?? descriptor.servingModelId ?? null, fallbackEvents: [],
     }, gates: { budget: budgetGate },
   };

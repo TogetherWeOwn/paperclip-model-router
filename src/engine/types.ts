@@ -68,6 +68,15 @@ export interface RuntimeSignals {
   budgetSpentFraction?: number;
   capacityEvidence?: import("../capacity/types.js").CapacityEvidence[];
   capacityError?: string;
+  /**
+   * TOG-7885 (G8): age of the capacity snapshot the worker served this
+   * decision from, in wall-clock ms (null = none stored). The engine does
+   * NOT re-derive staleness from a timestamp — the worker computes it once
+   * against `capacityRouting.maxSnapshotAgeMs` and hands both down, so the
+   * metric, the record, and the decision can never disagree about it.
+   */
+  capacitySnapshotAgeMs?: number | null;
+  capacitySnapshotStale?: boolean;
   servingModelId?: string;
   stickyModelId?: string;
   /**
@@ -152,6 +161,20 @@ export interface RoutingDecision {
      * decision is real; it is simply not capacity-aware.
      */
     degraded: boolean;
+    /**
+     * TOG-7885 (G8): age of the capacity snapshot the worker served this
+     * decision from, in wall-clock ms. Surfaced so a reviewer forcing a
+     * stale snapshot sees the staleness on the decision itself. Null when
+     * capacity routing is disabled or no snapshot was ever stored.
+     */
+    snapshotAgeMs: number | null;
+    /**
+     * TOG-7885 (G8): true when `snapshotAgeMs` exceeds
+     * `capacityRouting.maxSnapshotAgeMs` (or no snapshot exists while
+     * capacity routing is enabled). The alertable boolean behind the
+     * degraded-age counter and the decision-record rollup.
+     */
+    snapshotStale: boolean;
     servingModelId: string | null;
     fallbackEvents: string[];
   };
