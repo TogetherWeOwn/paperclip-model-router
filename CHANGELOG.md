@@ -10,6 +10,24 @@ version is not present here.
 
 ## [Unreleased]
 
+### Added
+
+- **Normative async-invocation contract section (TOG-7898, gap G18).**
+  `docs/contracts/compatible-upstream-v1.md` gains section 10, derived from
+  shipped code: submit/poll envelopes (§10.1), the shared-selection +
+  per-model-timeout transport parity (§10.2), 15-minute TTL with lazy expiry
+  and no-resurrect (§10.3), run-end reap to `invocation-cancelled` (§10.4),
+  and single-attempt non-replay with reconcile-backed audit (§10.5).
+  Follow-on corrections in the same section: the `requestTimeoutMs` table
+  max is 300,000 (was stale at 25,000 — the default, not the ceiling), the
+  §2 networking rule names the single sanctioned async direct-fetch client,
+  §9 points long generations at async, §13's non-goals exempt in-contract
+  async cancellation, and §14 gains an async-fidelity conformance item.
+  `tests/tog-7898-async-contract.spec.ts`: 12 tests (bounds, TTL, schedule,
+  single attempt, isolation, route statuses, early exits, reap audit, plus
+  doc-presence pins). Mutation-probed: weakened timeout ceiling and TTL go
+  red by name. Docs-only: no runtime, config, or state-shape change.
+
 ### Changed
 
 - **Gitleaks operator-patch agreement is pinned by a regression spec
