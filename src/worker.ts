@@ -730,7 +730,32 @@ export function createPlugin() {
         const startedAt = Date.now();
         let request: InvokeRequest | null = null;
         let result: InferenceResult;
-        const config = await companyConfig(companyId);
+        // TOG-7883 (gap G5): resolveConfig fails closed on forbidden
+        // extraHeaders, so a smuggled name throws here — before secrets,
+        // selection, or HTTP. Surface it as the same audited terminal the
+        // validator path below produces, never as an unhandled throw.
+        let config: RouterConfig;
+        try {
+          config = await companyConfig(companyId);
+        } catch (failure) {
+          result = {
+            outcome: "error",
+            requestId,
+            decision: null,
+            response: null,
+            error: {
+              code: "upstream-url-rejected",
+              message: failure instanceof Error
+                ? failure.message.slice(0, 512)
+                : "The configured compatible upstream is invalid.",
+              retryable: false,
+              upstreamStatus: null,
+              upstreamRequestId: null,
+            },
+          };
+          await record(companyId, actor, request, result, Date.now() - startedAt);
+          return { kind: "terminal", result };
+        }
         const upstreamErrors = validateUpstreamConfig(config.upstream);
         const secretRefError = validateSecretRefShape(
           config.upstream.credentialSecretRef,

@@ -220,6 +220,16 @@ export function buildAnthropicRequest(request: InvokeRequest, modelId: string): 
 }
 
 export function requestHeaders(config: CompatibleUpstreamConfig, credential: string): Record<string, string> {
+  // TOG-7883 (gap G5): defense in depth at the wire. resolveConfig refuses
+  // forbidden names at load and validateUpstreamConfig refuses them
+  // pre-invoke, but a config object that reached the transport by any other
+  // route (fixture mutation, a future loader, a test double) must still
+  // fail rather than ship a smuggled Authorization over the credential.
+  for (const name of Object.keys(config.extraHeaders)) {
+    if (FORBIDDEN_EXTRA_HEADERS.has(name.toLowerCase())) {
+      throw new Error(`upstream.extraHeaders must not set ${name}`);
+    }
+  }
   return {
     ...config.extraHeaders,
     ...(supportedProtocol(config) === "openai-chat-completions"
