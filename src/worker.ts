@@ -1296,8 +1296,22 @@ export function createPlugin() {
         if (!Number.isInteger(source.requestTimeoutMs) || source.requestTimeoutMs < 1_000 || source.requestTimeoutMs > 25_000) errors.push(`capacity source ${source.id} requestTimeoutMs must be an integer from 1000 through 25000`);
         if (!Number.isInteger(source.maxResponseBytes) || source.maxResponseBytes < 1_024 || source.maxResponseBytes > 16_777_216) errors.push(`capacity source ${source.id} maxResponseBytes must be an integer from 1024 through 16777216`);
         if (source.windows.length === 0) errors.push(`capacity source ${source.id} names no utilization windows`);
-        const sourceSecretError = validateSecretRefShape(source.apiKeySecretRef, `capacityRouting.sources.${index}.apiKeySecretRef`);
-        if (sourceSecretError) errors.push(sourceSecretError);
+      }
+      // TOG-7892 (G7): validate the RAW secret value, not the resolved one.
+      // resolveCapacitySources coerces a non-record apiKeySecretRef to null, so
+      // checking the resolved source lets a pasted string through as "absent".
+      // The raw value is what the host persists, so it is what must be
+      // rejected. Removing this loop must turn the secret-ref mutation tests red.
+      const rawCapacitySources = asRecord(raw.capacityRouting).sources;
+      if (Array.isArray(rawCapacitySources)) {
+        for (let index = 0; index < rawCapacitySources.length; index += 1) {
+          // asRecord maps a non-record source entry to {}, whose apiKeySecretRef
+          // is undefined (absent/valid). Malformed entries are the schema's job;
+          // this loop pins only the credential shape at each source path.
+          const rawSecret = asRecord(rawCapacitySources[index]).apiKeySecretRef;
+          const rawSecretError = validateSecretRefShape(rawSecret, `capacityRouting.sources.${index}.apiKeySecretRef`);
+          if (rawSecretError) errors.push(rawSecretError);
+        }
       }
       return { ok: errors.length === 0, errors, warnings };
     },
