@@ -100,3 +100,57 @@ export function isReservedLiteralHost(hostname: string): boolean {
   const ipv6 = parseIpv6(host);
   return ipv6 ? isReservedIpv6(ipv6) : false;
 }
+
+/**
+ * TOG-7884 (gap G6): injectable hostname-to-addresses hook for the
+ * request-time SSRF guard. The default is the worker's real resolver; tests
+ * inject a mock. Returning every answer (not just the first) matters: the
+ * guard fails closed when ANY answer is forbidden, matching the canonical
+ * host predicate (see TOG-549).
+ */
+export type HostAddressResolver = (hostname: string) => Promise<string[]>;
+
+export async function defaultHostAddressResolver(hostname: string): Promise<string[]> {
+  const { lookup } = await import("node:dns/promises");
+  const answers = await lookup(hostname, { all: true });
+  return answers.map((answer) => answer.address);
+}
+
+export type ResolvedHostVerdict =
+  | { readonly allowed: true }
+  | { readonly allowed: false; readonly reason: "reserved-literal" | "reserved-resolved" };
+
+/**
+ * Request-time SSRF verdict for one URL hostname. Literal reserved addresses
+ * are refused without touching DNS; literal public IPs are allowed without
+ * touching DNS (resolving them would only add failure modes). Any other name
+ * is resolved and refused when ANY answer is private/reserved — this is what
+ * catches rebinding, split-horizon DNS, and records that changed after config
+ * was validated.
+ *
+ * An unresolvable name is NOT a verdict: it falls through as allowed and the
+ * fetch layer below keeps its existing DNS-failure mapping (retryable
+ * connect errors on both paths, plus host pinning on the bridge path).
+ * Refusing unresolvable names here would reclassify ordinary DNS outages as
+ * URL refusals and break the documented `upstream-connect` contract.
+ *
+ * Never throws: resolver failures fall through, everything else is pure.
+ */
+export async function checkResolvedHost(
+  hostname: string,
+  resolveAddresses: HostAddressResolver = defaultHostAddressResolver,
+): Promise<ResolvedHostVerdict> {
+  const host = hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (isReservedLiteralHost(host)) return { allowed: false, reason: "reserved-literal" };
+  if (parseIpv4(host) !== null || parseIpv6(host) !== null) return { allowed: true };
+  let addresses: string[];
+  try {
+    addresses = await resolveAddresses(host);
+  } catch {
+    return { allowed: true };
+  }
+  for (const address of addresses) {
+    if (isReservedLiteralHost(address)) return { allowed: false, reason: "reserved-resolved" };
+  }
+  return { allowed: true };
+}

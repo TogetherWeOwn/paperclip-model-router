@@ -2,7 +2,8 @@ import { normalizeCapacityPayload } from "./normalize.js";
 import { evaluateLanePace, normalizeLaneDocument } from "./pace.js";
 import type { LanePaceDefinition, LanePaceVerdict, PacePolicy } from "./pace.js";
 import type { CapacitySnapshot, CapacitySourceDefinition } from "./types.js";
-import { isReservedLiteralHost } from "./url-policy.js";
+import { checkResolvedHost, isReservedLiteralHost } from "./url-policy.js";
+import type { HostAddressResolver } from "./url-policy.js";
 
 export interface CapacityHttpClient {
   request(input: {
@@ -50,11 +51,22 @@ export async function readCapacitySource(input: {
   now: () => string;
   lane?: LanePaceDefinition;
   pacePolicy?: PacePolicy;
+  /**
+   * TOG-7884 (gap G6): request-time DNS resolution hook. The literal-host
+   * check above only sees IP literals; a DNS name resolving to 10.x /
+   * 169.254.x / ::1 sails through it. The resolver closes that rebinding gap
+   * on this path. Defaults to the worker's real resolver; tests inject a mock.
+   */
+  resolveHostAddresses?: HostAddressResolver;
 }): Promise<CapacitySnapshot> {
   const fetchedAt = input.now();
   let parsed: URL;
   try { parsed = new URL(input.source.statusUrl); } catch { return failure(input.source, fetchedAt, "capacity-url-rejected"); }
   if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash || isReservedLiteralHost(parsed.hostname)) {
+    return failure(input.source, fetchedAt, "capacity-url-rejected");
+  }
+  const resolved = await checkResolvedHost(parsed.hostname, input.resolveHostAddresses);
+  if (!resolved.allowed) {
     return failure(input.source, fetchedAt, "capacity-url-rejected");
   }
   let response: Awaited<ReturnType<CapacityHttpClient["request"]>>;
