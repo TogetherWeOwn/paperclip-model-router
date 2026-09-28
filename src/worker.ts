@@ -540,6 +540,15 @@ export function createPlugin() {
         const expiresAtMs = Date.parse(entry.expiresAt);
         if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
           await deletePendingInvocation(companyId, requestId);
+          // TOG-7895: the late continuation takes the audit-only path below and
+          // never revisits the index, so prune the expired row's entry here —
+          // this read is the only expiry path that still holds its runId. (The
+          // worker-local timer path heals the same way via the next reap.)
+          try {
+            await removeFromRunIndex(companyId, entry.runId, requestId);
+          } catch {
+            // Hygiene only; the next reap prunes stale index entries.
+          }
           return null;
         }
         schedulePendingInvocationExpiry(companyId, requestId, entry.expiresAt);
@@ -1076,7 +1085,10 @@ export function createPlugin() {
           if (!reaped) {
             try {
               const current = await readPendingInvocation(companyId, requestId);
-              reaped = !!current && current.status !== "pending";
+              // TOG-7895: a missing row means TTL expiry already deleted it
+              // (the reap settles a terminal, never a delete). A late outcome
+              // must never resurrect an expired row — audit-only, as below.
+              reaped = !current || current.status !== "pending";
             } catch {
               // Detached-scope read failure (TOG-3419): fall through and
               // persist; the reconcile job converges the row.
@@ -1236,6 +1248,23 @@ export function createPlugin() {
             terminalResultCache.delete(terminalCacheKey(companyId, requestId));
           } catch {
             outcome.failed.push(requestId);
+            // TOG-7895: the terminal is already in terminalResultCache (so
+            // polling stays correct and reconcile persists it), but the
+            // cancellation audit below would be skipped by the `continue` —
+            // queue it so the row still ends audit-complete.
+            pendingAuditFlushes.set(requestId, {
+              companyId,
+              actor: reapActor,
+              request: null,
+              result: {
+                outcome: "error",
+                requestId,
+                decision: stored.decision,
+                response: null,
+                error: cancelledTerminal.error,
+              },
+              latencyMs: Date.now() - Date.parse(stored.startedAt),
+            });
             continue;
           }
           try {
