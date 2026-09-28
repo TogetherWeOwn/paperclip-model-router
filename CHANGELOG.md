@@ -10,6 +10,29 @@ version is not present here.
 
 ## [Unreleased]
 
+### Added
+
+- **Capacity-snapshot age observability (TOG-7885, gap G8).** Staleness is
+  now a surfaced fact, not just a routing input.
+  - The served decision carries `capacity.snapshotAgeMs` (wall-clock ms,
+    null when no snapshot was ever stored) and `capacity.snapshotStale`,
+    computed once in `storedCapacity` (`src/worker.ts`) against
+    `capacityRouting.maxSnapshotAgeMs` and passed through `selectModel` —
+    the engine never re-derives it, so the three surfaces cannot disagree.
+  - Each degraded-age invocation fires a company-namespaced counter,
+    `model_router.company.<companyId>.capacity.snapshot_stale` (namespaced
+    in the name because metric tags must not carry a company id).
+  - Migration `002` adds `capacity_snapshot_age_ms` / `capacity_snapshot_stale`
+    to `decision_records` (backward compatible: pre-migration rows read
+    NULL/false — never-stored, never "fresh") with a composite index for the
+    alert query.
+  - `docs/OPERATIONS.md` gains a "Capacity-snapshot refresh SLO" section:
+    the SLO, the counter, and the `stale_share > 0.05` alert query that
+    gates shadow→enforce promotion. `docs/contracts/compatible-upstream-v1.md`
+    §11 admits the two freshness fields.
+  - `tests/tog-7885-degraded-age.spec.ts`: 4 tests (stale / fresh / missing /
+    disabled). Six mutation probes (each wired line deleted) all go red.
+
 ## [0.8.0] - 2026-09-27
 
 ### Added

@@ -500,7 +500,10 @@ For every operation, the plugin appends a company-scoped decision record to its 
 - normalized operation outcome;
 - normalized error code and upstream status when applicable;
 - bounded latency and normalized token usage;
-- upstream request ID when present.
+- upstream request ID when present;
+- capacity-snapshot age in wall-clock ms and whether it exceeded
+  `capacityRouting.maxSnapshotAgeMs` at decision time (TOG-7885) — a pure
+  freshness fact about the router's own refresh cadence.
 
 It MUST NOT record message content, tool arguments/results, system prompts, credentials, full upstream URLs, upstream error bodies, or provider/account serving identity. Router v2 MAY record only the exact model ID, source ID, sanitized lane label, health, posture, utilization, and reset from a separately refreshed snapshot. Those labels MUST remain semantically separate from deployment identity.
 

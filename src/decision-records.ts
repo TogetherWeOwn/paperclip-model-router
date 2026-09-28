@@ -31,6 +31,20 @@ export interface DecisionRecord {
   capacityReason: string | null;
   /** Served without capacity awareness because telemetry was absent (TOG-1040). */
   capacityDegraded: boolean;
+  /**
+   * TOG-7885 (G8): age of the capacity snapshot this decision served from,
+   * in wall-clock ms. Null when capacity routing is disabled or no snapshot
+   * was ever stored. Integer-valued (worker rounds) so the column stays
+   * `bigint`; the alertable rollup is `capacitySnapshotStale`.
+   */
+  capacitySnapshotAgeMs: number | null;
+  /**
+   * TOG-7885 (G8): true when `capacitySnapshotAgeMs` exceeded
+   * `capacityRouting.maxSnapshotAgeMs` at decision time (or no snapshot
+   * existed while capacity routing was enabled). This is the
+   * company-scoped rollup behind the degraded-age alert query.
+   */
+  capacitySnapshotStale: boolean;
   shadowModelId: string | null;
 }
 
@@ -45,10 +59,12 @@ export function decisionInsertSql(namespace: string): string {
      upstream_status, latency_ms, input_tokens, output_tokens, stop_reason,
      upstream_request_id, capacity_mode, capacity_telemetry, capacity_lane,
      capacity_lane_label, capacity_posture, capacity_reason, capacity_degraded,
+     capacity_snapshot_age_ms, capacity_snapshot_stale,
      shadow_model_id
    ) VALUES (
      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-     $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+     $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
+     $29, $30
    )
    ON CONFLICT (company_id, request_id) DO NOTHING`;
 }
@@ -82,6 +98,8 @@ export function decisionRecordParams(record: DecisionRecord): unknown[] {
     record.capacityPosture,
     record.capacityReason,
     record.capacityDegraded,
+    record.capacitySnapshotAgeMs,
+    record.capacitySnapshotStale,
     record.shadowModelId,
   ];
 }

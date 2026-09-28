@@ -78,7 +78,47 @@ For a generation that may run past the host's RPC timeout, use the async submit/
 - Capacity evidence is keyed to exact opaque model IDs and records only sanitized source/lane labels and usage facts, never provider/account serving identity.
 - A transport failure never causes automatic replay or post-HTTP model fallback.
 - Decision records are company-scoped and exclude prompts, messages, tool inputs/results, credentials, full URLs, error bodies, and deployment identity.
-- Native metrics are aggregate and contain no company tag.
+- Native metrics are aggregate and contain no company tag. The one exception
+  is the degraded-age counter below, which is namespaced per company IN THE
+  METRIC NAME (`model_router.company.<companyId>.capacity.snapshot_stale`)
+  precisely because a company tag is forbidden.
+
+## Capacity-snapshot refresh SLO (TOG-7885)
+
+`capacityRouting.maxSnapshotAgeMs` (default 300000 = 5 minutes) is the
+freshness backstop: an invocation served from a snapshot older than that is a
+**degraded-age invocation** — it routed on stale evidence. Every served
+invocation exposes the age it actually used:
+
+- the served decision carries `capacity.snapshotAgeMs` (wall-clock ms, null
+  when no snapshot was ever stored) and `capacity.snapshotStale`;
+- a company-namespaced counter fires on each degraded-age invocation:
+  `model_router.company.<companyId>.capacity.snapshot_stale` (use the
+  existing `model_router.invoke.*` series in the same namespace as the
+  denominator);
+- the persisted decision record rolls both up as `capacity_snapshot_age_ms`
+  / `capacity_snapshot_stale` for the alert query below (rows written before
+  migration `002` read NULL/false — never-stored, never "fresh").
+
+**Alert before promoting shadow→enforce.** A snapshot that keeps going stale
+means the refresh cadence (or the producer) cannot sustain the routing mode.
+Query the rollup per company over the trailing SLO window and page when the
+stale share exceeds 5%:
+
+```sql
+SELECT count(*) FILTER (WHERE capacity_snapshot_stale) * 1.0 / count(*)
+  AS stale_share
+FROM <namespace>.decision_records
+WHERE company_id = '<companyId>'
+  AND recorded_at > now() - interval '30 minutes';
+-- stale_share > 0.05: do NOT promote shadow→enforce; fix refresh first.
+```
+
+(`<namespace>` is the plugin's database namespace, e.g.
+`plugin_model_router_4dc1d582dd`; `<companyId>` is the company's UUID.)
+Do not promote while the alert fires: under fail-open a stale snapshot serves
+without capacity awareness, and under fail-closed it denies. Either way the
+fleet is flying blind past the SLO.
 
 ## Reversibility
 

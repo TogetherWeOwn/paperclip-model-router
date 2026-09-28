@@ -124,6 +124,11 @@ function legacyDecisionRecord(companyId: string, value: unknown): DecisionRecord
     capacityPosture: nullableString(row.capacityPosture) as DecisionRecord["capacityPosture"],
     capacityReason: nullableString(row.capacityReason),
     capacityDegraded: row.capacityDegraded === true,
+    // TOG-7885 (G8): rows written before the snapshot-age columns existed
+    // carry no age. Reads as never-stored (null/false), which is the honest
+    // pre-migration value — not "fresh".
+    capacitySnapshotAgeMs: nullableNumber(row.capacitySnapshotAgeMs),
+    capacitySnapshotStale: row.capacitySnapshotStale === true,
     shadowModelId: nullableString(row.shadowModelId),
   };
 }
@@ -261,12 +266,17 @@ export function createPlugin() {
       const storedCapacity = async (
         companyId: string,
         config: RouterConfig,
-      ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; error: string | null; paceVerdicts: Record<string, LanePaceVerdict>; modelLaneByPace: Record<string, string> }> => {
+      ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; error: string | null; paceVerdicts: Record<string, LanePaceVerdict>; modelLaneByPace: Record<string, string>; snapshotAgeMs: number | null; snapshotStale: boolean }> => {
         const stored = asRecord(await ctx.state.get(capacityStateKey(companyId)));
         const refreshedAt = typeof stored.refreshedAt === "string" ? Date.parse(stored.refreshedAt) : Number.NaN;
         const paceRefreshedAt = typeof stored.paceRefreshedAt === "string" ? Date.parse(stored.paceRefreshedAt) : Number.NaN;
         const lastRefreshError = typeof stored.lastRefreshError === "string" ? stored.lastRefreshError : null;
-        const stale = !Number.isFinite(refreshedAt) || Date.now() - refreshedAt > config.capacityRouting.maxSnapshotAgeMs;
+        // TOG-7885 (G8): compute the snapshot age ONCE here. `snapshotAgeMs`
+        // is the single source of truth the decision, the decision record,
+        // and the degraded-age metric all read — the engine never re-derives
+        // it, so the three can never disagree. Null = no snapshot stored.
+        const snapshotAgeMs = Number.isFinite(refreshedAt) ? Math.max(0, Date.now() - refreshedAt) : null;
+        const stale = snapshotAgeMs === null || snapshotAgeMs > config.capacityRouting.maxSnapshotAgeMs;
         const paceStale = !Number.isFinite(paceRefreshedAt) || Date.now() - paceRefreshedAt > config.capacityRouting.maxSnapshotAgeMs;
         // TOG-2139/TOG-2922: pace freshness is independent of capacity evidence.
         // A lane document can yield a valid pace verdict even when the legacy
@@ -296,6 +306,8 @@ export function createPlugin() {
           error: lastRefreshError ?? (stale ? "capacity-snapshot-stale" : null),
           paceVerdicts,
           modelLaneByPace,
+          snapshotAgeMs,
+          snapshotStale: stale,
         };
       };
 
@@ -589,9 +601,21 @@ export function createPlugin() {
           capacityPosture: decision?.capacity.usagePosture ?? null,
           capacityReason: decision?.capacity.decisionReason ?? null,
           capacityDegraded: decision?.capacity.degraded ?? false,
+          capacitySnapshotAgeMs: decision?.capacity.snapshotAgeMs ?? null,
+          capacitySnapshotStale: decision?.capacity.snapshotStale ?? false,
           shadowModelId: decision?.capacity.shadowModelId ?? null,
         });
         await ctx.metrics.write(`model_router.invoke.${result.outcome}`, 1);
+        // TOG-7885 (G8): company-scoped degraded-age counter. Native metrics
+        // carry no company tag (see OPERATIONS.md), so the metric name itself
+        // is namespaced per company. Fires only on served invocations whose
+        // snapshot was stale at decision time — the fail-open serve-anyway
+        // path, and every enforce denial, is what the operator alerts on
+        // before promoting shadow→enforce. The denominator is the existing
+        // `model_router.invoke.*` series in the same namespace.
+        if (decision?.capacity.snapshotStale === true) {
+          await ctx.metrics.write(`model_router.company.${companyId}.capacity.snapshot_stale`, 1);
+        }
       };
 
       type PreparedInvocation = {
@@ -684,7 +708,7 @@ export function createPlugin() {
 
         const capacity = config.capacityRouting.enabled
           ? await storedCapacity(companyId, config)
-          : { snapshots: [], evidence: [], error: null, paceVerdicts: {}, modelLaneByPace: {} };
+          : { snapshots: [], evidence: [], error: null, paceVerdicts: {}, modelLaneByPace: {}, snapshotAgeMs: null as number | null, snapshotStale: false };
         // TOG-7417: the host injects the authoritative spent fraction through
         // the tool/action context (a channel the caller cannot write to) and
         // it wins over the caller-claimed task.signals value, which any
@@ -703,6 +727,8 @@ export function createPlugin() {
             ),
             capacityEvidence: capacity.evidence,
             capacityError: capacity.error ?? undefined,
+            capacitySnapshotAgeMs: capacity.snapshotAgeMs,
+            capacitySnapshotStale: capacity.snapshotStale,
             paceVerdicts: config.capacityRouting.paceOrdering ? capacity.paceVerdicts : undefined,
             modelLaneByPace: config.capacityRouting.paceOrdering ? capacity.modelLaneByPace : undefined,
             stickyModelId: config.routing.stickyModelWithinIssue
