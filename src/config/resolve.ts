@@ -1,5 +1,8 @@
 import type { ModelEntry } from "../engine/types.js";
-import { DEFAULT_REQUEST_TIMEOUT_MS } from "./upstream-constraints.js";
+import {
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  FORBIDDEN_EXTRA_HEADERS,
+} from "./upstream-constraints.js";
 import type {
   BudgetConfig,
   CapacityRoutingConfig,
@@ -282,10 +285,21 @@ export function resolveConfig(raw: unknown): RouterConfig {
     }
   }
 
+  // TOG-7883 (gap G5): fail closed on forbidden header names at config
+  // load. Stored config bypasses the JSON Schema (form metadata that
+  // validates nothing at runtime) and flows straight into the transport's
+  // `requestHeaders` spread, so a smuggled `Authorization` would ride every
+  // upstream call. The fold is case-insensitive because HTTP header names
+  // are; the already-written value was never the attack surface, only the
+  // already-validated name.
   const extraHeaders: Record<string, string> = {};
   if (isRecord(upstreamRaw.extraHeaders)) {
     for (const [name, value] of Object.entries(upstreamRaw.extraHeaders)) {
-      if (typeof value === "string") extraHeaders[name] = value;
+      if (typeof value !== "string") continue;
+      if (FORBIDDEN_EXTRA_HEADERS.has(name.toLowerCase())) {
+        throw new Error(`upstream.extraHeaders must not set ${name}`);
+      }
+      extraHeaders[name] = value;
     }
   }
 
