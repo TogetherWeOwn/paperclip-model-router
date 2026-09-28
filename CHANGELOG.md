@@ -96,11 +96,28 @@ version is not present here.
   explicit `maxSyncOutputTokens` still wins over either row. The class is
   passed through in the resolver, refused at config write when it is neither
   value, and allowlisted to the chat row at derivation time.
+- **Async submit/poll/cancel joins the acceptance rehearsal (TOG-7905,
+  gap G11).** `npm run rehearse` loaded one worker with two sync companies;
+  the async path (submit → poll → reap) was covered only by unit specs, never
+  end to end against the built bundle. The rehearsal gains a third company
+  (`tests/fixtures/company-c.json`, OpenAI-compatible, own base URL and
+  secret reference) and an Evidence 8 section: an async submit polls to
+  `completed` through the company upstream under the sync wire contract
+  (own base URL, `redirect: manual`, `Accept-Encoding: identity`, call-time
+  company-scoped secret); a second submit holds its socket open while the
+  run-end reap aborts the real in-flight request and settles non-retryable
+  `invocation-cancelled`, which a late upstream outcome never overwrites.
+  Per-company isolation is pinned throughout — cross-company polls read
+  `not-found`, and no audit write lands outside the async company.
+  `tests/rehearsal.spec.ts` pins the Evidence 8 transcript lines so a
+  silently-dropped async section fails the build (mutation-probed: the new
+  pins go red against the pre-change script).
 
 ### Compatibility
 
 - Drop-in: no config change required, no derived budget changes for any
-  model that does not set the new field.
+  model that does not set the new field. The rehearsal-only third fixture
+  is not referenced by any shipped config path.
 
 ## [0.8.0] - 2026-09-27
 

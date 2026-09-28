@@ -20,7 +20,7 @@ PAPERCLIP_HOST=/app npm run verify:migrations
 npm run rehearse
 ```
 
-`verify:host` validates the built manifest and both shipped config fixtures through Paperclip's install-time validators. `verify:migrations` runs the bundled SQL and runtime write shapes through the target host checkout's database validators. `rehearse` loads one built worker, configures two companies with different compatible protocols and secret references, invokes both, and checks database-write isolation.
+`verify:host` validates the built manifest and all shipped config fixtures through Paperclip's install-time validators. `verify:migrations` runs the bundled SQL and runtime write shapes through the target host checkout's database validators. `rehearse` loads one built worker, configures three companies with different compatible protocols and secret references, invokes both sync companies, submits an async invocation (submit → poll) plus a run-end cancel on the third, and checks database-write isolation.
 
 ## Capability-escalating upgrade
 
