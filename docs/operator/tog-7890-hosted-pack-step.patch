@@ -1,0 +1,59 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 847c5ad..cf0a52f 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -13,9 +13,11 @@ concurrency:
+   group: ci-${{ github.ref }}
+   cancel-in-progress: true
+ 
+-# This repo is public: org self-hosted runners do not serve public repos (runner group
+-# policy, and fork PRs must never run on our boxes), so jobs use GitHub-hosted runners,
+-# which are free for public repos. The run-unique paths below stay harmless there.
++# This repo is public: org self-hosted runner groups do not serve public repos
++# (and fork PRs must never run on our boxes), so every job below runs on
++# GitHub-hosted `ubuntu-latest` — a fresh VM per job, free for public repos.
++# Workspace-local paths are therefore clean by construction on every run;
++# nothing here guards persistent runners.
+ 
+ jobs:
+   # TOG-2547: this used to be three separate jobs — "verify", "packaged-artifact"
+@@ -79,19 +81,16 @@ jobs:
+       # to ERR_MODULE_NOT_FOUND at worker start — which is a terrible place to
+       # find out. Reuses the `npm ci` and `npm run build` already done above
+       # instead of re-running them in a fresh job.
+-      # TOG-2941: this step used to unpack into a hard-coded `/tmp/installed` and
+-      # glob `artifacts/*.tgz`. On `ubuntu-latest` both were safe by construction
+-      # — every job got a fresh VM. The self-hosted runners are persistent, so a
+-      # path outside the workspace survives into the next job on the same box and
+-      # `actions/checkout`'s clean never sees it: two runs could share, or read,
+-      # each other's tarball. Unpack into a run-unique directory instead, and
+-      # name the tarball rather than globbing, so the artifact this step loads is
+-      # always the one this run just packed.
++      # Every job here runs on a fresh hosted VM (see the header comment), so
++      # the unpack directory only needs to sit outside the packed tree and be
++      # stable within the run: a fixed path under RUNNER_TEMP, no per-run
++      # suffix, no preamble wipe, no cleanup step — the VM is discarded either
++      # way. The tarball is still named explicitly, never globbed, so the
++      # artifact this step loads is always the one this run just packed.
+       - name: Pack, unpack, install runtime deps, load
+         env:
+-          INSTALL_DIR: ${{ runner.temp }}/installed-${{ github.run_id }}-${{ github.run_attempt }}
++          INSTALL_DIR: ${{ runner.temp }}/installed
+         run: |
+-          rm -rf artifacts "$INSTALL_DIR"
+           mkdir -p artifacts "$INSTALL_DIR"
+           tarball="$(node -p "const p=require('./package.json'); p.name.replace('@','').replace('/','-') + '-' + p.version + '.tgz'")"
+           npm pack --pack-destination ./artifacts
+@@ -109,12 +108,6 @@ jobs:
+             console.log('packed artifact loads:', manifest.id, 'v' + manifest.version);
+           "
+ 
+-      # Persistent runners keep whatever the job leaves behind, so clean up even
+-      # when the step above failed.
+-      - name: Remove the unpacked artifact
+-        if: always()
+-        run: rm -rf "${{ runner.temp }}/installed-${{ github.run_id }}-${{ github.run_attempt }}"
+-
+   secret-scan:
+     name: secret scan
+     runs-on: ubuntu-latest
