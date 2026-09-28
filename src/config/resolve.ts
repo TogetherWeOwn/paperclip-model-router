@@ -105,6 +105,16 @@ function resolveModels(value: unknown): ModelEntry[] {
       ...(typeof raw.maxSyncOutputTokens === "number" && Number.isFinite(raw.maxSyncOutputTokens)
         ? { maxSyncOutputTokens: raw.maxSyncOutputTokens }
         : {}),
+      // TOG-7896: passed through, not allowlisted — the same split as `tier`
+      // above (cast here) versus enforcement elsewhere. `onValidateConfig`
+      // refuses anything outside the table at write time, and the derivation
+      // (`syncThroughputTokensPerMs`) allowlists unknown values to the chat
+      // row at check time, because a stored row can carry any string at all.
+      // Dropping junk here instead would make the validator's refusal dead
+      // code: untestable, and silently green while enforcing nothing.
+      ...(typeof raw.syncThroughputClass === "string" && raw.syncThroughputClass.length > 0
+        ? { syncThroughputClass: raw.syncThroughputClass as ModelEntry["syncThroughputClass"] }
+        : {}),
       enabled: pickBoolean(raw.enabled, true),
     });
   }

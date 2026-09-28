@@ -32,6 +32,22 @@ version is not present here.
     §11 admits the two freshness fields.
   - `tests/tog-7885-degraded-age.spec.ts`: 4 tests (stale / fresh / missing /
     disabled). Six mutation probes (each wired line deleted) all go red.
+- **Per-class sync throughput baseline (TOG-7896, R2-14).** The derived
+  `maxSyncOutputTokens` default no longer applies one chat-model measurement
+  to every model. Each model entry gains an optional `syncThroughputClass`
+  (`chat` | `reasoning`): `chat` keeps the measured TOG-1035 baseline
+  (1200 tokens / 28s), `reasoning` halves it as a deliberately conservative,
+  explicitly uncalibrated estimate so reasoning models are steered toward
+  async instead of being over-admitted into sync. Absent class means `chat`,
+  so every existing config keeps byte-for-byte its current budget, and an
+  explicit `maxSyncOutputTokens` still wins over either row. The class is
+  passed through in the resolver, refused at config write when it is neither
+  value, and allowlisted to the chat row at derivation time.
+
+### Compatibility
+
+- Drop-in: no config change required, no derived budget changes for any
+  model that does not set the new field.
 
 ## [0.8.0] - 2026-09-27
 

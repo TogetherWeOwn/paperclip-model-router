@@ -142,7 +142,13 @@ export const ROUTER_CONFIG_SCHEMA = {
             type: "integer",
             minimum: 1,
             description:
-              "Caps maxOutputTokens on the synchronous /invoke path only, rejecting unreachable requests in milliseconds. Omit to derive a default from this model's request timeout and a measured throughput baseline. model_router_invoke_async ignores this field.",
+              "Caps maxOutputTokens on the synchronous /invoke path only, rejecting unreachable requests in milliseconds. Omit to derive a default from this model's request timeout, its syncThroughputClass row, and a measured throughput baseline. model_router_invoke_async ignores this field.",
+          },
+          syncThroughputClass: {
+            type: "string",
+            enum: ["chat", "reasoning"],
+            description:
+              "Selects which throughput row the derived maxSyncOutputTokens default uses. Omit for the measured chat baseline (1200 tokens / 28s, TOG-1035). Set reasoning on models that spend wall-clock on hidden thinking tokens; their derived ceiling is half the chat row. An explicit maxSyncOutputTokens always wins over either row.",
           },
           enabled: { type: "boolean", default: true },
         },

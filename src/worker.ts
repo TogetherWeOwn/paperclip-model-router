@@ -758,6 +758,7 @@ export function createPlugin() {
             config.upstream.requestTimeoutMs,
             selectedEntry?.requestTimeoutMs,
             selectedEntry?.maxSyncOutputTokens,
+            selectedEntry?.syncThroughputClass,
           );
           if (request.maxOutputTokens > maxSyncOutputTokens) {
             result = {
@@ -1281,6 +1282,11 @@ export function createPlugin() {
         if (model.maxSyncOutputTokens !== undefined &&
             (!Number.isInteger(model.maxSyncOutputTokens) || model.maxSyncOutputTokens < 1)) {
           errors.push(`model ${model.id} maxSyncOutputTokens must be a positive integer`);
+        }
+        if (model.syncThroughputClass !== undefined &&
+            model.syncThroughputClass !== "chat" &&
+            model.syncThroughputClass !== "reasoning") {
+          errors.push(`model ${model.id} syncThroughputClass must be "chat" or "reasoning"`);
         }
       }
       for (const entry of config.taskClasses) {

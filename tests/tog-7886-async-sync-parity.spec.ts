@@ -145,9 +145,31 @@ function assertEnvelopeParity(syncResult: Record<string, unknown>, asyncTerminal
   expect(asyncTerminal.status, "async poll status mirrors the terminal outcome").toBe(syncResult.outcome);
 
   expect(
-    stripTopLevel(asyncTerminal, [...ASYNC_ONLY_TOP_LEVEL_KEYS, ...PER_REQUEST_TOP_LEVEL_KEYS]),
+    normalizeWallClock(stripTopLevel(asyncTerminal, [...ASYNC_ONLY_TOP_LEVEL_KEYS, ...PER_REQUEST_TOP_LEVEL_KEYS])),
     "async terminal payload deep-equals the sync envelope field-by-field",
-  ).toEqual(stripTopLevel(syncResult, [...PER_REQUEST_TOP_LEVEL_KEYS]));
+  ).toEqual(normalizeWallClock(stripTopLevel(syncResult, [...PER_REQUEST_TOP_LEVEL_KEYS])));
+}
+
+/**
+ * TOG-7896 main-fix: `decision.capacity.snapshotAgeMs` is a wall-clock
+ * reading taken at decision time (TOG-7885), so the sync and async decisions
+ * — computed at different instants — can never agree on it, exactly like
+ * `requestId`. Deep-comparing it flakes ~50% of runs (main red at f43859c).
+ * Normalize it on both sides before the value comparison; presence is still
+ * pinned by the path arms above, and the capacity test below asserts the
+ * real values are number-or-null on both sides. `snapshotStale` stays
+ * compared: it is a stable boolean, not an instant.
+ */
+function normalizeWallClock(value: Record<string, unknown>): Record<string, unknown> {
+  const out = structuredClone(value);
+  const decision = out.decision;
+  const capacity = decision !== null && typeof decision === "object"
+    ? (decision as Record<string, unknown>).capacity
+    : undefined;
+  if (capacity !== null && typeof capacity === "object" && "snapshotAgeMs" in (capacity as Record<string, unknown>)) {
+    (capacity as Record<string, unknown>).snapshotAgeMs = "wall-clock";
+  }
+  return out;
 }
 
 afterEach(() => {
@@ -224,6 +246,17 @@ describe("TOG-7886: async/sync result-envelope parity", () => {
     const submitted = await harness.performAction(ACTION_KEYS.invokeAsync, asyncRequest, { companyId: COMPANY_A }) as Record<string, unknown>;
     const terminal = await pollTerminal(harness, String(submitted.requestId), COMPANY_A);
     assertEnvelopeParity(sync, terminal);
+    // The wall-clock normalization above must not mask a missing or
+    // non-numeric age: both sides still carry a real reading (number = a
+    // stored snapshot was served, null = none stored). Presence itself is
+    // pinned by the comparator's path arms.
+    for (const side of [sync, terminal]) {
+      const age = ((side.decision as Record<string, unknown>).capacity as Record<string, unknown>).snapshotAgeMs;
+      expect(age === null || typeof age === "number").toBe(true);
+      expect((side.decision as Record<string, unknown>).capacity).toMatchObject({
+        snapshotStale: expect.any(Boolean),
+      });
+    }
   });
 
   it("error envelope matches when the upstream fails on both paths", async () => {
