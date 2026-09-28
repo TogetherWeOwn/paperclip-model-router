@@ -129,11 +129,17 @@ describe("Variant C: producer outage", () => {
 });
 
 /**
- * The defect this projection exists to route around. If a future consumer
- * change makes the nested contract shape parse correctly, these tests fail —
- * which is the signal to simplify the projection back to one endpoint.
+ * TOG-7163: the outermost-record collection fixed the nested-fragment half of
+ * this defect — the consumer no longer collects the 2 nested window entries as
+ * independent records. What remains is the documented fan-out: each model
+ * record still informs every configured model id (no `modelIdentityFields` on
+ * this source), so sonnet still inherits opus's utilization. The
+ * `modelIdentityFields` projection (covered in
+ * tests/tog-7163-antigravity-projection.spec.ts) is the opt-in fix for payloads
+ * whose groups carry a usable model identity; this block pins the legacy
+ * behavior for payloads that do not.
  */
-describe("nested `models` map: the shape the v0.4.0 consumer cannot read", () => {
+describe("nested `models` map: outermost records only, legacy fan-out retained", () => {
   const nested = {
     schemaVersion: 1,
     observedAt: "2026-09-05T02:00:00.000Z",
@@ -161,10 +167,12 @@ describe("nested `models` map: the shape the v0.4.0 consumer cannot read", () =>
   };
   const snapshot = normalizeCapacityPayload({ payload: nested, source, fetchedAt: "2026-09-05T02:00:00.000Z" });
 
-  it("fans out records across every configured model id", () => {
-    // 4 utilization-bearing objects (2 model records + their 2 nested window
-    // entries) x 2 configured model ids. The correct answer is 2.
-    expect(snapshot.evidence.length).toBe(8);
+  it("collects the 2 outermost model records only, fanning out across every configured model id", () => {
+    // 2 outermost model records x 2 configured model ids. The nested window
+    // entries are no longer collected as independent records (TOG-7163); the
+    // fan-out across model ids is retained because this source configures no
+    // `modelIdentityFields`.
+    expect(snapshot.evidence.length).toBe(4);
   });
 
   it("cross-contaminates: sonnet inherits opus's utilization", () => {

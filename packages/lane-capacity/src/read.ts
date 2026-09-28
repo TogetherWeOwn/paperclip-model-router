@@ -81,6 +81,14 @@ export async function readCapacitySource(input: {
   const mediaType = response.contentType?.toLowerCase().split(";", 1)[0]?.trim();
   if (!mediaType?.endsWith("/json") && !mediaType?.endsWith("+json")) return failure(input.source, fetchedAt, "capacity-unexpected-media-type");
   if (response.body === null || typeof response.body !== "object") return failure(input.source, fetchedAt, "capacity-invalid-json");
+  // TOG-7163 (TOG-1921 audit of PR #41): per-record explicit status
+  // (`status: "error"` on ONE credential) must not globally suppress the
+  // healthy windows of sibling records. The window normalizer below reads
+  // windows per record, so the only global signal left is the snapshot-level
+  // `error`: emit it only when NO record yielded usable telemetry, never as a
+  // blanket over a mixed pool. A transported `error` with zero evidence is the
+  // caller's signal to treat the failure as sticky (keep serving the last good
+  // snapshot) rather than as an auth revocation (drop the lane).
   const snapshot = normalizeCapacityPayload({ payload: response.body, source: input.source, fetchedAt });
   // TOG-2139: pace rides the same response — one fetch, one guard chain. The
   // verdict is present even when the capacity normalizer found no records

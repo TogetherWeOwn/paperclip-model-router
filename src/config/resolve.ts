@@ -208,6 +208,12 @@ function resolveCapacitySources(value: unknown): CapacityRoutingConfig["sources"
         : null,
       modelIds: pickStringArray(raw.modelIds, []),
       healthFields: pickStringArray(raw.healthFields, ["health", "status", "unifiedStatus"]),
+      // TOG-7163: optional per-model identity fields for grouped quota payloads.
+      // Fail-neutral: absent/non-array/non-string entries fall back to legacy
+      // fan-out (every record informs every model id).
+      modelIdentityFields: Array.isArray(raw.modelIdentityFields)
+        ? raw.modelIdentityFields.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+        : undefined,
       requestTimeoutMs: pickNumber(raw.requestTimeoutMs, 5_000),
       maxResponseBytes: pickNumber(raw.maxResponseBytes, 262_144),
       windows,

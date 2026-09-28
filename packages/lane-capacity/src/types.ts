@@ -50,6 +50,14 @@ export interface CapacitySourceDefinition {
   healthFields: string[];
   requestTimeoutMs: number;
   maxResponseBytes: number;
+  /**
+   * TOG-7163 (TOG-1921 audit of PR #41): per-model quota groups inside one
+   * payload record must project onto exactly one model. These fields carry the
+   * model identity on a grouped record (e.g. `["model"]`); records naming a
+   * different model are that model's evidence, not absent telemetry for this
+   * one. Absent/empty = legacy fan-out: every record informs every model id.
+   */
+  modelIdentityFields?: string[];
   windows: Array<{
     name: string;
     utilizationFields: string[];
