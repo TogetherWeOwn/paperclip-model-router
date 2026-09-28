@@ -16,6 +16,12 @@ export const ACTION_KEYS = {
    * terminal `invocation-cancelled` outcome instead of lingering to TTL.
    */
   cancelRunInvocations: "cancel-run-invocations",
+  /**
+   * TOG-7897: company-scoped read path over the durable decision records.
+   * The host injects the company id; the query filters on it, so a caller
+   * can only ever see its own company's routing history.
+   */
+  queryDecisions: "query-decisions",
 } as const;
 
 export const TOOL_NAMES = {
@@ -60,6 +66,14 @@ export const STATE_KEYS = {
    * still expire via the pending row's own TTL.
    */
   pendingInvocationsByRun: "pending-invocations-by-run",
+  /**
+   * TOG-7897: one instance-scoped row holding the company ids that have
+   * written decision rows (`{ companyIds: string[] }`), so the startup sweep
+   * can prune each company's own retention window. Same pattern as the
+   * TOG-7417 per-run index: `ctx.state` has no listing primitive, and
+   * companies the index never saw still get the default-window backstop.
+   */
+  decisionWriterCompanies: "decision-writer-companies",
 } as const;
 
 /**

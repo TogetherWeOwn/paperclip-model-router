@@ -14,6 +14,12 @@ export interface RouterConfig {
   budget: BudgetConfig;
   capacityRouting: CapacityRoutingConfig;
   rule0: Rule0Config;
+  /**
+   * TOG-7897: decision-history retention. How long a company's routing
+   * decision rows are kept before the worker prunes them. The
+   * `query-decisions` read path only ever returns rows inside this window.
+   */
+  decisionLog: DecisionLogConfig;
 }
 
 export interface RoutingConfig {
@@ -108,6 +114,15 @@ export interface CapacityRoutingConfig {
  * `unknown`, never denied, exactly like missing telemetry today.
  */
 export type SourcePaceDefinition = import("../capacity/types.js").LanePaceDefinition;
+
+/**
+ * TOG-7897: decision-history retention. `retentionDays` bounds both the
+ * prune sweep (rows older than the window are deleted) and the
+ * `query-decisions` read path (which never returns rows outside it).
+ */
+export interface DecisionLogConfig {
+  retentionDays: number;
+}
 
 export interface Rule0Config {
   enabled: boolean;

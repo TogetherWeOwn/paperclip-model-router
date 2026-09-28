@@ -65,6 +65,31 @@ version is not present here.
   case-variant, dupe-vs-`fallbackModelId`, fallback stays exact, shipped
   fixtures stay green, schema backstop). Three mutation probes (throw
   removed / fold removed / validator catch removed) go 5 / 2 / 3 red.
+- **Decision-history read path + configurable retention (TOG-7897, gap
+  G16).** Decision rows had insert + 90-day prune but no read path, and
+  retention was a hardcoded constant.
+  - New company-scoped `query-decisions` action: returns the caller's own
+    recent decision records (selection, model, outcome, latency, token
+    usage, capacity facts), newest first, at most 200 rows per call, inside
+    that company's retention window. The company id comes from the
+    host-authorized action context and is bound as the query's `$1` — never
+    from params — so a caller can only ever see its own company's history;
+    every returned record is stamped with the caller's company id.
+  - New optional `decisionLog.retentionDays` company config (integer
+    1–3650, default 90): bounds both the prune sweep and the read path.
+    Enforced on every write (not only at worker startup), so a lowered
+    retention takes effect on the company's next write; the startup sweep
+    prunes each known writer's own window with the historical 90-day
+    whole-table sweep kept as a backstop. The legacy import honors the
+    same window. Out-of-range values are rejected at config validation.
+  - `tests/tog-7897-decision-history.spec.ts`: 8 tests (zero cross-company
+    leakage incl. the issued-SQL binding, limit clamping, retention
+    override on write/sweep/import, validate-time rejection). Three
+    mutation families (dropped company filter, hardcoded retention,
+    row-stamped company id) all go red.
+  - `scripts/validate-migrations-against-host.mjs` rehearses the new
+    SELECT and the per-company prune against real Postgres, and the host
+    query validator accepts the read SQL.
 - **Capacity-snapshot age observability (TOG-7885, gap G8).** Staleness is
   now a surfaced fact, not just a routing input.
   - The served decision carries `capacity.snapshotAgeMs` (wall-clock ms,

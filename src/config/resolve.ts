@@ -3,10 +3,12 @@ import {
   DEFAULT_REQUEST_TIMEOUT_MS,
   FORBIDDEN_EXTRA_HEADERS,
 } from "./upstream-constraints.js";
+import { DECISION_LOG_RETENTION_DAYS } from "../constants.js";
 import type {
   BudgetConfig,
   CapacityRoutingConfig,
   CompatibleUpstreamConfig,
+  DecisionLogConfig,
   RouterConfig,
   RoutingConfig,
   Rule0Config,
@@ -59,6 +61,11 @@ export const DEFAULT_CAPACITY_ROUTING: CapacityRoutingConfig = {
 export const DEFAULT_RULE0: Rule0Config = {
   enabled: true,
   deterministicPatterns: [],
+};
+
+/** TOG-7897: retention default keeps the historical 90-day window. */
+export const DEFAULT_DECISION_LOG: DecisionLogConfig = {
+  retentionDays: DECISION_LOG_RETENTION_DAYS,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -252,6 +259,22 @@ function resolveCapacitySources(value: unknown): CapacityRoutingConfig["sources"
   });
 }
 
+/**
+ * TOG-7897: resolve the decision-history retention. Out-of-range values
+ * (minimum 1, maximum 3650 days) fall back to the 90-day default rather than
+ * silently storing a bound neither the prune sweep nor the read path would
+ * honor; `onValidateConfig` reports them first, so this is the stored-config
+ * backstop, not the operator's error surface.
+ */
+function resolveDecisionLog(value: unknown): DecisionLogConfig {
+  if (!isRecord(value)) return { ...DEFAULT_DECISION_LOG };
+  const retentionDays = pickNumber(value.retentionDays, DEFAULT_DECISION_LOG.retentionDays);
+  if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650) {
+    return { ...DEFAULT_DECISION_LOG };
+  }
+  return { retentionDays };
+}
+
 function resolveRule0(value: unknown): Rule0Config {
   if (!isRecord(value)) return { ...DEFAULT_RULE0, deterministicPatterns: [] };
   const patterns: Rule0Config["deterministicPatterns"] = [];
@@ -372,5 +395,6 @@ export function resolveConfig(raw: unknown): RouterConfig {
       sources: resolveCapacitySources(capacityRaw.sources),
     },
     rule0: resolveRule0(source.rule0),
+    decisionLog: resolveDecisionLog(source.decisionLog),
   };
 }

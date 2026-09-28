@@ -12,7 +12,7 @@ The normative contract is [`docs/contracts/compatible-upstream-v1.md`](docs/cont
 ## Native surfaces
 
 - agent tool: `togetherweown.paperclip-model-router:model_router_invoke`
-- actions: `invoke`, `refresh-capacity`
+- actions: `invoke`, `refresh-capacity`, `query-decisions`
 - `POST /api/plugins/togetherweown.paperclip-model-router/api/invoke?companyId=<uuid>`
 - `POST /api/plugins/togetherweown.paperclip-model-router/api/issues/:issueId/invoke`
 
@@ -73,6 +73,7 @@ Every surface calls the same internal implementation. Company identity comes fro
     "avoidUtilization": 0.8,
     "sources": []
   },
+  "decisionLog": { "retentionDays": 90 },
   "rule0": { "enabled": true, "deterministicPatterns": [] }
 }
 ```
@@ -130,6 +131,36 @@ Promotion to `enforce` is an operator decision, never an automatic gate. Before 
 require TOG-901/916 evidence, TOG-251 measurements, fresh evidence for every affected model,
 a clean representative shadow window, and an outage rehearsal proving fail-closed behavior.
 Disable `capacityRouting` to restore v1 selection exactly.
+
+### `decisionLog` — routing-history retention and read path (TOG-7897)
+
+Every invocation appends a company-scoped audit row to durable storage. Two
+knobs govern that history:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `retentionDays` | integer 1–3650 | `90` | How long a company's decision rows are kept, in days. Bounds both the prune sweep and the read path below. |
+
+A lowered retention takes effect on the company's next write — each write
+prunes that company's own window first — plus a per-company sweep at worker
+startup (with the historical 90-day whole-table sweep kept as a backstop).
+Out-of-range values are rejected at config validation and fall back to 90
+days in the stored config.
+
+Run the company-scoped `query-decisions` action to inspect recent routing
+history:
+
+```sh
+npx paperclipai plugin action "$PLUGIN" query-decisions \
+  --payload-json "$(jq -nc --arg companyId "$COMPANY_ID" '{companyId:$companyId,params:{limit:50}}')"
+```
+
+The company id comes from the host-authorized action context, never from
+params, so a caller only ever sees its own company's rows. The window start
+is derived from that company's `retentionDays`, and the row limit is clamped
+to 1–200 newest-first. Returned records carry the same fields as the stored
+row (selection, model, outcome, latency, token usage, capacity facts) and
+never prompts, credentials, or request content.
 
 ## Invocation
 

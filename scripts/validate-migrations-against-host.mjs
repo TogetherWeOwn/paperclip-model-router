@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import manifest from "../dist/manifest.js";
-import { decisionInsertSql, decisionPruneSql } from "../dist/decision-records.js";
+import { decisionInsertSql, decisionPruneCompanySql, decisionPruneSql, decisionQuerySql } from "../dist/decision-records.js";
 import { describePolicy, probePolicy } from "./lib/host-probes.mjs";
 
 // Mirror verify:host's TOG-1070 policy so the two host probes cannot disagree
@@ -63,8 +63,12 @@ for (const migration of migrations) {
 
 const insertSql = decisionInsertSql(namespace);
 const pruneSql = decisionPruneSql(namespace);
+const pruneCompanySql = decisionPruneCompanySql(namespace);
+const querySql = decisionQuerySql(namespace);
 database.validatePluginRuntimeExecute(insertSql, namespace);
 database.validatePluginRuntimeExecute(pruneSql, namespace);
+database.validatePluginRuntimeExecute(pruneCompanySql, namespace);
+database.validatePluginRuntimeQuery(querySql, namespace, manifest.database.coreReadTables ?? []);
 
 const scratchRoot = process.env.PAPERCLIP_RUN_SCRATCH_DIR ?? process.cwd();
 const dataDir = mkdtempSync(join(scratchRoot, "decision-records-postgres-"));
@@ -120,6 +124,22 @@ try {
   const rows = await sql.unsafe(`SELECT request_id FROM ${namespace}.decision_records ORDER BY request_id`);
   if (rows.length !== 1 || rows[0]?.request_id !== "inside") {
     throw new Error(`runtime SQL retention rehearsal failed: ${JSON.stringify(rows)}`);
+  }
+  // TOG-7897: the operator read path scopes to one company and the
+  // per-company prune honors that company's own window. Fresh ids: the
+  // surviving "inside" row still holds base[0], and ON CONFLICT only
+  // covers (company_id, request_id), not the primary key.
+  await sql.unsafe(insertSql, ["33333333-3333-4333-8333-333333333333", "company-b", now.toISOString(), "other-company", ...base.slice(4)]);
+  await sql.unsafe(insertSql, ["44444444-4444-4433-8444-444444444444", base[1], new Date(now.getTime() - 7 * 86_400_000 - 1).toISOString(), "older-than-7d", ...base.slice(4)]);
+  const companyRows = await sql.unsafe(querySql, [base[1], new Date(now.getTime() - 90 * 86_400_000).toISOString(), 200]);
+  if (companyRows.length !== 2 || companyRows.some((row) => row.request_id === "other-company")) {
+    throw new Error(`runtime SQL company-scoped query rehearsal failed: ${JSON.stringify(companyRows.map((row) => row.request_id))}`);
+  }
+  await sql.unsafe(pruneCompanySql, [base[1], now.toISOString(), 7]);
+  const afterCompanyPrune = await sql.unsafe(`SELECT request_id FROM ${namespace}.decision_records ORDER BY request_id`);
+  const remaining = afterCompanyPrune.map((row) => row.request_id).sort();
+  if (JSON.stringify(remaining) !== JSON.stringify(["inside", "other-company"])) {
+    throw new Error(`runtime SQL per-company prune rehearsal failed: ${JSON.stringify(remaining)}`);
   }
 } finally {
   if (sql) await sql.end({ timeout: 1 }).catch(() => {});

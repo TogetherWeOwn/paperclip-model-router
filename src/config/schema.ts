@@ -347,6 +347,21 @@ export const ROUTER_CONFIG_SCHEMA = {
         },
       },
     },
+    decisionLog: {
+      type: "object",
+      title: "Decision history retention",
+      additionalProperties: false,
+      properties: {
+        retentionDays: {
+          type: "integer",
+          minimum: 1,
+          maximum: 3650,
+          default: 90,
+          description:
+            "TOG-7897: how long a company's routing decision rows are kept, in days. Bounds both the prune sweep and the query-decisions read path.",
+        },
+      },
+    },
     rule0: {
       type: "object",
       additionalProperties: false,
