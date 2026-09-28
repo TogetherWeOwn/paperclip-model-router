@@ -90,6 +90,41 @@ function nullableNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * TOG-7893 (G9): at most this many capacity sources are fetched at once.
+ *
+ * The old loop awaited each source in turn, so refresh time grew linearly
+ * with fleet size and risked overrunning `maxSnapshotAgeMs`. The fetch now
+ * fans out with this bound: a fleet of up to 4 lanes refreshes in roughly one
+ * source-time, and a larger fleet in ceil(N / 4) times the slowest source.
+ * With the per-source ceiling of 25s and the default 300s snapshot age, even
+ * an 8-source fleet refreshes in ~50s worst case.
+ *
+ * Only the network fetch is concurrent. Secret resolution stays sequential in
+ * config order (phase 1 below) so credential-call order is deterministic, and
+ * snapshots are reassembled in config order so error strings, laneDown, and
+ * pace maps are identical to the sequential version. Each fetch settles
+ * independently — one source's failure never cancels or corrupts another's
+ * snapshot — and state is still written once, after all settle.
+ */
+const REFRESH_CAPACITY_MAX_IN_FLIGHT = 4;
+
+async function mapWithBound<T, U>(items: T[], limit: number, task: (item: T) => Promise<U>): Promise<U[]> {
+  const results = new Array<U>(items.length);
+  let next = 0;
+  const run = async (): Promise<void> => {
+    while (next < items.length) {
+      const at = next;
+      next += 1;
+      results[at] = await task(items[at] as T);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.max(0, Math.min(limit, items.length)) }, () => run()),
+  );
+  return results;
+}
+
 function legacyDecisionRecord(companyId: string, value: unknown): DecisionRecord | null {
   const row = asRecord(value);
   const requestId = nullableString(row.requestId);
@@ -316,36 +351,64 @@ export function createPlugin() {
         config: RouterConfig,
       ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; error: string | null; paceVerdicts: Record<string, LanePaceVerdict>; laneDown: Record<string, boolean> }> => {
         if (!config.capacityRouting.enabled) return { snapshots: [], evidence: [], error: null, paceVerdicts: {}, laneDown: {} };
-        const snapshots: CapacitySnapshot[] = [];
+        // TOG-7893 (G9): two phases. Phase 1 resolves secrets SEQUENTIALLY in
+        // config order so credential-call order is unchanged. Phase 2 fetches
+        // with bounded concurrency (REFRESH_CAPACITY_MAX_IN_FLIGHT) and
+        // reassembles snapshots in config order, so everything downstream —
+        // error strings, evidence order, paceVerdicts, laneDown — is identical
+        // to the sequential version.
+        const apiKeys: Array<string | null> = [];
+        const skippedSnapshots = new Map<number, CapacitySnapshot>();
         for (let index = 0; index < config.capacityRouting.sources.length; index += 1) {
           const source = config.capacityRouting.sources[index]!;
-          let apiKey: string | null = null;
-          if (source.apiKeySecretRef) {
+          if (!source.apiKeySecretRef) {
+            apiKeys.push(null);
+            continue;
+          }
+          try {
+            apiKeys.push(await ctx.secrets.resolve(source.apiKeySecretRef as never, {
+              companyId,
+              configPath: `capacityRouting.sources.${index}.apiKeySecretRef`,
+            }));
+          } catch {
+            apiKeys.push(null);
+            skippedSnapshots.set(index, { fetchedAt: new Date().toISOString(), source: source.id, evidence: [], error: "capacity-secret-unavailable" });
+          }
+        }
+        const fetched = await mapWithBound(
+          config.capacityRouting.sources.map((source, index) => ({ source, index })),
+          REFRESH_CAPACITY_MAX_IN_FLIGHT,
+          async ({ source, index }) => {
+            const skipped = skippedSnapshots.get(index);
+            if (skipped) return skipped;
+            // Per-source error isolation: readCapacitySource already converts
+            // every transport/parse failure into a snapshot error, and this
+            // catch closes the loop against an unexpected throw — one bad
+            // source must never cancel its siblings or fault the refresh.
             try {
-              apiKey = await ctx.secrets.resolve(source.apiKeySecretRef as never, {
-                companyId,
-                configPath: `capacityRouting.sources.${index}.apiKeySecretRef`,
+              return await readCapacitySource({
+                source,
+                http: capacityHttp(ctx),
+                apiKey: apiKeys[index] ?? null,
+                now: () => new Date().toISOString(),
+                // TOG-2139: pace is computed from the same response body, so passing
+                // the lane definition changes nothing about the capacity fetch itself.
+                // TOG-2922: evaluate it whenever the source configures it, including
+                // while paceOrdering is off. That warms the stored verdicts so the
+                // enable is genuinely one-key and observable before it steers
+                // anything; steering stays gated on the flag at the selectModel call.
+                lane: source.pace,
+                pacePolicy: config.capacityRouting.pacePolicy,
               });
             } catch {
-              snapshots.push({ fetchedAt: new Date().toISOString(), source: source.id, evidence: [], error: "capacity-secret-unavailable" });
-              continue;
+              return { fetchedAt: new Date().toISOString(), source: source.id, evidence: [], error: "capacity-request-failed" };
             }
-          }
-          snapshots.push(await readCapacitySource({
-            source,
-            http: capacityHttp(ctx),
-            apiKey,
-            now: () => new Date().toISOString(),
-            // TOG-2139: pace is computed from the same response body, so passing
-            // the lane definition changes nothing about the capacity fetch itself.
-            // TOG-2922: evaluate it whenever the source configures it, including
-            // while paceOrdering is off. That warms the stored verdicts so the
-            // enable is genuinely one-key and observable before it steers
-            // anything; steering stays gated on the flag at the selectModel call.
-            lane: source.pace,
-            pacePolicy: config.capacityRouting.pacePolicy,
-          }));
-        }
+          },
+        );
+        // mapWithBound preserves input order (slot reassembly), so the
+        // snapshots ARE in config order: error strings, evidence order,
+        // paceVerdicts, and laneDown are identical to the sequential version.
+        const snapshots: CapacitySnapshot[] = fetched;
         const evidence = snapshots.flatMap((snapshot) => snapshot.evidence);
         const snapshotErrors = snapshots.map((snapshot) => snapshot.error).filter((value): value is string => Boolean(value));
         const malformedEvidence = evidence.some((entry) =>

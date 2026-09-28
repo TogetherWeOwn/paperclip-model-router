@@ -100,8 +100,13 @@ never performs a telemetry GET inline. Inference still makes exactly one upstrea
 
 Each source names exact `modelIds`, a public HTTPS status URL, optional Paperclip secret
 reference, lane-label and health fields, utilization/reset windows, a 1–25 second timeout
-(default 5 seconds), and a bounded response ceiling (default 256 KiB). Refresh uses one
-host-managed GET with redirects refused and never overwrites a valid snapshot on failure.
+(default 5 seconds), and a bounded response ceiling (default 256 KiB). Refresh issues one
+host-managed GET per source with redirects refused and never overwrites a valid snapshot
+on failure. Sources refresh concurrently with at most 4 in flight
+(`REFRESH_CAPACITY_MAX_IN_FLIGHT` in `src/worker.ts`), so a fleet of up to 4 lanes
+refreshes in roughly one source-time; secret resolution stays sequential in config order
+and snapshots are reassembled in config order, so a single failing source keeps its
+error while the healthy lanes keep their evidence.
 Stored evidence contains only model ID, source ID, a sanitized lane label, health, posture,
 utilization, and reset facts. It contains no credential, raw body, URL, provider, account, or
 serving-identity claim.

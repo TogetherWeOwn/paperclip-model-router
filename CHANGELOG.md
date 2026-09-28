@@ -10,6 +10,25 @@ version is not present here.
 
 ## [Unreleased]
 
+### Changed
+
+- **`refresh-capacity` fetches sources with bounded concurrency (TOG-7893).**
+  The old loop awaited each source in turn, so refresh time grew linearly
+  with fleet size and risked overrunning `maxSnapshotAgeMs`. The fetch now
+  fans out with at most 4 in flight (`REFRESH_CAPACITY_MAX_IN_FLIGHT` in
+  `src/worker.ts`): up to 4 lanes refresh in roughly one source-time, a
+  larger fleet in ceil(N / 4) times the slowest source. Secret resolution
+  stays sequential in config order and snapshots are reassembled in config
+  order, so error strings, evidence order, paceVerdicts, and laneDown are
+  unchanged; each fetch settles independently, so one failing source keeps
+  its error while the healthy lanes keep their evidence.
+
+### Compatibility
+
+- Drop-in: no config changes, no new capability, no state-shape change.
+  Observable differences are timing (faster multi-source refresh) and
+  fetch-start interleaving only.
+
 ### Added
 
 - **Capacity-snapshot age observability (TOG-7885, gap G8).** Staleness is
