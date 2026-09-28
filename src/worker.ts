@@ -29,7 +29,7 @@ import {
   decisionRecordParams,
   type DecisionRecord,
 } from "./decision-records.js";
-import type { RoutingDecision } from "./engine/types.js";
+import { MODEL_TIER_ORDER, type RoutingDecision } from "./engine/types.js";
 import { selectModel } from "./engine/select.js";
 import { extractAuthoritativeBudgetSpentFraction, resolveEffectiveBudgetSpentFraction } from "./budget-authority.js";
 import { validateUpstreamConfig } from "./inference/adapters.js";
@@ -1396,6 +1396,23 @@ export function createPlugin() {
       }
       if (!(config.budget.warnFraction <= config.budget.downshiftFraction && config.budget.downshiftFraction <= config.budget.haltFraction)) {
         errors.push("budget fractions must satisfy warn <= downshift <= halt");
+      }
+      // TOG-7882 (G3): scoreTier walks MODEL_TIER_ORDER from the top and
+      // returns the first tier whose threshold the score reaches, so a
+      // misordered `tiering.thresholds` silently mis-tiers every scored task
+      // (the higher threshold becomes unreachable). Fail closed at write
+      // time, naming the offending adjacent pair. Equality is allowed: an
+      // equal pair just collapses the higher tier, which is a deliberate
+      // choice, not a silent mis-tier. Removing this block must turn the
+      // tier-threshold ordering tests red.
+      for (let tierIndex = 1; tierIndex < MODEL_TIER_ORDER.length; tierIndex += 1) {
+        const lower = MODEL_TIER_ORDER[tierIndex - 1]!;
+        const upper = MODEL_TIER_ORDER[tierIndex]!;
+        if (config.tiering.thresholds[lower] > config.tiering.thresholds[upper]) {
+          errors.push(
+            `tiering.thresholds must satisfy ${lower} <= ${upper} (got ${lower}=${config.tiering.thresholds[lower]}, ${upper}=${config.tiering.thresholds[upper]})`,
+          );
+        }
       }
       if (config.capacityRouting.enabled && config.capacityRouting.sources.length === 0) {
         errors.push("capacityRouting.enabled is true but no telemetry sources are configured");
