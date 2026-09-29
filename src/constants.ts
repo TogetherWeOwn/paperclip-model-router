@@ -43,6 +43,13 @@ export const JOB_KEYS = {
    * instead and can flush what the continuation could not persist.
    */
   reconcileAsyncInvocations: "reconcile-async-invocations",
+  /**
+   * TOG-7160 (port of TOG-930): read each company's configured upstream
+   * catalogue and take models that have gone dark out of service. Catalogue
+   * presence never creates positive health — it only clears absence strikes;
+   * `healthy`/`degraded` require real invocation evidence.
+   */
+  modelHealth: "model-health-probe",
 } as const;
 
 export const STATE_KEYS = {
@@ -60,6 +67,15 @@ export const STATE_KEYS = {
    * still expire via the pending row's own TTL.
    */
   pendingInvocationsByRun: "pending-invocations-by-run",
+  /**
+   * TOG-7160 (port of TOG-930): company-scoped invocation-derived model
+   * health overlay (`ModelHealthState`). `ctx.config` is read-only to the
+   * plugin, so the probe records health here and selection reads the overlay
+   * on top of the operator's model table. The operator's `enabled: false`
+   * always wins — the probe can take a model out of service, never put one
+   * back into service against the operator's wish.
+   */
+  modelHealth: "model-health",
 } as const;
 
 /**

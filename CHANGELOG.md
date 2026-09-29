@@ -12,6 +12,18 @@ version is not present here.
 
 ### Added
 
+- **Invocation-derived model health (TOG-7160, port of TOG-930).**
+  `src/health/` (types, reconcile, catalogue probe) tracks per-model health
+  in company-scoped plugin state: catalogue presence keeps a model unknown
+  (never healthy), 2 consecutive routed post-transport failures degrade it
+  (deprioritized, last-resort), 2 successes restore healthy, 2 consecutive
+  catalogue absences mark it dead (disabled unless the operator already
+  did). `select.ts` routes degraded models last with a ceiling lift for
+  healthier qualified models; `worker.ts` feeds sync + async-continuation
+  results (excluding 401s, cancellations, pre-transport terminals) and runs
+  a 15-minute `model-health-probe` job. `tests/health.spec.ts` (18 tests)
+  and `tests/job-health.spec.ts` (7 tests) port the original suites.
+
 - **Normative async-invocation contract section (TOG-7898, gap G18).**
   `docs/contracts/compatible-upstream-v1.md` gains section 10, derived from
   shipped code: submit/poll envelopes (§10.1), the shared-selection +
