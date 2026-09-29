@@ -43,8 +43,12 @@ describe("manifest", () => {
 
   it("requests only the published capabilities it uses", () => {
     expect([...manifest.capabilities].sort()).toEqual([
+      // TOG-7160 (port of TOG-930): the model-health catalogue sweep needs
+      // to enumerate companies and report health flips on the board.
+      "activity.log.write",
       "agent.tools.register",
       "api.routes.register",
+      "companies.read",
       "database.namespace.migrate",
       "database.namespace.read",
       "database.namespace.write",
@@ -54,6 +58,16 @@ describe("manifest", () => {
       "plugin.state.read",
       "plugin.state.write",
       "secrets.read-ref",
+    ]);
+  });
+
+  it("schedules the model-health catalogue sweep", () => {
+    // TOG-7160 (port of TOG-930): invocation evidence only touches the
+    // routed model, so the sweep is the only thing that notices a model
+    // going dark upstream. 15 minutes mirrors the original schedule.
+    expect(manifest.jobs?.map((job) => [job.jobKey, job.schedule])).toEqual([
+      ["reconcile-async-invocations", "* * * * *"],
+      ["model-health-probe", "*/15 * * * *"],
     ]);
   });
 

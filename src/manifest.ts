@@ -82,6 +82,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.tools.register",
     "api.routes.register",
     "jobs.schedule",
+    "activity.log.write",
+    "companies.read",
   ],
   entrypoints: { worker: "./dist/worker.js" },
   jobs: [
@@ -91,6 +93,13 @@ const manifest: PaperclipPluginManifestV1 = {
       description:
         "Flushes terminal outcomes and audit records for model_router_invoke_async submissions that finished while the host had already torn down the invocation scope that started them.",
       schedule: "* * * * *",
+    },
+    {
+      jobKey: JOB_KEYS.modelHealth,
+      displayName: "Model health probe",
+      description:
+        "Read each company's configured upstream catalogue and take models that have gone dark out of service.",
+      schedule: "*/15 * * * *",
     },
   ],
   database: {

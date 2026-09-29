@@ -32,6 +32,15 @@ import {
 } from "./decision-records.js";
 import { MODEL_TIER_ORDER, type RoutingDecision } from "./engine/types.js";
 import { selectModel } from "./engine/select.js";
+import {
+  applyHealth,
+  degradedModelIds,
+  normalizeHealthState,
+  reconcileHealth,
+  reconcileInvocation,
+} from "./health/reconcile.js";
+import { probeCatalogue } from "./health/probe.js";
+import type { HealthFlip, ModelHealthState } from "./health/types.js";
 import { extractAuthoritativeBudgetSpentFraction, resolveEffectiveBudgetSpentFraction } from "./budget-authority.js";
 import { validateUpstreamConfig } from "./inference/adapters.js";
 import { effectiveMaxSyncOutputTokens } from "./inference/sync-budget.js";
@@ -215,6 +224,13 @@ function summary(result: InferenceResult): string {
   return "No eligible model was available for this invocation.";
 }
 
+function healthFlipMessage(flip: HealthFlip): string {
+  if (flip.to === "dead") return `Model Router took ${flip.modelId} out of service: ${flip.reason}.`;
+  if (flip.to === "degraded") return `Model Router degraded ${flip.modelId}: ${flip.reason}.`;
+  if (flip.to === "healthy") return `Model Router confirmed ${flip.modelId} healthy: ${flip.reason}.`;
+  return `Model Router put ${flip.modelId} into probation: ${flip.reason}.`;
+}
+
 export function createPlugin() {
   let context: PluginContext | null = null;
   let invoke: ((
@@ -228,6 +244,10 @@ export function createPlugin() {
     actor?: { agentId?: string | null; runId?: string | null },
   ) => Promise<AsyncInvokeResult>) | null = null;
   let invokeResult: ((companyId: string, requestId: string) => Promise<PollResult>) | null = null;
+  // TOG-7160 (port of TOG-930): per-company promise chain serializing
+  // health read-modify-write cycles so concurrent invocations and the
+  // catalogue sweep cannot interleave a lost update.
+  const healthQueues = new Map<string, Promise<void>>();
 
   return definePlugin({
     multiCompanyConfig: true,
@@ -306,6 +326,69 @@ export function createPlugin() {
           for (const key of Object.keys(map).slice(0, excess)) delete map[key];
         }
         await ctx.state.set(stickyKey(companyId), map);
+      };
+
+      // TOG-7160 (port of TOG-930): company-scoped invocation-derived model
+      // health overlay. `ctx.config` is read-only to the plugin, so health is
+      // recorded here and selection reads it on top of the operator's model
+      // table. The operator's `enabled: false` always wins — the overlay can
+      // take a model out of service, never put one back in.
+      const healthKey = (companyId: string) => ({
+        scopeKind: "company" as const,
+        scopeId: companyId,
+        stateKey: STATE_KEYS.modelHealth,
+      });
+
+      const readHealth = async (companyId: string): Promise<ModelHealthState> =>
+        normalizeHealthState(await ctx.state.get(healthKey(companyId)));
+
+      // A flip is reported on the board (activity) and in metrics, but a
+      // reporting failure must never fail the invocation or the probe that
+      // observed it — the state write above is the source of truth.
+      const emitHealthFlips = async (companyId: string, flips: HealthFlip[]): Promise<void> => {
+        for (const flip of flips) {
+          try {
+            await ctx.activity.log({ companyId, message: healthFlipMessage(flip) });
+          } catch (cause) {
+            ctx.logger.error("Model health activity logging failed", {
+              companyId,
+              modelId: flip.modelId,
+              verdict: flip.to,
+              error: cause instanceof Error ? cause.message : String(cause),
+            });
+          }
+          try {
+            await ctx.metrics.write(`model_router.health.${flip.to}`, 1);
+          } catch (cause) {
+            ctx.logger.error("Model health metric write failed", {
+              companyId,
+              modelId: flip.modelId,
+              verdict: flip.to,
+              error: cause instanceof Error ? cause.message : String(cause),
+            });
+          }
+        }
+      };
+
+      const mutateHealth = async (
+        companyId: string,
+        mutate: (previous: ModelHealthState) => { next: ModelHealthState; flips: HealthFlip[] },
+      ): Promise<HealthFlip[]> => {
+        let flips: HealthFlip[] = [];
+        const before = healthQueues.get(companyId) ?? Promise.resolve();
+        const current = before.catch(() => undefined).then(async () => {
+          const result = mutate(await readHealth(companyId));
+          await ctx.state.set(healthKey(companyId), result.next);
+          await emitHealthFlips(companyId, result.flips);
+          flips = result.flips;
+        });
+        healthQueues.set(companyId, current);
+        try {
+          await current;
+          return flips;
+        } finally {
+          if (healthQueues.get(companyId) === current) healthQueues.delete(companyId);
+        }
       };
 
       const capacityStateKey = (companyId: string) => ({
@@ -843,9 +926,15 @@ export function createPlugin() {
           authoritativeBudgetSpentFraction,
           request.task.signals?.budgetSpentFraction,
         );
+        // TOG-7160 (port of TOG-930): the invocation-derived health overlay
+        // gates `dead` models out of the table and deprioritizes `degraded`
+        // ones to last resort inside the engine. `dead` is terminal via
+        // applyHealth; `degraded` stays routable when nothing healthier can
+        // serve (including through the sticky incumbent).
+        const health = await readHealth(companyId);
         const decision = selectModel({
           descriptor: request.task,
-          config,
+          config: { ...config, models: applyHealth(config.models, health) },
           signals: {
             budgetSpentFraction: effectiveBudget.fraction,
             budgetFractionSource: effectiveBudget.source === "none" ? "unspecified" : effectiveBudget.source,
@@ -861,6 +950,7 @@ export function createPlugin() {
             stickyModelId: config.routing.stickyModelWithinIssue
               ? await readStickyModel(companyId, request.task.issueId)
               : undefined,
+            degradedModelIds: degradedModelIds(health),
           },
         });
 
@@ -986,6 +1076,22 @@ export function createPlugin() {
         const result: InferenceResult = transport.error
           ? { outcome: "error", requestId, decision, response: null, error: transport.error }
           : { outcome: "completed", requestId, decision, response: transport.response, error: null };
+        // TOG-7160 (port of TOG-930): feed the routed outcome into the
+        // invocation-derived health overlay. A rejected credential is an
+        // account-health signal about the whole upstream, not evidence
+        // against the routed model, so it never touches health. Only
+        // post-transport outcomes count — pre-transport failures return
+        // above through prepareInvocation's terminal path.
+        const observesModelHealth = result.outcome === "completed" ||
+          (result.outcome === "error" && result.error.code !== "upstream-authentication");
+        if (observesModelHealth) {
+          await mutateHealth(companyId, (previous) => reconcileInvocation({
+            modelId: decision.modelId,
+            succeeded: result.outcome === "completed",
+            previous,
+            now: new Date().toISOString(),
+          }));
+        }
         await record(companyId, actor, request, result, Date.now() - startedAt);
         return result;
       };
@@ -1139,6 +1245,28 @@ export function createPlugin() {
           } catch {
             ctx.logger.warn(
               "Could not remove async invocation from the run index; the run-end reap prunes stale index entries",
+              { requestId },
+            );
+          }
+          // TOG-7160 (port of TOG-930): same health feed as the sync path.
+          // The reaped branch returned above, so `invocation-cancelled`
+          // never reaches health — a run ending says nothing about the
+          // model. A rejected credential is likewise account-level, not
+          // model-level, evidence.
+          try {
+            const observesAsyncHealth = result.outcome === "completed" ||
+              (result.outcome === "error" && result.error.code !== "upstream-authentication");
+            if (observesAsyncHealth) {
+              await mutateHealth(companyId, (previous) => reconcileInvocation({
+                modelId: decision.modelId,
+                succeeded: result.outcome === "completed",
+                previous,
+                now: new Date().toISOString(),
+              }));
+            }
+          } catch {
+            ctx.logger.warn(
+              "Could not record async invocation health from its own continuation; the next invocation converges it",
               { requestId },
             );
           }
@@ -1393,6 +1521,78 @@ export function createPlugin() {
       });
 
       ctx.jobs.register(JOB_KEYS.reconcileAsyncInvocations, reconcileAsyncInvocations);
+
+      // TOG-7160 (port of TOG-930): the catalogue sweep. Invocation evidence
+      // only ever touches the model that was routed; a model that goes dark
+      // upstream would otherwise keep collecting selections until something
+      // invoked it. Presence in the catalogue never creates positive health —
+      // it only clears absence strikes — while absence twice takes the model
+      // out of service. The operator's `enabled: false` always wins.
+      const probeCompany = async (companyId: string): Promise<number> => {
+        let config: RouterConfig;
+        try {
+          config = await companyConfig(companyId);
+        } catch {
+          return 0;
+        }
+        if (config.models.length === 0) return 0;
+        if (validateUpstreamConfig(config.upstream).length > 0) return 0;
+        if (!config.upstream.credentialSecretRef) return 0;
+
+        let credential: string;
+        try {
+          credential = await ctx.secrets.resolve(config.upstream.credentialSecretRef as never, {
+            companyId,
+            configPath: "upstream.credentialSecretRef",
+          });
+        } catch {
+          // Indeterminate, not dead. Leave the table exactly as it was.
+          return 0;
+        }
+
+        const probe = await probeCatalogue({ http: ctx.http, config: config.upstream, credential });
+        if (probe.modelIds === null) {
+          ctx.logger.warn("Model health probe was indeterminate; model table left unchanged", {
+            companyId,
+            detail: probe.detail,
+            status: probe.status,
+          });
+          return 0;
+        }
+        const flips = await mutateHealth(companyId, (previous) => reconcileHealth({
+          models: config.models,
+          probe,
+          previous,
+          now: new Date().toISOString(),
+        }));
+        return flips.length;
+      };
+
+      ctx.jobs.register(JOB_KEYS.modelHealth, async () => {
+        // Jobs are not company-scoped invocations, so the companies to sweep
+        // have to be enumerated rather than inferred from an ambient scope.
+        let companies: Array<{ id: string }>;
+        try {
+          companies = await ctx.companies.list();
+        } catch (cause) {
+          ctx.logger.error("Model health probe could not list companies", {
+            error: cause instanceof Error ? cause.message : String(cause),
+          });
+          return;
+        }
+        let flips = 0;
+        for (const company of companies) {
+          try {
+            flips += await probeCompany(company.id);
+          } catch (cause) {
+            ctx.logger.error("Model health probe failed for a company", {
+              companyId: company.id,
+              error: cause instanceof Error ? cause.message : String(cause),
+            });
+          }
+        }
+        ctx.logger.info("Model health probe complete", { companies: companies.length, flips });
+      });
 
       ctx.logger.info("Model Router worker ready", { version: PLUGIN_VERSION });
     },
