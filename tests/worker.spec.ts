@@ -285,6 +285,10 @@ describe("one select-invoke-normalize-record path", () => {
     Object.assign(invalid.upstream as Record<string, unknown>, patch);
     configs.set(COMPANY_A, invalid);
     const result = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as { outcome: string; error: { code: string } };
+    // Site 2 (`validateUpstreamConfig` shape failures: bad URL, unknown
+    // protocol, out-of-bound timeouts) keeps `upstream-url-rejected` — that
+    // code correctly attributes the fault to the upstream block. TOG-7881's
+    // new `invalid-config` is only for fail-closed `resolveConfig` throws.
     expect(result).toMatchObject({ outcome: "error", error: { code: "upstream-url-rejected" } });
     expect(httpCalls).toHaveLength(0);
     expect(secretCalls).toHaveLength(0);
@@ -341,7 +345,9 @@ describe("one select-invoke-normalize-record path", () => {
     });
     configs.set(COMPANY_A, invalid);
     const result = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as { outcome: string; error: { code: string } };
-    expect(result).toMatchObject({ outcome: "error", error: { code: "upstream-url-rejected" } });
+    // TOG-7881 (G2): a smuggled stored header is broken *config* —
+    // `invalid-config`, not `upstream-url-rejected`.
+    expect(result).toMatchObject({ outcome: "error", error: { code: "invalid-config" } });
     expect(httpCalls).toHaveLength(0);
     expect(secretCalls).toHaveLength(0);
   });

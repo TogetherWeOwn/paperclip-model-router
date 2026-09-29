@@ -422,6 +422,7 @@ type InferenceErrorCode =
   | "invalid-request"
   | "secret-unavailable"
   | "upstream-url-rejected"
+  | "invalid-config"
   | "upstream-redirect"
   | "upstream-connect"
   | "upstream-timeout"
@@ -466,6 +467,7 @@ Error rules:
 - If the plugin's caller-visible timer reaches `requestTimeoutMs`, the operation returns `upstream-timeout`, retryable. On the synchronous path, stock `ctx.http.fetch` does not serialize an abort signal, so the host request may continue in cleanup until the stock 30-second host timeout; no second operation is started by the plugin. (The async bound is the selected model's effective timeout in section 10.2.)
 - A 2xx response with invalid JSON or invalid required fields -> `invalid-upstream-response`, non-retryable until the upstream is fixed.
 - A run-end reap aborting an async invocation in flight (TOG-7417) -> `invocation-cancelled`, non-retryable. Never produced by the transport itself; the transport reports an abort as `invocation-cancelled` only when its caller-supplied abort signal fired, and the reap settles the pending row to the same code. Retry logic MUST NOT replay a cancelled run: the host declared it finished.
+- A fail-closed `resolveConfig` throw on the stored company config (bad Rule 0 pattern per TOG-7881, duplicate model id, forbidden extraHeaders) -> `invalid-config`, non-retryable until the operator fixes the config. The message names the offending path and index; the refusal is persisted to the decision log. Never `upstream-url-rejected` (the upstream was never reached) and never `invalid-request` (the caller request is not at fault).
 - After stock `ctx.http.fetch` returns its buffered body, the adapter measures its UTF-8 byte length. Exceeding `maxResponseBytes` -> `upstream-response-too-large`, non-retryable for the same configuration. This is a caller-visible acceptance bound, not an early network-read bound: stock v1 may buffer up to its host ceiling before the plugin can reject it.
 
 `retryable` tells the caller whether a new operation may succeed. It never authorizes an automatic plugin replay or model change.

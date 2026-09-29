@@ -1,4 +1,5 @@
 import type { CapacityEvidence, LanePaceVerdict, PaceState } from "../capacity/types.js";
+import { boundRule0Summary } from "../config/rule0.js";
 import type { RouterConfig } from "../config/types.js";
 import { formatUsd } from "../spend-ledger.js";
 import { MODEL_TIER_ORDER, type Candidate, type GateLevel, type ModelEntry, type ModelTier, type RoutingDecision, type RuntimeSignals, type TaskDescriptor } from "./types.js";
@@ -45,7 +46,15 @@ export function gateLevelFor(value: number | undefined, thresholds: { warn: numb
 }
 export function matchRule0(summary: string | undefined, config: RouterConfig): { tool: string; pattern: string } | null {
   if (!config.rule0.enabled || !summary) return null;
-  for (const entry of config.rule0.deterministicPatterns) { try { if (new RegExp(entry.pattern, "i").test(summary)) return entry; } catch { continue; } }
+  // TOG-7881 (G2): patterns are precompiled once at config resolution
+  // (`resolveConfig` → `compileRule0Pattern`); the hot path reuses the stored
+  // regex and never constructs one. The summary is length-bounded so every
+  // match runs over a finite input alongside the load-time nested-quantifier
+  // rejection.
+  const bounded = boundRule0Summary(summary);
+  for (const entry of config.rule0.deterministicPatterns) {
+    if (entry.regex.test(bounded)) return { tool: entry.tool, pattern: entry.pattern };
+  }
   return null;
 }
 export function scoreTier(descriptor: TaskDescriptor, config: RouterConfig): { tier: ModelTier; score: number | null } {

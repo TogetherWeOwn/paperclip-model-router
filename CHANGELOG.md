@@ -85,6 +85,27 @@ version is not present here.
   case-variant, dupe-vs-`fallbackModelId`, fallback stays exact, shipped
   fixtures stay green, schema backstop). Three mutation probes (throw
   removed / fold removed / validator catch removed) go 5 / 2 / 3 red.
+- **Rule 0 patterns precompile once and fail closed at config load (TOG-7881,
+  gap G2).** `matchRule0` (`src/engine/select.ts`) used to construct
+  `new RegExp` per invocation inside a try/catch: invalid patterns were
+  silently dead config and pathological ones were per-request ReDoS.
+  `resolveConfig` now compiles each `deterministicPatterns` entry once via
+  `compileRule0Pattern` (`src/config/rule0.ts`), throwing a fail-closed
+  `Rule0PatternError` naming the operator-visible array index on a
+  malformed, invalid, or nested-quantifier pattern; a syntactic
+  nested-quantifier guard rejects catastrophic-backtracking shapes (with the
+  residual alternation-ambiguity risk documented, not checked), and every
+  match runs over a 4096-char length-bounded summary. The hot path reuses
+  the stored regex and never constructs one. `onValidateConfig` surfaces the
+  refusal as `ok:false` instead of a thrown 500, and a broken *stored*
+  config now refuses at the invoke seam as an audited `invalid-config`
+  terminal (new `InferenceErrorCode`, persisted to the decision log) instead
+  of the misattributed `upstream-url-rejected`.
+  `tests/tog-7881-rule0-precompile.spec.ts`: 8 tests (load-time index,
+  nested-quantifier rejection, benign controls, malformed entries,
+  precompiled match, summary bound, validator refusal, invoke-seam terminal
+  with audit). Evil-pattern fixtures are assembled from characters, never
+  written as regex-source literals (CodeQL `polynomial-redos` stays green).
 - **Capacity-snapshot age observability (TOG-7885, gap G8).** Staleness is
   now a surfaced fact, not just a routing input.
   - The served decision carries `capacity.snapshotAgeMs` (wall-clock ms,
