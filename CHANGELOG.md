@@ -30,6 +30,22 @@ version is not present here.
 
 ### Changed
 
+- **`docs/OPERATIONS.md` rewritten post-public (TOG-7889, gap G19).** The
+  TOG-532 "not authorized for a public release or live installation" ban is
+  dropped — stale since the repo went public on hosted runners — and replaced
+  with the current path: release (tag → published tarball), pin
+  (`npm run check:pin --for-card`), install (hash-verified download, ordinary
+  `plugin upgrade` vs capability-approval path per the release's Compatibility
+  entry), and a rollback section covering package + config restore. Verified
+  command transcripts throughout: `npm run verify` green (47 files, 536 tests,
+  strict host checks, `REHEARSAL PASSED`) on a clean
+  `v0.8.0` checkout, full two-company `rehearse` output quoted, the
+  `gh release download v0.8.0` sha256 recorded, and the pin gate's refusal of a
+  stale tag quoted as the gate working. The refresh-SLO section gains the
+  `docs/decisions/0010` promotion pointer. `tests/docs-install-version.spec.ts`
+  flips with it: it now requires the install path in OPERATIONS.md and refuses
+  any TOG-532 ban text. No code changes.
+
 - **Gitleaks operator-patch agreement is pinned by a regression spec
   (TOG-7899, gap G20).** The digest-verified gitleaks install +
   `scripts/gitleaks-selftest.sh` wiring landed in the live `secret-scan`

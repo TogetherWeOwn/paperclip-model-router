@@ -171,6 +171,7 @@ v0.5.0 persistence bug but does not require an instance-admin path itself
 ## Scope note
 
 This document records the TOG-3419 change. It does not authorize a live
-install; per `docs/OPERATIONS.md`, the compatible-upstream implementation as a
-whole remains ungated for public release under TOG-532's terms, unchanged by
-this feature.
+install by itself; see `docs/OPERATIONS.md` ("Release, pin, install") for the
+release-and-handoff gate that governs every version. (TOG-7889 dropped the
+stale TOG-532 no-release language this note used to quote.)
+

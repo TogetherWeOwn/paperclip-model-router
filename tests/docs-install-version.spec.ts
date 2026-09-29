@@ -14,6 +14,12 @@
  * pinning the docs to that version makes the next bump fail here until the
  * commands are updated with it. The alternative — remembering — is what failed.
  *
+ * Since TOG-7889 (gap G19) the repo is public and OPERATIONS.md documents the
+ * install path outright; the old "no install command before authorization"
+ * gate below flipped with it. The README stays free of executable install
+ * commands, and every install command anywhere in the checked docs still names
+ * the current version.
+ *
  * Scope is deliberately narrow: only *executable install commands* are checked.
  * Prose that names an old version on purpose ("through `v0.1.1` it was ...",
  * the rollback floor) is history and must stay put, so it is not matched.
@@ -69,11 +75,11 @@ describe("documented install commands", () => {
     }
   }
 
-  it("does not document an install command before release authorization", () => {
+  it("documents the install path in OPERATIONS.md, not in the README", () => {
     const readme = readFileSync(join(repo, "README.md"), "utf8");
     const operations = readFileSync(join(repo, "docs/OPERATIONS.md"), "utf8");
     expect(readme).not.toMatch(/gh release download|paperclipai plugin install/);
-    expect(operations).not.toMatch(/gh release download|paperclipai plugin install/);
+    expect(operations).toMatch(/gh release download/);
   });
 
   it("keeps executable install commands pinned if a future authorization adds them", () => {
@@ -85,8 +91,10 @@ describe("documented install commands", () => {
     }
   });
 
-  it("states the current no-install boundary", () => {
-    expect(readFileSync(join(repo, "docs/OPERATIONS.md"), "utf8")).toContain("not authorized for a public release or live installation");
+  it("states the public release path and carries no TOG-532 ban", () => {
+    const operations = readFileSync(join(repo, "docs/OPERATIONS.md"), "utf8");
+    expect(operations).not.toMatch(/not authorized for a public release|TOG-532/);
+    expect(operations).toMatch(/Release, pin, install/);
   });
 });
 
