@@ -109,9 +109,22 @@ export interface CapacityRoutingConfig {
  */
 export type SourcePaceDefinition = import("../capacity/types.js").LanePaceDefinition;
 
+export interface Rule0Pattern {
+  pattern: string;
+  tool: string;
+  /**
+   * TOG-7881 (G2): compiled once at config resolution (`resolveConfig`),
+   * so the engine never constructs a regex per request and invalid config
+   * fails closed at load instead of silently never matching. Survives the
+   * harness's `structuredClone`; never persisted — it is rebuilt from
+   * `pattern` on every resolve.
+   */
+  regex: RegExp;
+}
+
 export interface Rule0Config {
   enabled: boolean;
-  deterministicPatterns: Array<{ pattern: string; tool: string }>;
+  deterministicPatterns: Rule0Pattern[];
 }
 
 export interface SecretRef {
