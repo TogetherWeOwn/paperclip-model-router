@@ -76,7 +76,13 @@ export type InferenceErrorCode =
   | "upstream-client-error"
   | "upstream-server-error"
   | "upstream-overloaded"
-  | "invalid-upstream-response";
+  | "invalid-upstream-response"
+  /**
+   * TOG-7417: the async invocation was reaped by `cancel-run-invocations`
+   * when its agent run ended before the upstream call completed. Never
+   * produced by the transport itself.
+   */
+  | "invocation-cancelled";
 
 export interface InferenceError {
   code: InferenceErrorCode;

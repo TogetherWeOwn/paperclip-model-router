@@ -32,13 +32,49 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
 export const SYNC_BUDGET_CEILING_MS = 28_000;
 
 /**
- * TOG-1035's measured baseline: glm-5.3-flash produced ~1200 output tokens in
- * ~28s of upstream generation time. Used only to derive a default
- * `maxSyncOutputTokens` for a model that has not set one explicitly — an
- * operator with better numbers for their own models should set the field
- * instead of relying on this.
+ * TOG-7896 (R2-14): per-class throughput table for the derived
+ * `maxSyncOutputTokens` default. The sync preflight rejects a request whose
+ * `maxOutputTokens` cannot finish inside the sync budget at the applicable
+ * row's rate; an explicit per-model `maxSyncOutputTokens` always wins over
+ * every row here.
+ *
+ * | class     | rate (tok/s) | provenance                                      |
+ * |-----------|--------------|-------------------------------------------------|
+ * | `chat`    | 1200/28 (~43)| Measured: glm-5.3-flash, ~1200 output tokens in |
+ * |           |              | ~28s upstream generation time (TOG-1035).        |
+ * | `reasoning`| 600/28 (~21) | Uncalibrated conservative estimate: HALF the    |
+ * |           |              | measured chat row. No per-class production      |
+ * |           |              | measurement exists yet; halving steers an       |
+ * |           |              | unlabeled reasoning model toward async instead  |
+ * |           |              | of risking a discarded sync generation.         |
+ *
+ * A model without `syncThroughputClass` uses the `chat` row, so every
+ * existing config keeps byte-for-byte the budget it already had. Operators
+ * with measured numbers for their own models must set `maxSyncOutputTokens`
+ * explicitly instead of relying on either row. To calibrate a row: run N
+ * representative generations, record billed output tokens over upstream
+ * wall-clock, and take a low percentile (p10) as the row rate — the preflight
+ * is a reachability ceiling, so the row must reflect slow generations, not
+ * the median.
  */
-export const SYNC_THROUGHPUT_TOKENS_PER_MS = 1_200 / 28_000;
+export const SYNC_THROUGHPUT_CHAT_TOKENS_PER_MS = 1_200 / 28_000;
+export const SYNC_THROUGHPUT_REASONING_TOKENS_PER_MS = 600 / 28_000;
+
+/** Back-compat alias: the single pre-R2-14 baseline, now the `chat` row. */
+export const SYNC_THROUGHPUT_TOKENS_PER_MS = SYNC_THROUGHPUT_CHAT_TOKENS_PER_MS;
+
+/**
+ * Resolves the applicable throughput row. Absent or unrecognized classes fall
+ * through to `chat` — the measured, historically shipped default — never to
+ * the estimate. Stored config rows can carry any value at all (the JSON
+ * schema is form metadata that validates nothing at runtime), so the
+ * execution path allowlists rather than trusts.
+ */
+export function syncThroughputTokensPerMs(modelClass: unknown): number {
+  return modelClass === "reasoning"
+    ? SYNC_THROUGHPUT_REASONING_TOKENS_PER_MS
+    : SYNC_THROUGHPUT_CHAT_TOKENS_PER_MS;
+}
 
 export const MIN_RESPONSE_BYTES = 1_024;
 export const MAX_RESPONSE_BYTES = 16_777_216;
@@ -62,4 +98,5 @@ export const FORBIDDEN_EXTRA_HEADER_NAMES = [
 
 export const FORBIDDEN_EXTRA_HEADERS = new Set<string>(FORBIDDEN_EXTRA_HEADER_NAMES);
 
-export { isReservedLiteralHost } from "../../packages/lane-capacity/src/url-policy.js";
+export { checkResolvedHost, defaultHostAddressResolver, isReservedLiteralHost } from "../../packages/lane-capacity/src/url-policy.js";
+export type { HostAddressResolver, ResolvedHostVerdict } from "../../packages/lane-capacity/src/url-policy.js";

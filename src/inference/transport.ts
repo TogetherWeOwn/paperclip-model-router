@@ -2,7 +2,8 @@ import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
 import type { PluginHttpClient } from "@paperclipai/plugin-sdk";
 
 import type { CompatibleUpstreamConfig } from "../config/types.js";
-import { MAX_REQUEST_TIMEOUT_MS, MIN_REQUEST_TIMEOUT_MS } from "../config/upstream-constraints.js";
+import { checkResolvedHost, MAX_REQUEST_TIMEOUT_MS, MIN_REQUEST_TIMEOUT_MS } from "../config/upstream-constraints.js";
+import type { HostAddressResolver } from "../config/upstream-constraints.js";
 import {
   buildAnthropicRequest,
   buildOpenAiRequest,
@@ -37,13 +38,15 @@ function error(code: InferenceError["code"], message: string, retryable: boolean
  * egress, so its own `fetch` is not subject to the host abort and can run up to
  * this transport's own `MAX_REQUEST_TIMEOUT_MS` (300s) ceiling.
  *
- * SSRF: this path does not re-run the host's per-request DNS pinning. That is
- * acceptable because the only URL it ever reaches is the operator-configured
- * `upstream.baseUrl`, which config validation already constrains to an https,
- * credential-free, non-private/reserved absolute URL (see
- * `config/upstream-constraints` and the `upstream.baseUrl` checks in the config
- * validator). The per-request payload never changes the host or path beyond
- * that fixed, pre-validated upstream endpoint.
+ * SSRF: this path does not re-run the host's per-request DNS pinning. The
+ * plugin pins instead: `invokeCompatibleUpstream` resolves the request
+ * hostname at request time (TOG-7884) and refuses when ANY answer is
+ * private/reserved — fail-closed on rebinding, split-horizon DNS, and records
+ * that changed after config validation. Config validation additionally
+ * constrains `upstream.baseUrl` to an https, credential-free,
+ * non-private/reserved absolute URL (see `config/upstream-constraints` and
+ * the `upstream.baseUrl` checks in the config validator). The per-request
+ * payload never changes the host or path beyond that fixed endpoint.
  *
  * Used only by the async (submit + poll) background continuation. The
  * synchronous `/invoke` path keeps `ctx.http` and its 30s host cap unchanged.
@@ -109,6 +112,20 @@ export async function invokeCompatibleUpstream(input: {
   modelId: string;
   /** Per-model override from the selected model's table entry; absent means inherit. */
   modelTimeoutMs?: number;
+  /**
+   * TOG-7417: abort signal for run-end reap. Only the async background
+   * continuation supplies one (one AbortController per request, owned by the
+   * worker); the synchronous path never aborts and passes nothing, so its
+   * wire shape is unchanged. When the signal fires the outcome is
+   * `invocation-cancelled`, never an upstream error code.
+   */
+  signal?: AbortSignal;
+  /**
+   * TOG-7884 (gap G6): request-time DNS resolution hook for the SSRF guard.
+   * Defaults to the worker's real resolver; tests inject a mock. Absent in
+   * every production call site, so the default applies there.
+   */
+  resolveHostAddresses?: HostAddressResolver;
 }): Promise<TransportResult> {
   let url: string;
   let headers: Record<string, string>;
@@ -126,11 +143,32 @@ export async function invokeCompatibleUpstream(input: {
   } catch {
     return error("upstream-url-rejected", "The configured compatible upstream is invalid.", false);
   }
+  // TOG-7884 (gap G6): request-time DNS guard. The literal-host check in
+  // config validation only sees IP literals; a DNS name resolving to 10.x /
+  // 169.254.x / ::1 sails through it. This resolves the *request* hostname —
+  // the derived upstreamUrl, not just baseUrl — and refuses when ANY answer
+  // is private/reserved, closing the rebinding window on this path too.
+  // No credential or header has been built into a wire call yet: requestHeaders
+  // returns a plain object, and fetch is the first point anything leaves the
+  // process, so refusing here guarantees nothing exfiltrates.
+  try {
+    const resolved = await checkResolvedHost(new URL(url).hostname, input.resolveHostAddresses);
+    if (!resolved.allowed) {
+      return error("upstream-url-rejected", "The configured compatible upstream URL resolves to a private or reserved address.", false);
+    }
+  } catch {
+    return error("upstream-url-rejected", "The configured compatible upstream is invalid.", false);
+  }
+  // TOG-7417: the signal travels on the fetch init so both the real worker
+  // fetch and the harness/test doubles see it. A test fake that ignores the
+  // init still terminates when the reap path resolves the race, so an abort
+  // is never hostage to a fake honoring AbortSignal.
   const request = input.http.fetch(url, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
     redirect: "manual",
+    ...(input.signal ? { signal: input.signal } : {}),
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let response: Response;
@@ -148,6 +186,18 @@ export async function invokeCompatibleUpstream(input: {
     if (cause instanceof Error && cause.message === "router-request-timeout") {
       request.catch(() => undefined);
       return error("upstream-timeout", "The compatible upstream exceeded the configured request timeout.", true);
+    }
+    // TOG-7417: run-end reap. A rejection with an already-aborted signal is
+    // the caller's cancellation, not an upstream failure — report it under
+    // its own non-retryable code so retry logic never replays a run the host
+    // has declared finished. Checked before the host-URL and connect
+    // fallthroughs, which would otherwise misclassify the abort.
+    if (input.signal?.aborted) {
+      request.catch(() => undefined);
+      return {
+        response: null,
+        error: { code: "invocation-cancelled", message: "The invocation was cancelled when its agent run ended.", retryable: false, upstreamStatus: null, upstreamRequestId: null },
+      };
     }
     const emptyStatus = sdkReconstructedEmptyResponseStatus(cause);
     if (emptyStatus !== null) {

@@ -111,7 +111,7 @@ try {
     "11111111-1111-4111-8111-111111111111", "company-a", now.toISOString(), "inside",
     "agent-a", "run-a", "issue-a", "implementation", "selected", "model-a", false,
     "openai-chat-completions", "completed", null, null, 10, 1, 1, "end-turn", null,
-    "disabled", "not-evaluated", null, null, "not-evaluated", null, false, null,
+    "disabled", "not-evaluated", null, null, "not-evaluated", null, false, 42, true, null,
   ];
   await sql.unsafe(insertSql, base);
   await sql.unsafe(insertSql, base);

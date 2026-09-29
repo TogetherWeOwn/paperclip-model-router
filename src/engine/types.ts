@@ -1,5 +1,15 @@
 export type ModelTier = "small" | "standard" | "strong" | "frontier";
 
+/**
+ * TOG-7896 (R2-14): which throughput baseline a model's derived sync budget
+ * uses. `chat` is the rest of the table — fast, non-thinking generations.
+ * `reasoning` is a model that spends wall-clock (and output budget) on hidden
+ * thinking tokens, so its *visible*-token throughput is strictly lower. The
+ * class only matters when `maxSyncOutputTokens` is absent; an explicit
+ * per-model override always wins over either baseline.
+ */
+export type SyncThroughputClass = "chat" | "reasoning";
+
 export const MODEL_TIER_ORDER: readonly ModelTier[] = [
   "small",
   "standard",
@@ -38,6 +48,15 @@ export interface ModelEntry {
    * this field entirely.
    */
   maxSyncOutputTokens?: number;
+  /**
+   * TOG-7896 (R2-14): selects which row of the per-class throughput table the
+   * derived `maxSyncOutputTokens` default uses. Absent means `chat` — the
+   * measured TOG-1035 baseline — so existing configs keep byte-for-byte the
+   * budget they already had. Set `reasoning` on models that spend wall-clock
+   * on hidden thinking tokens, which a chat-derived ceiling would otherwise
+   * over-admit. An explicit `maxSyncOutputTokens` always wins over either row.
+   */
+  syncThroughputClass?: SyncThroughputClass;
   enabled: boolean;
 }
 
@@ -58,9 +77,40 @@ export interface TaskDescriptor {
 }
 
 export interface RuntimeSignals {
+  /**
+   * TOG-7417: the worker pre-resolves this before calling selectModel — a
+   * host-injected authoritative fraction (tool/action context) wins over the
+   * caller-supplied `task.signals.budgetSpentFraction`, which any caller can
+   * forge. The engine only moves the warn/downshift/halt gates; it cannot
+   * tell the two sources apart.
+   */
   budgetSpentFraction?: number;
+  /**
+   * TOG-7891 (Gap G4): provenance of the budget fraction for `decision.budget`
+   * and the worker's trace annotation. Set by the worker when the gates moved
+   * off the monthly spend ledger (or the resolved effective fraction); unit
+   * callers that hand a fraction straight in leave it absent, and the decision
+   * reads `unspecified`.
+   */
+  budgetFractionSource?: "ledger" | "authoritative" | "caller" | "unspecified";
+  /**
+   * TOG-7891 (Gap G4): the ledger backing a fraction sourced from the
+   * monthly spend rollup. Absent for every other source; the engine
+   * validates it defensively, so a malformed detail reads as no ledger
+   * rather than a crash.
+   */
+  budgetLedger?: { totalUsd: number; monthLabel: string };
   capacityEvidence?: import("../capacity/types.js").CapacityEvidence[];
   capacityError?: string;
+  /**
+   * TOG-7885 (G8): age of the capacity snapshot the worker served this
+   * decision from, in wall-clock ms (null = none stored). The engine does
+   * NOT re-derive staleness from a timestamp — the worker computes it once
+   * against `capacityRouting.maxSnapshotAgeMs` and hands both down, so the
+   * metric, the record, and the decision can never disagree about it.
+   */
+  capacitySnapshotAgeMs?: number | null;
+  capacitySnapshotStale?: boolean;
   servingModelId?: string;
   stickyModelId?: string;
   /**
@@ -145,10 +195,36 @@ export interface RoutingDecision {
      * decision is real; it is simply not capacity-aware.
      */
     degraded: boolean;
+    /**
+     * TOG-7885 (G8): age of the capacity snapshot the worker served this
+     * decision from, in wall-clock ms. Surfaced so a reviewer forcing a
+     * stale snapshot sees the staleness on the decision itself. Null when
+     * capacity routing is disabled or no snapshot was ever stored.
+     */
+    snapshotAgeMs: number | null;
+    /**
+     * TOG-7885 (G8): true when `snapshotAgeMs` exceeds
+     * `capacityRouting.maxSnapshotAgeMs` (or no snapshot exists while
+     * capacity routing is enabled). The alertable boolean behind the
+     * degraded-age counter and the decision-record rollup.
+     */
+    snapshotStale: boolean;
     servingModelId: string | null;
     fallbackEvents: string[];
   };
   gates: { budget: GateLevel };
+  /**
+   * TOG-7891 (Gap G4): which channel the budget gates moved off, plus the
+   * ledger backing when the spend rollup was the source. `budget.fraction`
+   * echoes the resolved spent fraction the gates compared against the
+   * configured thresholds; `ledger` is non-null exactly when the fraction
+   * came from this company's current-month decision_records rollup.
+   */
+  budget: {
+    source: "ledger" | "authoritative" | "caller" | "unspecified";
+    fraction: number | null;
+    ledger: { totalUsd: number; monthLabel: string } | null;
+  };
 }
 
 export type GateLevel = "ok" | "warn" | "downshift" | "halt";

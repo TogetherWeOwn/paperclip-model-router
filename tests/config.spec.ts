@@ -23,9 +23,9 @@ function hostValidator(): ValidateFn {
 }
 
 describe("compatible-upstream config", () => {
-  it("compiles and accepts both shipped company configs", () => {
+  it("compiles and accepts all shipped company configs", () => {
     const validate = hostValidator();
-    for (const fixture of ["company-a", "company-b"]) {
+    for (const fixture of ["company-a", "company-b", "company-c"]) {
       expect(validate(readFixture(fixture)), JSON.stringify(validate.errors)).toBe(true);
     }
   });

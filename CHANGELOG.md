@@ -12,6 +12,173 @@ version is not present here.
 
 ### Added
 
+- **Normative async-invocation contract section (TOG-7898, gap G18).**
+  `docs/contracts/compatible-upstream-v1.md` gains section 10, derived from
+  shipped code: submit/poll envelopes (§10.1), the shared-selection +
+  per-model-timeout transport parity (§10.2), 15-minute TTL with lazy expiry
+  and no-resurrect (§10.3), run-end reap to `invocation-cancelled` (§10.4),
+  and single-attempt non-replay with reconcile-backed audit (§10.5).
+  Follow-on corrections in the same section: the `requestTimeoutMs` table
+  max is 300,000 (was stale at 25,000 — the default, not the ceiling), the
+  §2 networking rule names the single sanctioned async direct-fetch client,
+  §9 points long generations at async, §13's non-goals exempt in-contract
+  async cancellation, and §14 gains an async-fidelity conformance item.
+  `tests/tog-7898-async-contract.spec.ts`: 12 tests (bounds, TTL, schedule,
+  single attempt, isolation, route statuses, early exits, reap audit, plus
+  doc-presence pins). Mutation-probed: weakened timeout ceiling and TTL go
+  red by name. Docs-only: no runtime, config, or state-shape change.
+
+### Changed
+
+- **Gitleaks operator-patch agreement is pinned by a regression spec
+  (TOG-7899, gap G20).** The digest-verified gitleaks install +
+  `scripts/gitleaks-selftest.sh` wiring landed in the live `secret-scan`
+  job via operator PR #101 (`8d36ffa`), and the handoff patch
+  `docs/operator/tog-488-ci-secret-scan.patch` is deleted — per the
+  operator runbook, an applied patch left in `docs/operator/` reads as
+  still-queued. `tests/tog-7899-gitleaks-patch-agreement.spec.ts` (6 tests
+  while the patch is pending, 4 in the cleaned-up state)
+  pins the agreement in every lifecycle state: while pending, the patch
+  applies cleanly, targets the live `GITLEAKS_VERSION`, and carries the
+  full hardening with a well-formed digest; once applied (or the patch
+  deleted post-apply, the present state), the live workflow carries it
+  instead. A rotted patch, a missing/untracked/unexecutable self-test
+  script, or `.gitleaks.toml` drift (custom rules returning, fixture
+  allowlist changing) fails with the repair named. Mutation-probed:
+  applied-state simulation passes 5/5, a deleted self-test fails exactly
+  the script test. No workflow file is touched by this change — that half
+  stayed the operator handoff ([TOG-8268](/TOG/issues/TOG-8268)) on this
+  card.
+
+- **`refresh-capacity` fetches sources with bounded concurrency (TOG-7893).**
+  The old loop awaited each source in turn, so refresh time grew linearly
+  with fleet size and risked overrunning `maxSnapshotAgeMs`. The fetch now
+  fans out with at most 4 in flight (`REFRESH_CAPACITY_MAX_IN_FLIGHT` in
+  `src/worker.ts`): up to 4 lanes refresh in roughly one source-time, a
+  larger fleet in ceil(N / 4) times the slowest source. Secret resolution
+  stays sequential in config order and snapshots are reassembled in config
+  order, so error strings, evidence order, paceVerdicts, and laneDown are
+  unchanged; each fetch settles independently, so one failing source keeps
+  its error while the healthy lanes keep their evidence.
+
+### Compatibility
+
+- Drop-in: no config changes, no new capability, no state-shape change.
+  Observable differences are timing (faster multi-source refresh) and
+  fetch-start interleaving only.
+
+### Added
+
+- **Duplicate model ids fail closed at config load (TOG-7880, gap G1).** A
+  duplicated id used to double-count one lane in every survivor pool and
+  make rejections ambiguous. `resolveModels` (`src/config/resolve.ts`) now
+  throws naming both entries (`duplicate model id "x" at models[2] (first
+  seen as "x" at models[0])`), which protects every load path — including
+  the runtime invoke path that never calls the validate hook. The fold is
+  case-insensitive because the engine joins evidence on exact `===` while
+  the TOG-7163 grouped-quota projection folds case, so a case-variant dupe
+  is ambiguous on one path or the other either way. `onValidateConfig`
+  surfaces the refusal as `ok:false` instead of a thrown 500, and the schema
+  gains `uniqueItems: true` on `models` as a byte-identical backstop (stock
+  JSON Schema cannot express per-id case-insensitive uniqueness).
+  `tests/tog-7880-duplicate-model-id.spec.ts`: 10 tests (exact dupe,
+  case-variant, dupe-vs-`fallbackModelId`, fallback stays exact, shipped
+  fixtures stay green, schema backstop). Three mutation probes (throw
+  removed / fold removed / validator catch removed) go 5 / 2 / 3 red.
+- **Capacity-snapshot age observability (TOG-7885, gap G8).** Staleness is
+  now a surfaced fact, not just a routing input.
+  - The served decision carries `capacity.snapshotAgeMs` (wall-clock ms,
+    null when no snapshot was ever stored) and `capacity.snapshotStale`,
+    computed once in `storedCapacity` (`src/worker.ts`) against
+    `capacityRouting.maxSnapshotAgeMs` and passed through `selectModel` —
+    the engine never re-derives it, so the three surfaces cannot disagree.
+  - Each degraded-age invocation fires a company-namespaced counter,
+    `model_router.company.<companyId>.capacity.snapshot_stale` (namespaced
+    in the name because metric tags must not carry a company id).
+  - Migration `002` adds `capacity_snapshot_age_ms` / `capacity_snapshot_stale`
+    to `decision_records` (backward compatible: pre-migration rows read
+    NULL/false — never-stored, never "fresh") with a composite index for the
+    alert query.
+  - `docs/OPERATIONS.md` gains a "Capacity-snapshot refresh SLO" section:
+    the SLO, the counter, and the `stale_share > 0.05` alert query that
+    gates shadow→enforce promotion. `docs/contracts/compatible-upstream-v1.md`
+    §11 admits the two freshness fields.
+  - `tests/tog-7885-degraded-age.spec.ts`: 4 tests (stale / fresh / missing /
+    disabled). Six mutation probes (each wired line deleted) all go red.
+- **Per-class sync throughput baseline (TOG-7896, R2-14).** The derived
+  `maxSyncOutputTokens` default no longer applies one chat-model measurement
+  to every model. Each model entry gains an optional `syncThroughputClass`
+  (`chat` | `reasoning`): `chat` keeps the measured TOG-1035 baseline
+  (1200 tokens / 28s), `reasoning` halves it as a deliberately conservative,
+  explicitly uncalibrated estimate so reasoning models are steered toward
+  async instead of being over-admitted into sync. Absent class means `chat`,
+  so every existing config keeps byte-for-byte its current budget, and an
+  explicit `maxSyncOutputTokens` still wins over either row. The class is
+  passed through in the resolver, refused at config write when it is neither
+  value, and allowlisted to the chat row at derivation time.
+- **Async submit/poll/cancel joins the acceptance rehearsal (TOG-7905,
+  gap G11).** `npm run rehearse` loaded one worker with two sync companies;
+  the async path (submit → poll → reap) was covered only by unit specs, never
+  end to end against the built bundle. The rehearsal gains a third company
+  (`tests/fixtures/company-c.json`, OpenAI-compatible, own base URL and
+  secret reference) and an Evidence 8 section: an async submit polls to
+  `completed` through the company upstream under the sync wire contract
+  (own base URL, `redirect: manual`, `Accept-Encoding: identity`, call-time
+  company-scoped secret); a second submit holds its socket open while the
+  run-end reap aborts the real in-flight request and settles non-retryable
+  `invocation-cancelled`, which a late upstream outcome never overwrites.
+  Per-company isolation is pinned throughout — cross-company polls read
+  `not-found`, and no audit write lands outside the async company.
+  `tests/rehearsal.spec.ts` pins the Evidence 8 transcript lines so a
+  silently-dropped async section fails the build (mutation-probed: the new
+  pins go red against the pre-change script).
+
+### Compatibility
+
+- Drop-in: no config change required, no derived budget changes for any
+  model that does not set the new field. The rehearsal-only third fixture
+  is not referenced by any shipped config path.
+
+## [0.8.0] - 2026-09-27
+
+### Added
+
+- **Authoritative run-budget fraction + run-end reap (TOG-7417).** The
+  TOG-7138 CISO D3 precondition on widening router-invoke access.
+  - The host injects the authoritative spent fraction through the
+    tool/action context — a channel the caller cannot write to — and
+    `prepareInvocation` (`src/worker.ts`) prefers it over the
+    caller-claimed `task.signals.budgetSpentFraction`, which any caller can
+    forge to dodge the halt gate or force a downshift. Resolution is
+    `authoritative ?? caller` (`src/budget-authority.ts`); the
+    `selectModel` gate movement is unchanged. The stock SDK types do not
+    declare the field yet, so extraction is structural (finite-number
+    validation) against the context object.
+  - Async invocations stamp their run (`runId`, plus `agentId` for the
+    reap-time audit row) on the pending record, the worker keeps one
+    `AbortController` per in-flight call threaded through
+    `invokeCompatibleUpstream` as an optional `signal`, and a new
+    `cancel-run-invocations {runId}` action — called by the host when an
+    agent run ends — aborts still-open sockets and settles their rows to
+    terminal `error` / `invocation-cancelled` (new `InferenceErrorCode`,
+    non-retryable, never produced by the transport itself) with an audit
+    record. A per-run state index (`pending-invocations-by-run:{runId}`)
+    enumerates the open requests because `ctx.state` has no listing
+    primitive. The reap is idempotent, never throws on storage failure,
+    prunes stale index entries, and a late upstream outcome can never
+    overwrite a reaped terminal (abort flag plus a settle-time re-read).
+  - The synchronous `/invoke` path sends no abort signal; its wire shape is
+    unchanged.
+
+### Compatibility
+
+- Drop-in over v0.7.1. No config changes; rows written by older workers
+  (no `runId`) are treated as null and reap skips them. No new plugin
+  capability is required, so this upgrades through the ordinary
+  `plugin upgrade` path.
+
+### Added
+
 - **`npm run check:ci` — "CI is green" and "CI ran" are now separate questions
   (TOG-489, rebuilt as TOG-7158).** On 2026-08-25 the organisation crossed its
   GitHub Actions spending limit and every job in every workflow began failing

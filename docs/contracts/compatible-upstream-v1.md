@@ -33,7 +33,7 @@ The replacement remains a stock Paperclip plugin with manifest `apiVersion: 1`.
 - The published `ctx.metrics.write` surface is instance-scoped. Per-company counters MUST live in company-scoped state; native metrics MAY contain only aggregate, non-content measurements that reveal no company identity.
 - Runtime may use only published Paperclip SDK surfaces: manifest/config/state/secrets/http/tools/actions/routes/logging/metrics.
 - Runtime MUST NOT require a Paperclip source patch, fork, migration, copied server file, or private `/app` dependency.
-- Inference networking MUST use `ctx.http.fetch`. Direct Node `fetch`, `http`, `https`, sockets, or third-party HTTP clients are prohibited and MUST be rejected by source and packed-artifact tests; the SDK does not sandbox those bypasses automatically.
+- Inference networking MUST use `ctx.http.fetch`. Direct Node `fetch`, `http`, `https`, sockets, or third-party HTTP clients are prohibited and MUST be rejected by source and packed-artifact tests; the SDK does not sandbox those bypasses automatically. The single exception is the async background upstream call (section 10), which uses the worker's own `fetch` to escape the host's 30-second bridge cap under the same SSRF posture; source and packed-artifact tests MUST reject every other direct-networking path.
 - The plugin MUST use host-authorized company context. A caller-supplied `companyId` MUST NOT override `ToolRunContext.companyId`, `PluginPerformActionContext.companyId`, or `PluginApiRequestInput.companyId`.
 
 ### 2.1 Invocation surface
@@ -55,6 +55,8 @@ The tool returns native `ToolResult`:
 ```
 
 Every expected selection or upstream outcome, including `outcome: "error"`, uses the success form with a short bounded `content` summary and the complete structured result in `data`. The `ToolResult.error` form is reserved for a malformed invocation that prevents construction of an `InferenceResult` or an unavailable worker.
+
+The async submit/poll surfaces (tools `model_router_invoke_async` / `model_router_invoke_result`, actions `invoke-async` / `invoke-result` / `cancel-run-invocations`, routes `POST /invoke-async` and `GET /invoke/:requestId`, job `reconcile-async-invocations`) are defined normatively in section 10. They share the same canonical request validator and selection policy as this section; their submit envelope, poll envelope, and route statuses differ as stated there (notably HTTP 202 for an accepted async submission).
 
 The action returns `InferenceResult`. Expected operation failures return an `InferenceResult` with `outcome: "error"`; malformed native invocation parameters MAY be rejected by the Paperclip bridge before the handler runs.
 
@@ -154,7 +156,7 @@ Required bounds:
 
 | Field | Minimum | Maximum | Default |
 | --- | ---: | ---: | ---: |
-| `requestTimeoutMs` | 1,000 | 25,000 | 25,000 |
+| `requestTimeoutMs` | 1,000 | 300,000 | 25,000 |
 | `maxResponseBytes` | 1,024 | 16,777,216 | 8,388,608 |
 
 Configuration rules:
@@ -432,7 +434,8 @@ type InferenceErrorCode =
   | "upstream-client-error"
   | "upstream-server-error"
   | "upstream-overloaded"
-  | "invalid-upstream-response";
+  | "invalid-upstream-response"
+  | "invocation-cancelled";
 
 interface InferenceError {
   code: InferenceErrorCode;
@@ -460,8 +463,9 @@ Error rules:
 - 500-528 and 530-599 -> `upstream-server-error`, retryable.
 - 529 -> `upstream-overloaded`, retryable.
 - A network or DNS failure before headers -> `upstream-connect`, retryable.
-- If the plugin's caller-visible timer reaches `requestTimeoutMs`, the operation returns `upstream-timeout`, retryable. Stock `ctx.http.fetch` does not serialize an abort signal, so the host request may continue in cleanup until the stock 30-second host timeout; no second operation is started by the plugin.
+- If the plugin's caller-visible timer reaches `requestTimeoutMs`, the operation returns `upstream-timeout`, retryable. On the synchronous path, stock `ctx.http.fetch` does not serialize an abort signal, so the host request may continue in cleanup until the stock 30-second host timeout; no second operation is started by the plugin. (The async bound is the selected model's effective timeout in section 10.2.)
 - A 2xx response with invalid JSON or invalid required fields -> `invalid-upstream-response`, non-retryable until the upstream is fixed.
+- A run-end reap aborting an async invocation in flight (TOG-7417) -> `invocation-cancelled`, non-retryable. Never produced by the transport itself; the transport reports an abort as `invocation-cancelled` only when its caller-supplied abort signal fired, and the reap settles the pending row to the same code. Retry logic MUST NOT replay a cancelled run: the host declared it finished.
 - After stock `ctx.http.fetch` returns its buffered body, the adapter measures its UTF-8 byte length. Exceeding `maxResponseBytes` -> `upstream-response-too-large`, non-retryable for the same configuration. This is a caller-visible acceptance bound, not an early network-read bound: stock v1 may buffer up to its host ceiling before the plugin can reject it.
 
 `retryable` tells the caller whether a new operation may succeed. It never authorizes an automatic plugin replay or model change.
@@ -474,9 +478,184 @@ The plugin MUST send `stream: false` to both upstream profiles and return one no
 
 Reason: stock Paperclip plugin tools, actions, and scoped routes are JSON request/response surfaces, and the published host-managed HTTP bridge used for outbound requests buffers the upstream body. Paperclip also publishes worker-to-UI channels through `ctx.streams`, but that is a separate authorized delivery surface and does not make `ctx.http.fetch` an incremental SSE client. v1 deliberately avoids a second event contract. A later version may combine a published incremental outbound transport with `ctx.streams`, but only after it defines upstream SSE consumption, normalized event ordering, reconnect/error semantics, cancellation, and caller authorization.
 
-Because v1 is non-streaming and the stock worker/HTTP ceilings are bounded, `requestTimeoutMs` is capped at 25 seconds, below the host's 30-second boundary. Stock v1 exposes no separately configurable TCP/TLS connect timeout: DNS lookup has its own host-controlled ceiling and the total host request remains capped at 30 seconds. Long generations that cannot complete inside that bound are a v1 non-goal.
+Because v1 is non-streaming and the stock worker/HTTP ceilings are bounded, the synchronous path works inside a 28-second budget ceiling, below the host's 30-second boundary. Stock v1 exposes no separately configurable TCP/TLS connect timeout: DNS lookup has its own host-controlled ceiling and the total host request remains capped at 30 seconds. Generations that cannot complete inside the synchronous budget are served by asynchronous invocation (section 10), not by streaming.
 
-## 10. Redirects and response handling
+## 10. Asynchronous invocation (submit + poll)
+
+The synchronous `invoke` path of sections 2–8 completes inside the host RPC
+round trip. The async path serves generations that cannot: submit returns a
+pending receipt immediately while one background upstream attempt runs, and the
+caller polls for the terminal outcome. Async shares the canonical request
+validator, selection policy, protocol adapters, normalization, error taxonomy,
+and audit rules with the sync path; only the envelope, timing, transport
+bound, retention, and run-end cancellation below differ.
+
+### 10.1 Surfaces and envelopes
+
+The implementation MUST expose:
+
+- agent tools `model_router_invoke_async` (submit; same canonical request
+  schema as `model_router_invoke`) and `model_router_invoke_result` (poll;
+  `{ "requestId": string }` — a missing or empty value reads `not-found`);
+- action registration keys `invoke-async` (submit), `invoke-result` (poll),
+  and `cancel-run-invocations` (run-end reap; `runId` is required and a
+  missing/empty value is a handler error, never a silent no-op);
+- company-scoped route `POST /api/plugins/togetherweown.paperclip-model-router/api/invoke-async?companyId=<uuid>`
+  with the same host-side company resolution as the sync route, and
+  `GET /api/plugins/togetherweown.paperclip-model-router/api/invoke/:requestId?companyId=<uuid>`;
+- scheduled job `reconcile-async-invocations`, every minute. The host tears
+  down a plugin's invocation scope the instant it receives the worker's RPC
+  response, so the background continuation that outlives the submit response
+  usually cannot persist through scoped `ctx.state`/`ctx.db` calls. The
+  continuation therefore caches its terminal outcome and audit record
+  in memory (where polling reads them immediately), and the job — whose
+  dispatch carries no invocation id and runs under the ordinary proactive
+  per-company scope — flushes both to durable state. The job persists
+  outcomes and audit records; it MUST NOT issue upstream requests.
+
+Submit returns one of:
+
+```ts
+{ status: "pending"; requestId: string; decision: RoutingDecision }
+| InferenceResult  // early exit: no pending row exists
+```
+
+- `requestId` is a router-generated UUID identifying the operation.
+- `decision` is the full selection decision, identical in shape to the
+  `decision` the same request would receive on the sync path.
+- Early exits return `InferenceResult` directly with no pending row: Rule 0,
+  `no-eligible-model`/`disabled`, invalid request, invalid upstream
+  configuration, and unavailable credentials all resolve at submit time and
+  are audited exactly like their sync equivalents.
+
+Poll returns one of:
+
+```ts
+{ status: "pending"; requestId: string; decision: RoutingDecision;
+  startedAt: string; expiresAt: string; runId: string | null; agentId: string | null }
+| { status: "completed" | "error"; requestId: string; decision: RoutingDecision;
+    outcome: "completed" | "error"; response: NormalizedResponse | null; error: InferenceError | null;
+    startedAt: string; expiresAt: string; runId: string | null; agentId: string | null }
+| { status: "not-found" }
+```
+
+- A terminal poll record carries the complete sync `InferenceResult`
+  envelope plus only these async keys: `status`, `startedAt`, `expiresAt`,
+  `runId`, `agentId`. `status` MUST mirror the wrapped `outcome`.
+- `startedAt`/`expiresAt` are ISO-8601 timestamps bounding pollability
+  (section 10.3). `runId`/`agentId` record the submitting run and agent;
+  rows written before run tracking existed read them as null.
+- `not-found` means no live row exists for that `requestId`: unknown, never
+  submitted, already expired (section 10.3), or belonging to another company.
+  Pending rows are company-scoped; a poll MUST NOT distinguish "another
+  company's row" from "no such row".
+
+Route statuses:
+
+- `POST .../invoke-async` returns HTTP 202 with the pending receipt for an
+  accepted submission; HTTP 400 when submit resolves to an `invalid-request`
+  `InferenceResult`; HTTP 200 when submit resolves to any other
+  `InferenceResult`; HTTP 503 when the worker state is not initialized. The
+  host-level failures of section 2.1 apply unchanged.
+- `GET .../invoke/:requestId` returns HTTP 200 with the poll envelope for
+  every completed handler operation, including `not-found`.
+
+### 10.2 Selection, timeout, and transport parity
+
+- Submit runs the shared select path synchronously before returning
+  `pending`: configuration validation, canonical request parsing, capacity
+  evidence, authoritative budget fraction, model selection, issue-stickiness
+  write, and credential resolution. The selected model is fixed at submit;
+  section 4.1's rule applies unchanged — no post-submit model change for any
+  transport outcome.
+- The sync-only output-budget preflight does not apply to async. Async has
+  no token ceiling beyond the generation timeout below.
+- The background generation is bounded by the selected model's effective
+  timeout: the model's `requestTimeoutMs` override when present, otherwise
+  the upstream `requestTimeoutMs`, clamped to 1,000 through 300,000 ms. The
+  configured default stays 25,000 ms; raising the ceiling is strictly opt-in
+  per model or per upstream.
+- The background performs exactly one upstream HTTP attempt through the same
+  adapters, normalization, and error taxonomy as sections 5–8, and settles
+  the row to the resulting `completed` or `error` outcome. An unexpected
+  exception escaping the transport normalizes to `upstream-connect`,
+  retryable, with no upstream status or request ID.
+- The background call uses the worker process's own `fetch`, not the
+  host-managed `ctx.http.fetch` bridge, because the bridge aborts at the
+  host's 30-second cap — the exact bound async exists to escape. SSRF posture
+  is unchanged: the only URL is derived from the company-validated
+  `baseUrl`, and the request-time DNS guard of the sync path applies before
+  the socket opens. No caller-supplied URL exists on this path.
+
+### 10.3 Retention (TTL) and expiry
+
+- Each pending row lives `PENDING_INVOCATION_TTL_MS` (15 minutes) from
+  submit: `expiresAt = startedAt + 15 min`. The worker schedules physical
+  deletion at that deadline, and a poll that finds an expired row deletes it
+  and returns `not-found` (lazy expiry covers worker restarts that lost the
+  timer).
+- After `expiresAt`, polling MUST return `not-found` and MUST NOT serve the
+  expired value.
+- A late upstream outcome that lands after expiry MUST NOT resurrect the
+  row. The outcome is still written to the decision-record audit (history),
+  but the pending row stays deleted and polling stays `not-found`. The
+  expired row's run-index entry is pruned on the expiry read.
+- Storage caveat: `ctx.state` has no durable native TTL. If the worker
+  restarts before its deletion timer fires and nobody polls the request
+  again, an abandoned row (a terminal row contains its normalized response
+  text) can remain physically stored until host database retention removes
+  it. The API guarantee above is unaffected: it never serves an expired
+  value.
+- `startedAt` anchors the TTL, not the upstream round trip: a generation
+  that finishes at minute 14 stays pollable for one more minute, not 15.
+
+### 10.4 Run-end cancellation (reap)
+
+- When an agent run ends, the host calls `cancel-run-invocations` with that
+  `runId`. The plugin enumerates the run's still-open request IDs through a
+  per-run index (one company-scoped row per run; best-effort — a submit
+  whose index write failed still returns `pending`, and such rows expire via
+  section 10.3 if the reap cannot see them).
+- For each listed row still `pending`, the reap aborts its in-flight
+  upstream socket through the request's `AbortController` (when the worker
+  that started it is still alive to hold the controller), flags the request
+  so the continuation cannot overwrite the terminal below, settles the row
+  to `error` / `invocation-cancelled` (non-retryable, no upstream status or
+  request ID), removes it from the run index, and writes its audit record.
+- For each listed row already terminal or gone (TTL, an earlier reap, a
+  worker restart that lost the controllers), the reap prunes the index entry
+  and reports it as already-terminal — never as cancelled.
+- The reap is idempotent and MUST NOT throw on storage failures. It returns
+  `{ runId, cancelled: string[], alreadyTerminal: string[], failed: string[] }`
+  so the host can retry what it could not settle. A second call for the same
+  run reports zeroes.
+- A late upstream outcome that lands after the reap MUST NOT overwrite the
+  `invocation-cancelled` terminal (flag check plus a re-read of the row
+  before persisting). The observed outcome is still audited; the pending row
+  is state, the decision record is history.
+- `invocation-cancelled` is never produced by the transport itself. The
+  transport reports an abort as `invocation-cancelled` only when its
+  caller-supplied abort signal fired. Retry logic MUST NOT replay a
+  cancelled run: the host declared it finished.
+
+### 10.5 Non-replay and audit
+
+- Section 4.1's single-attempt rule covers async: one submit performs at
+  most one upstream HTTP attempt. Neither the background continuation, nor
+  the reap, nor the reconcile job re-issues an upstream request.
+- Every terminal async outcome — `completed`, `error`, and
+  `invocation-cancelled` — produces the same decision-record shape as
+  section 12. Reap-time audit carries no request content (the issue ID is
+  null) and attributes the row to the stored submitting agent/run. A
+  continuation or reap that cannot persist its audit record queues it for
+  the reconcile job, so rows end terminal *and* audit-complete.
+- Pending rows carry only the routing envelope (`status`, `requestId`,
+  `decision`, timestamps, submitting run/agent); terminal rows add the
+  normalized response or error. Neither MUST contain credentials, message
+  content, tool arguments/results, system prompts, raw upstream bodies, or
+  provider/account serving identity.
+
+## 11. Redirects and response handling
 
 - Redirects MUST NOT be followed.
 - Every 3xx response, including 301, 302, 303, 307, and 308, normalizes to `upstream-redirect` with `retryable: false`.
@@ -485,7 +664,7 @@ Because v1 is non-streaming and the stock worker/HTTP ceilings are bounded, `req
 - Only JSON success and error bodies are accepted. HTML, text, compressed bytes, and SSE bodies are invalid upstream responses.
 - The adapter MUST send `Accept-Encoding: identity`; stock v1 does not decompress gzip, Brotli, or deflate responses.
 
-## 11. Audit, state, and observability
+## 12. Audit, state, and observability
 
 For every operation, the plugin appends a company-scoped decision record to its durable database namespace with:
 
@@ -498,13 +677,16 @@ For every operation, the plugin appends a company-scoped decision record to its 
 - normalized operation outcome;
 - normalized error code and upstream status when applicable;
 - bounded latency and normalized token usage;
-- upstream request ID when present.
+- upstream request ID when present;
+- capacity-snapshot age in wall-clock ms and whether it exceeded
+  `capacityRouting.maxSnapshotAgeMs` at decision time (TOG-7885) — a pure
+  freshness fact about the router's own refresh cadence.
 
 It MUST NOT record message content, tool arguments/results, system prompts, credentials, full upstream URLs, upstream error bodies, or provider/account serving identity. Router v2 MAY record only the exact model ID, source ID, sanitized lane label, health, posture, utilization, and reset from a separately refreshed snapshot. Those labels MUST remain semantically separate from deployment identity.
 
 Rule 0 and selection refusals are audited without any upstream entry. Decision records MUST NOT be capped by a rolling in-memory or plugin-state buffer; this implementation retains 90 days and prunes older rows at worker startup. Company A's config, secret reference, company-scoped state, request content, and results MUST never be readable from company B. Native metrics are aggregate instance measurements only and MUST NOT carry a company identifier.
 
-## 12. Explicit non-goals and removed vocabulary
+## 13. Explicit non-goals and removed vocabulary
 
 The following are not part of this contract and MUST be removed rather than renamed:
 
@@ -515,12 +697,12 @@ The following are not part of this contract and MUST be removed rather than rena
 - teamclaude-specific quota URLs, keys, windows, snapshots, utilization signals, actions, data keys, gates, traces, and error fields;
 - automatic retries or fallback after an upstream request begins;
 - OpenAI Responses API, legacy Completions API, Anthropic Batches, Files, token counting, citations, prompt caching controls, thinking controls, server tools, computer use, audio, PDF/document input, or provider beta fields;
-- streaming, cancellation, partial results, resumable requests, and background/batch inference;
+- streaming, partial results, resumable requests, and batch inference. (Asynchronous submit+poll invocation and run-end cancellation of it are in-contract under section 10; anything beyond that — incremental delivery, client-driven cancel, resume tokens — is out.)
 - public release, license selection, repository visibility, brand positioning, or any legal/public commitment.
 
 TogetherWeOwn may configure `baseUrl` to OmniRoute. That is an instance choice, not a product dependency or protocol extension.
 
-## 13. Conformance and handoff
+## 14. Conformance and handoff
 
 TOG-532 is complete only when implementation has exact-wire tests covering, at minimum:
 
@@ -538,13 +720,14 @@ TOG-532 is complete only when implementation has exact-wire tests covering, at m
 12. no automatic replay or post-HTTP model fallback;
 13. `multiCompanyConfig: true`, company-scoped state keys, and isolation of two companies with different protocol/base URL/secret refs in one worker;
 14. exact stock wrappers and failures: namespaced tool name, action `{data}` envelope, scoped-route host status cases, and the 1,000,000-byte scoped-route body ceiling;
-15. source and packed-artifact proof that inference networking uses only `ctx.http.fetch`, with `Accept-Encoding: identity` and no direct Node or third-party HTTP client;
+15. source and packed-artifact proof that inference networking uses only `ctx.http.fetch` except the single sanctioned async background client (section 10.2), with `Accept-Encoding: identity` and no other direct Node or third-party HTTP client;
 16. stock Paperclip plugin API v1 build, pack, install validation, and load without runtime host modification;
-17. repository-wide absence of every removed field and behavior in section 12, except historical ADRs or migration notes that clearly label them obsolete.
+17. repository-wide absence of every removed field and behavior in section 13, except historical ADRs or migration notes that clearly label them obsolete.
+18. async submit/poll fidelity to section 10: pending receipt and terminal envelopes carry exactly the stated keys; submit resolves early exits to `InferenceResult` with no pending row; polls after `expiresAt` return `not-found` without serving the expired value; late outcomes never resurrect an expired or reaped row; the reap settles still-pending rows to `invocation-cancelled` exactly once and never throws; neither continuation, reap, nor reconcile issues a second upstream request.
 
 TOG-533 independently verifies the same contract, including SSRF posture and the packaged artifact. A public release or live installation requires separate authorization and is not granted by this document.
 
-## 14. Versioning and undo path
+## 15. Versioning and undo path
 
 This contract is `v1`. Additive response fields and newly recognized upstream fields MAY be introduced without changing the contract version if existing required fields and behavior remain unchanged. New request capabilities, streaming, automatic replay, a third protocol, changed endpoint paths, or changed failure/fallback semantics require `v2` or a new superseding contract.
 

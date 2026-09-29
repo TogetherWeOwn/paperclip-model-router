@@ -100,8 +100,13 @@ never performs a telemetry GET inline. Inference still makes exactly one upstrea
 
 Each source names exact `modelIds`, a public HTTPS status URL, optional Paperclip secret
 reference, lane-label and health fields, utilization/reset windows, a 1–25 second timeout
-(default 5 seconds), and a bounded response ceiling (default 256 KiB). Refresh uses one
-host-managed GET with redirects refused and never overwrites a valid snapshot on failure.
+(default 5 seconds), and a bounded response ceiling (default 256 KiB). Refresh issues one
+host-managed GET per source with redirects refused and never overwrites a valid snapshot
+on failure. Sources refresh concurrently with at most 4 in flight
+(`REFRESH_CAPACITY_MAX_IN_FLIGHT` in `src/worker.ts`), so a fleet of up to 4 lanes
+refreshes in roughly one source-time; secret resolution stays sequential in config order
+and snapshots are reassembled in config order, so a single failing source keeps its
+error while the healthy lanes keep their evidence.
 Stored evidence contains only model ID, source ID, a sanitized lane label, health, posture,
 utilization, and reset facts. It contains no credential, raw body, URL, provider, account, or
 serving-identity claim.
@@ -175,6 +180,27 @@ completion with `stopReason: "max-tokens"` and an **empty `content` array**, so 
 caller must not assume a completed result has at least one content block. A
 `refusal` or `content-filter` stop reason is preserved rather than rewritten.
 
+### Sync throughput baseline, per model class
+
+The synchronous `/invoke` preflight rejects a `maxOutputTokens` that cannot
+finish inside `min(model.requestTimeoutMs ?? upstream.requestTimeoutMs, 28s)`
+at the model's throughput rate — before any credential resolution or upstream
+call. The rate comes from a per-class table (`syncThroughputClass` on the
+model entry); an explicit `maxSyncOutputTokens` always wins over the table.
+
+| class | rate | provenance |
+|---|---|---|
+| `chat` (default) | 1200 tok / 28s (~43 tok/s) | Measured: glm-5.3-flash, TOG-1035 |
+| `reasoning` | 600 tok / 28s (~21 tok/s) | Uncalibrated conservative estimate: half the chat row |
+
+A model without `syncThroughputClass` uses the `chat` row, so existing
+configs keep exactly the budget they already had. Set `reasoning` on models
+that spend wall-clock on hidden thinking tokens — a chat-derived ceiling
+would over-admit them into sync and risk a discarded generation. The
+reasoning row is deliberately conservative (it steers toward async) until a
+production measurement replaces it; operators with measured numbers for
+their own models should set `maxSyncOutputTokens` explicitly.
+
 ## Development
 
 ```sh
@@ -185,6 +211,6 @@ npm run verify:host
 npm run rehearse
 ```
 
-`npm run verify:host` runs the built manifest through Paperclip's install-time validators. `npm run rehearse` loads the built worker once and invokes two isolated company configurations through different compatible protocols.
+`npm run verify:host` runs the built manifest through Paperclip's install-time validators. `npm run rehearse` loads the built worker once, invokes two isolated sync company configurations through different compatible protocols, and submits an async invocation (submit → poll) plus a run-end cancel on a third.
 
 Licensed under the [MIT License](./LICENSE). No install or release is performed by the build or test commands.

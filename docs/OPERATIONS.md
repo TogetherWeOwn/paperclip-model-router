@@ -20,7 +20,7 @@ PAPERCLIP_HOST=/app npm run verify:migrations
 npm run rehearse
 ```
 
-`verify:host` validates the built manifest and both shipped config fixtures through Paperclip's install-time validators. `verify:migrations` runs the bundled SQL and runtime write shapes through the target host checkout's database validators. `rehearse` loads one built worker, configures two companies with different compatible protocols and secret references, invokes both, and checks database-write isolation.
+`verify:host` validates the built manifest and all shipped config fixtures through Paperclip's install-time validators. `verify:migrations` runs the bundled SQL and runtime write shapes through the target host checkout's database validators. `rehearse` loads one built worker, configures three companies with different compatible protocols and secret references, invokes both sync companies, submits an async invocation (submit → poll) plus a run-end cancel on the third, and checks database-write isolation.
 
 ## Capability-escalating upgrade
 
@@ -73,12 +73,52 @@ For a generation that may run past the host's RPC timeout, use the async submit/
 - Company identity is resolved by the host for tools, actions, and routes.
 - Rule 0 and selection refusals make no secret-resolution or HTTP call.
 - The credential is resolved at call time and used only in the protocol auth header.
-- `refresh-capacity` is company-scoped and performs bounded, non-retrying telemetry GETs. Failed refreshes preserve the last valid capacity-evidence snapshot but replace pace verdicts with only the current attempt's results, so stale pace never steers routing.
+- `refresh-capacity` is company-scoped and performs bounded, non-retrying telemetry GETs — one per source, at most 4 in flight at once (`REFRESH_CAPACITY_MAX_IN_FLIGHT` in `src/worker.ts`), in ceil(N / 4) times the slowest source. Failed refreshes preserve the last valid capacity-evidence snapshot but replace pace verdicts with only the current attempt's results, so stale pace never steers routing.
 - Canonical `invoke` performs zero telemetry GETs. Inference performs exactly one `ctx.http.fetch` with `redirect: "manual"` and `Accept-Encoding: identity`.
 - Capacity evidence is keyed to exact opaque model IDs and records only sanitized source/lane labels and usage facts, never provider/account serving identity.
 - A transport failure never causes automatic replay or post-HTTP model fallback.
 - Decision records are company-scoped and exclude prompts, messages, tool inputs/results, credentials, full URLs, error bodies, and deployment identity.
-- Native metrics are aggregate and contain no company tag.
+- Native metrics are aggregate and contain no company tag. The one exception
+  is the degraded-age counter below, which is namespaced per company IN THE
+  METRIC NAME (`model_router.company.<companyId>.capacity.snapshot_stale`)
+  precisely because a company tag is forbidden.
+
+## Capacity-snapshot refresh SLO (TOG-7885)
+
+`capacityRouting.maxSnapshotAgeMs` (default 300000 = 5 minutes) is the
+freshness backstop: an invocation served from a snapshot older than that is a
+**degraded-age invocation** — it routed on stale evidence. Every served
+invocation exposes the age it actually used:
+
+- the served decision carries `capacity.snapshotAgeMs` (wall-clock ms, null
+  when no snapshot was ever stored) and `capacity.snapshotStale`;
+- a company-namespaced counter fires on each degraded-age invocation:
+  `model_router.company.<companyId>.capacity.snapshot_stale` (use the
+  existing `model_router.invoke.*` series in the same namespace as the
+  denominator);
+- the persisted decision record rolls both up as `capacity_snapshot_age_ms`
+  / `capacity_snapshot_stale` for the alert query below (rows written before
+  migration `002` read NULL/false — never-stored, never "fresh").
+
+**Alert before promoting shadow→enforce.** A snapshot that keeps going stale
+means the refresh cadence (or the producer) cannot sustain the routing mode.
+Query the rollup per company over the trailing SLO window and page when the
+stale share exceeds 5%:
+
+```sql
+SELECT count(*) FILTER (WHERE capacity_snapshot_stale) * 1.0 / count(*)
+  AS stale_share
+FROM <namespace>.decision_records
+WHERE company_id = '<companyId>'
+  AND recorded_at > now() - interval '30 minutes';
+-- stale_share > 0.05: do NOT promote shadow→enforce; fix refresh first.
+```
+
+(`<namespace>` is the plugin's database namespace, e.g.
+`plugin_model_router_4dc1d582dd`; `<companyId>` is the company's UUID.)
+Do not promote while the alert fires: under fail-open a stale snapshot serves
+without capacity awareness, and under fail-closed it denies. Either way the
+fleet is flying blind past the SLO.
 
 ## Reversibility
 
@@ -107,24 +147,26 @@ npm run check:workflows
 # 2. Apply. Patches are generated against main; if one does not apply, STOP —
 #    do not resolve a conflict in a file the authors cannot test against.
 #    Kick it back to the issue and ask for the patch to be regenerated.
-git apply docs/operator/tog-488-ci-secret-scan.patch
+git apply docs/operator/tog-7890-hosted-pack-step.patch
 
 # 3. Re-run the same check. This is the acceptance test, not `git diff`.
 #    It must now report "workflow guard passed".
 npm run check:workflows
 
 # 4. Push on a branch and open a PR, with a token carrying `workflows: write`.
-git checkout -b operator/tog-488-ci-secret-scan
-git commit -am "TOG-488: verify the gitleaks download, and run the scanner self-test"
-git push -u origin operator/tog-488-ci-secret-scan
+git checkout -b operator/tog-7890-hosted-pack-step
+git commit -am "TOG-7890: simplify pack/load step for hosted-only runners"
+git push -u origin operator/tog-7890-hosted-pack-step
 ```
 
 Then **look at a real CI run** on that PR. Reading the file back is not the
 acceptance test: the point of these patches so far has been to make a job that
 was quietly doing nothing start doing something, and only a run shows that. For
-the TOG-488 patch specifically, the `secret scan` job should gain a
-`Self-test the scanner config` step that prints ten `PASS` lines. If that step is
-absent the patch did not take, whatever the diff says.
+the TOG-7890 patch specifically, the verify job's pack/load step should unpack
+into a fixed `INSTALL_DIR` with no run-id suffix and run no `Remove the
+unpacked artifact` cleanup step — the VM is discarded either way. If run-unique
+paths or the cleanup step are still there, the patch did not take, whatever
+the diff says.
 
 Once the PR is merged, delete the applied patch in a follow-up PR — an applied
 patch left in `docs/operator/` reads as still-queued to the next person.

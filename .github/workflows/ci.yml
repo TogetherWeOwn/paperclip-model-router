@@ -126,14 +126,61 @@ jobs:
       # The gitleaks *Action* requires a paid licence for organizations. The
       # scanner itself is open source, so run the pinned binary directly —
       # same scan, no licence server in the critical path of every push.
+      #
+      # This used to be `curl … | tar -xz`, which had two faults that only show
+      # up on a bad day:
+      #
+      #   1. A transient download failure became `tar: Error is not recoverable`
+      #      and the step exited 2. GitHub renders that as a FAILED SECRET SCAN,
+      #      indistinguishable from a real finding. It happened on 501c5b7 (PR
+      #      #22): the job died 5s in, where a green run needs 8s to check out,
+      #      install and run both scans. Nobody can tell a flaky mirror from a
+      #      committed credential by looking at the check name, so the honest
+      #      failure and the noisy one have to be separated. Retries make the
+      #      noisy one rare; the messages below make it legible when it happens.
+      #   2. Nothing verified what came down the wire. CI piped an unverified
+      #      binary from the network straight into /usr/local/bin and ran it
+      #      over the whole repository — the one job whose entire purpose is to
+      #      be trustworthy about credentials.
+      #
+      # So: download to a file with retries, check it against the published
+      # digest, and only then extract. Bump GITLEAKS_SHA256 with the version —
+      # a mismatch is meant to stop the build, not to be re-pinned reflexively.
+      # `npm run check:workflows` re-checks the pin against the published
+      # checksums file, so a stale digest is caught before a runner hits it.
       - name: Install gitleaks
         env:
           GITLEAKS_VERSION: 8.21.2
+          # gitleaks_8.21.2_checksums.txt, entry for linux_x64.
+          GITLEAKS_SHA256: "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
         run: |
-          curl -sSfL \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            | tar -xz -C /usr/local/bin gitleaks
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          # Staged in RUNNER_TEMP, not the working directory: the next step
+          # scans the working tree, and a stray tarball there is one more thing
+          # for the scanner to read.
+          tgz="${RUNNER_TEMP}/gitleaks.tar.gz"
+          curl -sSfL --retry 5 --retry-delay 2 --retry-all-errors -o "$tgz" "$url" \
+            || { echo "::error::Could not download gitleaks from $url. This is a DOWNLOAD failure, not a secret scan finding."; exit 1; }
+          echo "${GITLEAKS_SHA256}  ${tgz}" | sha256sum --check --status \
+            || { echo "::error::gitleaks tarball does not match the pinned SHA256. Refusing to run an unverified scanner."; exit 1; }
+          tar -xz -C /usr/local/bin -f "$tgz" gitleaks
+          rm -f "$tgz"
           gitleaks version
+
+      # A clean scan proves this repository has no secret in it *under the
+      # current config*. It proves nothing about whether the config still
+      # detects anything — a defanged regex or an over-broad allowlist scans
+      # green, and green is exactly what a broken scanner looks like. The
+      # self-test asserts the rules still fire and that --redact hides the
+      # value rather than the variable name.
+      #
+      # It shipped in TOG-227 (#21) and this line is what makes it run. Its own
+      # header said it was "run in the same CI job as the scan"; that was never
+      # true, because the agent that wrote it could not push a workflow change
+      # either (TOG-488). It asserted nothing from the moment it landed. A test
+      # nobody runs is indistinguishable from a test that passes.
+      - name: Self-test the scanner config
+        run: scripts/gitleaks-selftest.sh
 
       - name: Scan the working tree
         run: gitleaks dir . --config .gitleaks.toml --redact --no-banner --verbose

@@ -50,7 +50,9 @@ export function decisionRecords(harness: {
         capacityPosture: params[24],
         capacityReason: params[25],
         capacityDegraded: params[26],
-        shadowModelId: params[27],
+        capacitySnapshotAgeMs: params[27],
+        capacitySnapshotStale: params[28],
+        shadowModelId: params[29],
       };
     })
     .reverse();
