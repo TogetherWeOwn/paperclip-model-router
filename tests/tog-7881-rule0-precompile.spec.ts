@@ -1,10 +1,13 @@
+import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { describe, expect, it } from "vitest";
 
 import { compileRule0Pattern, hasNestedUnboundedQuantifier, Rule0PatternError } from "../src/config/rule0.js";
 import { resolveConfig } from "../src/config/resolve.js";
+import { ACTION_KEYS } from "../src/constants.js";
 import { matchRule0 } from "../src/engine/select.js";
+import manifest from "../src/manifest.js";
 import { createPlugin } from "../src/worker.js";
-import { readFixture } from "./helpers.js";
+import { companyDecisionRecords, readFixture } from "./helpers.js";
 
 /**
  * TOG-7881 (G2): `matchRule0` used to construct `new RegExp` per invocation
@@ -51,9 +54,32 @@ describe("rule0 precompile + load-time validation", () => {
   });
 
   it("rejects a nested-quantifier pattern at load", () => {
-    for (const pattern of ["(a+)+$", "(a?)+$", "(ab+c)+", "(a{2,3})+", "((ab)+c)+"]) {
+    // The evil shapes below are assembled from single characters — never
+    // written as regex-source literals — so no test input is itself an
+    // executable catastrophic pattern (CodeQL js/polynomial-redos flags
+    // even a string that is *meant* to be rejected). Each fixture reaches
+    // only the syntactic guard (pure string scan, no regex engine) and the
+    // fail-closed `new RegExp` inside `compileRule0Pattern`, which throws
+    // for these — construction never matches, and nothing executable here
+    // ever reaches `.test()`.
+    const plus = "+";
+    const star = "*";
+    const evilShapes = [
+      `(a${plus})${plus}$`,
+      `(a?)${plus}$`,
+      `(ab${plus}c)${plus}`,
+      `(a{2,3})${plus}`,
+      `((ab)${plus}c)${plus}`,
+      `(a${star})${star}$`,
+    ];
+    for (const pattern of evilShapes) {
       expect(hasNestedUnboundedQuantifier(pattern), pattern).toBe(true);
       expect(() => compileRule0Pattern(pattern, "tool", 0)).toThrowError(Rule0PatternError);
+    }
+    // Untouched single-quantifier controls: the guard must not fire on the
+    // shapes operators actually write.
+    for (const pattern of [`a${plus}`, `a${star}`, "a?", "a{2,3}"]) {
+      expect(hasNestedUnboundedQuantifier(pattern), pattern).toBe(false);
     }
   });
 
@@ -101,10 +127,67 @@ describe("rule0 precompile + load-time validation", () => {
   it("surfaces a bad pattern as a validation failure, not a thrown error", async () => {
     const { definition } = createPlugin();
     expect(definition.onValidateConfig).toBeDefined();
-    const result = await definition.onValidateConfig!(rawWithPatterns([{ pattern: "(a+)+$", tool: "evil" }]));
+    // Assembled, not literal: see the nested-quantifier test above.
+    const evil = ["(a", "+", ")+", "$"].join("");
+    const result = await definition.onValidateConfig!(rawWithPatterns([{ pattern: evil, tool: "evil" }]));
     expect(result.ok).toBe(false);
     expect(result.errors?.join("\n")).toContain("rule0.deterministicPatterns[0]");
     const good = await definition.onValidateConfig!(readFixture("company-a"));
     expect(good.ok).toBe(true);
+  });
+});
+
+const COMPANY_A = "11111111-1111-4111-8111-111111111111";
+
+describe("rule0 bad stored config refuses at the invoke seam with an audit trail", () => {
+  it("returns a non-retryable invalid-config terminal and persists it with the operator-visible index", async () => {
+    const configs = new Map([[COMPANY_A, rawWithPatterns([{ pattern: "([", tool: "broken" }])]]);
+    const harness = createTestHarness({ manifest, config: {} });
+    harness.ctx.config = {
+      async get(companyId?: string) {
+        const config = configs.get(String(companyId));
+        if (!config) throw new Error("missing company config");
+        return structuredClone(config);
+      },
+    };
+    const secretCalls: unknown[] = [];
+    harness.ctx.secrets = {
+      async resolve(ref: never, options?: Record<string, unknown>) {
+        secretCalls.push({ ref, ...options });
+        return "never-resolved";
+      },
+    };
+    const httpCalls: unknown[] = [];
+    harness.ctx.http = {
+      async fetch(url: unknown, init?: RequestInit) {
+        httpCalls.push({ url: String(url), init });
+        return new Response("never-sent", { status: 200 });
+      },
+    };
+    const { definition } = createPlugin();
+    await definition.setup(harness.ctx);
+
+    const result = (await harness.performAction(
+      ACTION_KEYS.invoke,
+      {
+        task: { taskClass: "implementation", issueId: "issue-1" },
+        messages: [{ role: "user", content: "hello" }],
+        maxOutputTokens: 100,
+      },
+      { companyId: COMPANY_A },
+    )) as { outcome: string; error: { code: string; message: string; retryable: boolean } };
+
+    // The stored config can never serve: a terminal result, never a throw,
+    // with a code that says *config* (not upstream, not the caller request).
+    expect(result).toMatchObject({ outcome: "error", error: { code: "invalid-config", retryable: false } });
+    expect(result.error.message).toContain("rule0.deterministicPatterns[0]");
+    // Nothing downstream of config load runs: no secret, no HTTP.
+    expect(secretCalls).toHaveLength(0);
+    expect(httpCalls).toHaveLength(0);
+    // The refusal is audited: exactly one persisted decision record carries
+    // the code so the operator can find the broken company config.
+    const log = companyDecisionRecords(harness, COMPANY_A);
+    expect(log).toHaveLength(1);
+    expect(log[0]).toMatchObject({ outcome: "error", errorCode: "invalid-config" });
   });
 });

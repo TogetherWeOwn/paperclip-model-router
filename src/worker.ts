@@ -743,6 +743,12 @@ export function createPlugin() {
         // extraHeaders, so a smuggled name throws here — before secrets,
         // selection, or HTTP. Surface it as the same audited terminal the
         // validator path below produces, never as an unhandled throw.
+        // TOG-7881 (G2): every fail-closed resolveConfig throw — a bad Rule 0
+        // pattern, a duplicate model id, a smuggled header — is a broken
+        // *stored config*, so it surfaces as `invalid-config` (never the old
+        // `upstream-url-rejected`, which misattributes it to the upstream).
+        // The message names the offending path and index; the record below
+        // persists it to the decision log for the operator to find.
         let config: RouterConfig;
         try {
           config = await companyConfig(companyId);
@@ -753,10 +759,10 @@ export function createPlugin() {
             decision: null,
             response: null,
             error: {
-              code: "upstream-url-rejected",
+              code: "invalid-config",
               message: failure instanceof Error
                 ? failure.message.slice(0, 512)
-                : "The configured compatible upstream is invalid.",
+                : "The stored router configuration is invalid.",
               retryable: false,
               upstreamStatus: null,
               upstreamRequestId: null,

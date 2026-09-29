@@ -135,7 +135,9 @@ describe("TOG-7883: invoke refuses a smuggled config before secrets or HTTP", ()
     vi.unstubAllGlobals();
   });
 
-  it("rejects with upstream-url-rejected and makes zero secret/HTTP calls", async () => {
+  // TOG-7881 (G2): the smuggled stored header is broken *config*, so the
+  // invoke seam reports `invalid-config` — the upstream was never reached.
+  it("rejects with invalid-config and makes zero secret/HTTP calls", async () => {
     const configs = new Map([[COMPANY_A, rawWithExtraHeader("Authorization")]]);
     const harness = createTestHarness({ manifest, config: {} });
     harness.ctx.config = {
@@ -173,7 +175,7 @@ describe("TOG-7883: invoke refuses a smuggled config before secrets or HTTP", ()
       { companyId: COMPANY_A },
     )) as { outcome: string; error: { code: string } };
 
-    expect(result).toMatchObject({ outcome: "error", error: { code: "upstream-url-rejected" } });
+    expect(result).toMatchObject({ outcome: "error", error: { code: "invalid-config" } });
     expect(secretCalls).toHaveLength(0);
     expect(httpCalls).toHaveLength(0);
   });
