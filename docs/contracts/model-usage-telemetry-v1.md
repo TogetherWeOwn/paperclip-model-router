@@ -251,35 +251,19 @@ A conforming consumer:
    than on the outage case.
 6. MUST bound its own read (§5).
 
-### 6.1 Status of the Router v2 consumer — closed by TOG-977
+### 6.1 Required change to the staged Router v2 consumer
 
-The `(provider, account)`-keyed consumer this section used to describe never shipped. The
-consumer that shipped keys on `modelId` directly, but an audit of it against this section's
-six obligations (TOG-977) found it still did not conform: `packages/lane-capacity/src/normalize.ts`
-(`normalizeCapacityPayload` / `collectEvidenceRecords`) walks the whole response tree for any
-object carrying a configured utilization field and fans every match it finds across **every**
-id in `source.modelIds` — obligation 3's byte-key requirement, violated by construction. It
-also never checked `schemaVersion` (obligation 1) and could not distinguish a producer outage
-from a healthy-empty response (obligation 5).
+The consumer staged on `tog-943-usage-aware-router-v2` does **not** conform. Its
+`CapacityLane` (`src/capacity/types.ts`) carries required `provider: string` and
+`account: string`, and `bestLaneFor()` in `src/engine/select.ts` selects a lane by matching
+`lane.provider` against the model's provider list. That is provider identity inside the
+plugin, and it is the coupling §2 forbids.
 
-`packages/lane-capacity/src/contract.ts` is the fix: a parser dedicated to this contract's wire
-shape, used instead of the tree walk whenever a response claims to be one. The claim is
-presence of the `telemetry` field (`available` | `unavailable`) — not `schemaVersion` alone,
-because `schemaVersion`/`observedAt`/`staleAfterSeconds` are also the shape of a pre-existing,
-unrelated legacy lane document that several real vendor sources still serve; keying detection
-on `schemaVersion` would misroute those and reject them as malformed. `readCapacitySource`
-(`packages/lane-capacity/src/read.ts`) dispatches on that claim: a payload carrying `telemetry`
-goes through `evidenceFromContract` and is held to every obligation in this section, including
-having an unsupported `schemaVersion` rejected outright rather than best-effort parsed; anything
-else still goes through the legacy tree walk, which remains correct for non-contract sources.
-
-`CapacitySnapshot` (`packages/lane-capacity/src/types.ts`) now carries the required
-`telemetry: "available" | "unavailable"` field structural obligation 5 needs, plus a closed
-`reasonCode` enum instead of a free-text `error` string, so a caller can act on the failure
-class without parsing prose. `tests/tog-977-contract-consumer.spec.ts` is the acceptance
-evidence: one `describe` block per obligation above, run against the real producer output of
-`src/telemetry/normalize.ts` rather than hand-typed fixtures, so the suite proves agreement on
-the actual wire rather than with itself.
+Conforming requires re-keying the consumer from `(provider, account)` to `modelId`:
+capacity becomes a direct lookup `models[model.id]` rather than a lane search, which also
+removes `bestLaneFor` and the provider-matching helpers entirely. This is a simplification
+of the consumer, not an addition to it. Tracked separately; it is not in scope for the
+producer contract.
 
 ## 7. Conformance
 

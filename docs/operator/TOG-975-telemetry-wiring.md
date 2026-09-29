@@ -11,16 +11,6 @@ records the consumer defect that changes the answer to the first one.
 
 ## 0. The finding that shapes everything below
 
-**SUPERSEDED IN PART BY TOG-977.** The three defects below are still accurate
-for `normalizeCapacityPayload` (`packages/lane-capacity/src/normalize.ts`) in
-isolation — that function is retained for genuinely non-contract vendor
-sources and still behaves exactly as measured here. They are **no longer**
-true of the wiring a deployment actually hits: `readCapacitySource`
-(`packages/lane-capacity/src/read.ts`) now dispatches a contract-shaped
-response (anything carrying `telemetry`) to `packages/lane-capacity/src/contract.ts`
-instead, which closes all three. See §6 below for the current state and
-`docs/contracts/model-usage-telemetry-v1.md` §6.1 for the full account.
-
 The contract was written before the consumer existed. It has now been run
 against the consumer that actually ships in v0.4.0, and **the nested `models`
 map does not survive the trip.**
@@ -197,50 +187,3 @@ unapplied operator patch), so it is not introduced by this branch.
 Producer only. Capacity enforcement stays gated on TOG-901/916 and TOG-251.
 `capacityRouting.mode` stays `shadow`. Note that the host config schema will
 accept `mode: "enforce"` — that rule is procedural, with no technical guard.
-
-## 6. CURRENT wiring (TOG-977) — serve the contract shape
-
-§0's finding drove the wire format below into a flat, per-model, non-contract
-shape as a workaround. That workaround is no longer necessary. A producer may
-now serve the actual `model-usage-telemetry-v1` shape — nested `models` map,
-`telemetry`, `reasonCode` — directly, and the consumer will read it correctly:
-
-```json
-{
-  "schemaVersion": 1,
-  "observedAt": "2026-09-05T02:00:00.000Z",
-  "staleAfterSeconds": 300,
-  "telemetry": "available",
-  "reasonCode": null,
-  "models": {
-    "oc/claude-opus-5": { "windows": [{ "window": "five-hour", "utilization": 0.71, "resetsAt": "2026-09-05T04:00:00.000Z" }] },
-    "oc/claude-sonnet-5": { "windows": [{ "window": "five-hour", "utilization": 0.1, "resetsAt": null }] }
-  }
-}
-```
-
-An outage is now first-class rather than inferred from an empty body:
-
-```json
-{
-  "schemaVersion": 1,
-  "observedAt": "2026-09-05T02:00:00.000Z",
-  "staleAfterSeconds": 300,
-  "telemetry": "unavailable",
-  "reasonCode": "upstream-unreachable",
-  "models": {}
-}
-```
-
-`readCapacitySource` (`packages/lane-capacity/src/read.ts`) recognizes either
-shape by the presence of `telemetry` and routes it to
-`packages/lane-capacity/src/contract.ts`, which does the byte-key lookup
-§0 found missing, rejects an unsupported `schemaVersion` instead of
-best-effort parsing it, and reads the `telemetry`/`reasonCode` fields directly
-instead of inferring outage from an absence of rows. The flat per-model
-shape in §1–§2 above still works unchanged — it simply does not carry
-`telemetry`, so it still takes the legacy tree-walk path. Both are valid;
-a producer that can serve the contract shape natively should prefer it, since
-it is the one this document's own contract defines and the one
-`tests/tog-977-contract-consumer.spec.ts` proves the consumer honors end to
-end against real producer output.

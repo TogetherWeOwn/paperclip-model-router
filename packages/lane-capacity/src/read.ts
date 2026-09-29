@@ -1,8 +1,7 @@
-import { evidenceFromContract, looksLikeModelUsageSnapshot } from "./contract.js";
 import { normalizeCapacityPayload } from "./normalize.js";
 import { evaluateLanePace, normalizeLaneDocument } from "./pace.js";
 import type { LanePaceDefinition, LanePaceVerdict, PacePolicy } from "./pace.js";
-import type { CapacityReasonCode, CapacitySnapshot, CapacitySourceDefinition } from "./types.js";
+import type { CapacitySnapshot, CapacitySourceDefinition } from "./types.js";
 import { isReservedLiteralHost } from "./url-policy.js";
 
 export interface CapacityHttpClient {
@@ -16,19 +15,8 @@ export interface CapacityHttpClient {
   }): Promise<{ status: number; contentType: string | null; body: unknown; responseBytes: number; redirected: boolean }>;
 }
 
-function failure(
-  source: CapacitySourceDefinition,
-  fetchedAt: string,
-  reasonCode: CapacityReasonCode,
-): CapacitySnapshot {
-  return {
-    fetchedAt,
-    source: source.id,
-    evidence: [],
-    telemetry: "unavailable",
-    reasonCode,
-    error: reasonCode,
-  };
+function failure(source: CapacitySourceDefinition, fetchedAt: string, error: string): CapacitySnapshot {
+  return { fetchedAt, source: source.id, evidence: [], error };
 }
 
 /**
@@ -101,14 +89,7 @@ export async function readCapacitySource(input: {
   // blanket over a mixed pool. A transported `error` with zero evidence is the
   // caller's signal to treat the failure as sticky (keep serving the last good
   // snapshot) rather than as an auth revocation (drop the lane).
-  // A payload carrying `telemetry` is claiming to be a
-  // `model-usage-telemetry-v1` snapshot, so it is held to that contract —
-  // including having its `schemaVersion` rejected if we do not implement it.
-  // Anything else, including a legacy lane document that also happens to
-  // carry `schemaVersion`, goes down the legacy tree-walking path.
-  const snapshot = looksLikeModelUsageSnapshot(response.body)
-    ? evidenceFromContract({ payload: response.body, source: input.source, fetchedAt })
-    : normalizeCapacityPayload({ payload: response.body, source: input.source, fetchedAt });
+  const snapshot = normalizeCapacityPayload({ payload: response.body, source: input.source, fetchedAt });
   // TOG-2139: pace rides the same response — one fetch, one guard chain. The
   // verdict is present even when the capacity normalizer found no records
   // (e.g. a lane document shape the evidence windows don't match), because
