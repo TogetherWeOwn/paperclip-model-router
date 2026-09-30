@@ -10,25 +10,57 @@ version is not present here.
 
 ## [Unreleased]
 
+### Added
+
+- **Invocation-derived model health (TOG-7160, port of TOG-930).**
+  `src/health/` (types, reconcile, catalogue probe) tracks per-model health
+  in company-scoped plugin state: catalogue presence keeps a model unknown
+  (never healthy), 2 consecutive routed post-transport failures degrade it
+  (deprioritized, last-resort), 2 successes restore healthy, 2 consecutive
+  catalogue absences mark it dead (disabled unless the operator already
+  did). `select.ts` routes degraded models last with a ceiling lift for
+  healthier qualified models; `worker.ts` feeds sync + async-continuation
+  results (excluding 401s, cancellations, pre-transport terminals) and runs
+  a 15-minute `model-health-probe` job. `tests/health.spec.ts` (18 tests)
+  and `tests/job-health.spec.ts` (7 tests) port the original suites.
+
+- **Normative async-invocation contract section (TOG-7898, gap G18).**
+  `docs/contracts/compatible-upstream-v1.md` gains section 10, derived from
+  shipped code: submit/poll envelopes (§10.1), the shared-selection +
+  per-model-timeout transport parity (§10.2), 15-minute TTL with lazy expiry
+  and no-resurrect (§10.3), run-end reap to `invocation-cancelled` (§10.4),
+  and single-attempt non-replay with reconcile-backed audit (§10.5).
+  Follow-on corrections in the same section: the `requestTimeoutMs` table
+  max is 300,000 (was stale at 25,000 — the default, not the ceiling), the
+  §2 networking rule names the single sanctioned async direct-fetch client,
+  §9 points long generations at async, §13's non-goals exempt in-contract
+  async cancellation, and §14 gains an async-fidelity conformance item.
+  `tests/tog-7898-async-contract.spec.ts`: 12 tests (bounds, TTL, schedule,
+  single attempt, isolation, route statuses, early exits, reap audit, plus
+  doc-presence pins). Mutation-probed: weakened timeout ceiling and TTL go
+  red by name. Docs-only: no runtime, config, or state-shape change.
+
 ### Changed
 
 - **Gitleaks operator-patch agreement is pinned by a regression spec
-  (TOG-7899, gap G20).** `docs/operator/tog-488-ci-secret-scan.patch`
-  (digest-verified gitleaks install + `scripts/gitleaks-selftest.sh` wiring)
-  still awaits an operator — no agent holds the `workflows` permission
-  ([ADR 0008](docs/decisions/0008-workflow-files-are-operator-applied.md)) —
-  so `npm run check:workflows` stays red by design until the handoff.
-  `tests/tog-7899-gitleaks-patch-agreement.spec.ts` (6 tests) pins the
-  agreement in every lifecycle state: while pending, the patch applies
-  cleanly, targets the live `GITLEAKS_VERSION`, and carries the full
-  hardening with a well-formed digest; once applied (or the patch deleted
-  post-apply), the live workflow carries it instead. A rotted patch, a
-  missing/untracked/unexecutable self-test script, or `.gitleaks.toml`
-  drift (custom rules returning, fixture allowlist changing) fails with the
-  repair named. Mutation-probed: applied-state simulation passes 5/5, a
-  deleted self-test fails exactly the script test.
-  No workflow file is touched by this change — that half remains the
-  operator handoff on this card.
+  (TOG-7899, gap G20).** The digest-verified gitleaks install +
+  `scripts/gitleaks-selftest.sh` wiring landed in the live `secret-scan`
+  job via operator PR #101 (`8d36ffa`), and the handoff patch
+  `docs/operator/tog-488-ci-secret-scan.patch` is deleted — per the
+  operator runbook, an applied patch left in `docs/operator/` reads as
+  still-queued. `tests/tog-7899-gitleaks-patch-agreement.spec.ts` (6 tests
+  while the patch is pending, 4 in the cleaned-up state)
+  pins the agreement in every lifecycle state: while pending, the patch
+  applies cleanly, targets the live `GITLEAKS_VERSION`, and carries the
+  full hardening with a well-formed digest; once applied (or the patch
+  deleted post-apply, the present state), the live workflow carries it
+  instead. A rotted patch, a missing/untracked/unexecutable self-test
+  script, or `.gitleaks.toml` drift (custom rules returning, fixture
+  allowlist changing) fails with the repair named. Mutation-probed:
+  applied-state simulation passes 5/5, a deleted self-test fails exactly
+  the script test. No workflow file is touched by this change — that half
+  stayed the operator handoff ([TOG-8268](/TOG/issues/TOG-8268)) on this
+  card.
 
 - **`refresh-capacity` fetches sources with bounded concurrency (TOG-7893).**
   The old loop awaited each source in turn, so refresh time grew linearly
@@ -90,6 +122,27 @@ version is not present here.
   - `scripts/validate-migrations-against-host.mjs` rehearses the new
     SELECT and the per-company prune against real Postgres, and the host
     query validator accepts the read SQL.
+- **Rule 0 patterns precompile once and fail closed at config load (TOG-7881,
+  gap G2).** `matchRule0` (`src/engine/select.ts`) used to construct
+  `new RegExp` per invocation inside a try/catch: invalid patterns were
+  silently dead config and pathological ones were per-request ReDoS.
+  `resolveConfig` now compiles each `deterministicPatterns` entry once via
+  `compileRule0Pattern` (`src/config/rule0.ts`), throwing a fail-closed
+  `Rule0PatternError` naming the operator-visible array index on a
+  malformed, invalid, or nested-quantifier pattern; a syntactic
+  nested-quantifier guard rejects catastrophic-backtracking shapes (with the
+  residual alternation-ambiguity risk documented, not checked), and every
+  match runs over a 4096-char length-bounded summary. The hot path reuses
+  the stored regex and never constructs one. `onValidateConfig` surfaces the
+  refusal as `ok:false` instead of a thrown 500, and a broken *stored*
+  config now refuses at the invoke seam as an audited `invalid-config`
+  terminal (new `InferenceErrorCode`, persisted to the decision log) instead
+  of the misattributed `upstream-url-rejected`.
+  `tests/tog-7881-rule0-precompile.spec.ts`: 8 tests (load-time index,
+  nested-quantifier rejection, benign controls, malformed entries,
+  precompiled match, summary bound, validator refusal, invoke-seam terminal
+  with audit). Evil-pattern fixtures are assembled from characters, never
+  written as regex-source literals (CodeQL `polynomial-redos` stays green).
 - **Capacity-snapshot age observability (TOG-7885, gap G8).** Staleness is
   now a surfaced fact, not just a routing input.
   - The served decision carries `capacity.snapshotAgeMs` (wall-clock ms,
@@ -121,11 +174,28 @@ version is not present here.
   explicit `maxSyncOutputTokens` still wins over either row. The class is
   passed through in the resolver, refused at config write when it is neither
   value, and allowlisted to the chat row at derivation time.
+- **Async submit/poll/cancel joins the acceptance rehearsal (TOG-7905,
+  gap G11).** `npm run rehearse` loaded one worker with two sync companies;
+  the async path (submit → poll → reap) was covered only by unit specs, never
+  end to end against the built bundle. The rehearsal gains a third company
+  (`tests/fixtures/company-c.json`, OpenAI-compatible, own base URL and
+  secret reference) and an Evidence 8 section: an async submit polls to
+  `completed` through the company upstream under the sync wire contract
+  (own base URL, `redirect: manual`, `Accept-Encoding: identity`, call-time
+  company-scoped secret); a second submit holds its socket open while the
+  run-end reap aborts the real in-flight request and settles non-retryable
+  `invocation-cancelled`, which a late upstream outcome never overwrites.
+  Per-company isolation is pinned throughout — cross-company polls read
+  `not-found`, and no audit write lands outside the async company.
+  `tests/rehearsal.spec.ts` pins the Evidence 8 transcript lines so a
+  silently-dropped async section fails the build (mutation-probed: the new
+  pins go red against the pre-change script).
 
 ### Compatibility
 
 - Drop-in: no config change required, no derived budget changes for any
-  model that does not set the new field.
+  model that does not set the new field. The rehearsal-only third fixture
+  is not referenced by any shipped config path.
 
 ## [0.8.0] - 2026-09-27
 

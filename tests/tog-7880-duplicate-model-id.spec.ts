@@ -116,7 +116,7 @@ describe("TOG-7880: duplicate model ids fail closed", () => {
   });
 
   it("the shipped fixtures stay dupe-free through the new check", () => {
-    for (const fixture of ["company-a", "company-b"]) {
+    for (const fixture of ["company-a", "company-b", "company-c"]) {
       const raw = readFixture(fixture) as Record<string, unknown>;
       expect(() => resolveConfig(raw)).not.toThrow();
     }

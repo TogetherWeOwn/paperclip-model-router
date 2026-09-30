@@ -20,7 +20,7 @@ PAPERCLIP_HOST=/app npm run verify:migrations
 npm run rehearse
 ```
 
-`verify:host` validates the built manifest and both shipped config fixtures through Paperclip's install-time validators. `verify:migrations` runs the bundled SQL and runtime write shapes through the target host checkout's database validators. `rehearse` loads one built worker, configures two companies with different compatible protocols and secret references, invokes both, and checks database-write isolation.
+`verify:host` validates the built manifest and all shipped config fixtures through Paperclip's install-time validators. `verify:migrations` runs the bundled SQL and runtime write shapes through the target host checkout's database validators. `rehearse` loads one built worker, configures three companies with different compatible protocols and secret references, invokes both sync companies, submits an async invocation (submit → poll) plus a run-end cancel on the third, and checks database-write isolation.
 
 ## Capability-escalating upgrade
 
@@ -148,24 +148,26 @@ npm run check:workflows
 # 2. Apply. Patches are generated against main; if one does not apply, STOP —
 #    do not resolve a conflict in a file the authors cannot test against.
 #    Kick it back to the issue and ask for the patch to be regenerated.
-git apply docs/operator/tog-488-ci-secret-scan.patch
+git apply docs/operator/tog-7890-hosted-pack-step.patch
 
 # 3. Re-run the same check. This is the acceptance test, not `git diff`.
 #    It must now report "workflow guard passed".
 npm run check:workflows
 
 # 4. Push on a branch and open a PR, with a token carrying `workflows: write`.
-git checkout -b operator/tog-488-ci-secret-scan
-git commit -am "TOG-488: verify the gitleaks download, and run the scanner self-test"
-git push -u origin operator/tog-488-ci-secret-scan
+git checkout -b operator/tog-7890-hosted-pack-step
+git commit -am "TOG-7890: simplify pack/load step for hosted-only runners"
+git push -u origin operator/tog-7890-hosted-pack-step
 ```
 
 Then **look at a real CI run** on that PR. Reading the file back is not the
 acceptance test: the point of these patches so far has been to make a job that
 was quietly doing nothing start doing something, and only a run shows that. For
-the TOG-488 patch specifically, the `secret scan` job should gain a
-`Self-test the scanner config` step that prints ten `PASS` lines. If that step is
-absent the patch did not take, whatever the diff says.
+the TOG-7890 patch specifically, the verify job's pack/load step should unpack
+into a fixed `INSTALL_DIR` with no run-id suffix and run no `Remove the
+unpacked artifact` cleanup step — the VM is discarded either way. If run-unique
+paths or the cleanup step are still there, the patch did not take, whatever
+the diff says.
 
 Once the PR is merged, delete the applied patch in a follow-up PR — an applied
 patch left in `docs/operator/` reads as still-queued to the next person.

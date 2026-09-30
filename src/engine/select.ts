@@ -1,4 +1,5 @@
 import type { CapacityEvidence, LanePaceVerdict, PaceState } from "../capacity/types.js";
+import { boundRule0Summary } from "../config/rule0.js";
 import type { RouterConfig } from "../config/types.js";
 import { formatUsd } from "../spend-ledger.js";
 import { MODEL_TIER_ORDER, type Candidate, type GateLevel, type ModelEntry, type ModelTier, type RoutingDecision, type RuntimeSignals, type TaskDescriptor } from "./types.js";
@@ -45,7 +46,15 @@ export function gateLevelFor(value: number | undefined, thresholds: { warn: numb
 }
 export function matchRule0(summary: string | undefined, config: RouterConfig): { tool: string; pattern: string } | null {
   if (!config.rule0.enabled || !summary) return null;
-  for (const entry of config.rule0.deterministicPatterns) { try { if (new RegExp(entry.pattern, "i").test(summary)) return entry; } catch { continue; } }
+  // TOG-7881 (G2): patterns are precompiled once at config resolution
+  // (`resolveConfig` → `compileRule0Pattern`); the hot path reuses the stored
+  // regex and never constructs one. The summary is length-bounded so every
+  // match runs over a finite input alongside the load-time nested-quantifier
+  // rejection.
+  const bounded = boundRule0Summary(summary);
+  for (const entry of config.rule0.deterministicPatterns) {
+    if (entry.regex.test(bounded)) return { tool: entry.tool, pattern: entry.pattern };
+  }
   return null;
 }
 export function scoreTier(descriptor: TaskDescriptor, config: RouterConfig): { tier: ModelTier; score: number | null } {
@@ -260,7 +269,47 @@ export function selectModel(input: SelectInput): RoutingDecision {
   const shadow = capacityEnabled ? usageAware[0] ?? null : null;
   if (shadow) { base.capacity.shadowModelId = shadow.model.id; base.capacity.shadowSource = shadow.evidence?.source ?? null; base.capacity.shadowLaneLabel = shadow.evidence?.laneLabel ?? null; base.capacity.decisionReason = `preferred evidence ${shadow.evidence?.source}/${shadow.evidence?.laneLabel}`; }
   const pool = capacityEnabled && config.capacityRouting.mode === "enforce" ? usageAware : ranked;
-  base.candidates = pool.map((entry): Candidate => ({ modelId: entry.model.id, tier: entry.model.tier, quality: entry.model.quality, expectedCostUsd: entry.cost, capacitySource: entry.evidence?.source ?? null, laneLabel: entry.evidence?.laneLabel ?? null, usagePosture: entry.evidence?.posture ?? (capacityEnabled ? "unknown" : "not-evaluated"), utilization: entry.evidence?.utilization ?? null, resetsAt: entry.evidence?.resetsAt ?? null, paceState: paceActive ? entry.pace?.state ?? "unknown" : "not-evaluated", paceDeviation: paceActive ? (entry.pace?.score?.deviation ?? null) : null }));
+  // TOG-7160 (port of TOG-930): deprioritize invocation-degraded models to
+  // last resort. A degraded model stays selectable when it is the only
+  // option (or is explicitly pinned) but never wins while anything healthier
+  // can serve. When every in-ceiling candidate is degraded but healthier
+  // qualified models exist above the soft tier ceiling, the ceiling lifts for
+  // them exactly like the quality-floor lift above — the tier ceiling is
+  // soft, health is evidence. Capacity usability still applies: a lifted
+  // model must clear the same `usable` gate the pool did.
+  const degraded = runtime.degradedModelIds ?? new Set<string>();
+  let routingPool = pool;
+  const nonDegradedPool = pool.filter((entry) => !degraded.has(entry.model.id));
+  if (pool.length > 0 && nonDegradedPool.length > 0 && nonDegradedPool.length < pool.length) {
+    routingPool = nonDegradedPool;
+    trace.push(
+      `health: deprioritized ${pool.length - nonDegradedPool.length} degraded model(s); ${nonDegradedPool.length} healthier candidate(s) remain`,
+    );
+  } else if (pool.length > 0 && nonDegradedPool.length === 0) {
+    const healthier = withCapacity
+      .filter((entry) => !degraded.has(entry.model.id) && usable(entry))
+      .map((entry): Ranked => ({ ...entry, pace: paceFor(entry.model.id) }))
+      .sort(capacityEnabled && config.capacityRouting.mode === "enforce"
+        ? (paceActive ? paceOrder(capacityOrder) : capacityOrder)
+        : baselineOrder);
+    if (healthier.length > 0) {
+      routingPool = healthier;
+      const readmittedIds = new Set(healthier.map((entry) => entry.model.id));
+      for (let index = rejections.length - 1; index >= 0; index--) {
+        const rejection = rejections[index]!;
+        if (rejection.stage === "tier-ceiling" && readmittedIds.has(rejection.modelId)) {
+          rejections.splice(index, 1);
+        }
+      }
+      trace.push(
+        `health: every candidate under the ${appliedCeiling} ceiling is degraded; lifted the soft ceiling for ${healthier.length} healthier qualified model(s)`,
+      );
+      base.effectiveTier = healthier[0]!.model.tier;
+    } else {
+      trace.push("health: every qualified model is degraded; retaining them as last-resort candidates");
+    }
+  }
+  base.candidates = routingPool.map((entry): Candidate => ({ modelId: entry.model.id, tier: entry.model.tier, quality: entry.model.quality, expectedCostUsd: entry.cost, capacitySource: entry.evidence?.source ?? null, laneLabel: entry.evidence?.laneLabel ?? null, usagePosture: entry.evidence?.posture ?? (capacityEnabled ? "unknown" : "not-evaluated"), utilization: entry.evidence?.utilization ?? null, resetsAt: entry.evidence?.resetsAt ?? null, paceState: paceActive ? entry.pace?.state ?? "unknown" : "not-evaluated", paceDeviation: paceActive ? (entry.pace?.score?.deviation ?? null) : null }));
   // TOG-1076: `degraded` announces "we served without capacity awareness". Line
   // 102 raises it when telemetry is wholly unavailable, but under `fail-open` a
   // model no source covers is equally uninformed — and until now reported
@@ -289,8 +338,11 @@ export function selectModel(input: SelectInput): RoutingDecision {
     trace.push(blocked ? `pin refused: ${pinnedId} is on the pin blocklist` : overUtilCap ? `pin refused: ${pinnedId} over weekly utilization cap ${PIN_MAX_WEEKLY_UTILIZATION} (utilization ${pinnedUtil})` : `pin refused: ${pinnedId}`);
   }
   if (budgetGate === "halt" && !base.pin?.honored) { trace.push("budget gate halt: refusing non-pinned model work"); return base; }
-  if (config.routing.stickyModelWithinIssue && runtime.stickyModelId) { const stickyPool = (budgetGate === "downshift" ? ranked : withCapacity).filter((entry) => !(capacityEnabled && config.capacityRouting.mode === "enforce") || usable(entry)); const incumbent = stickyPool.find((entry) => entry.model.id === runtime.stickyModelId); if (incumbent) return { ...base, outcome: "selected", modelId: incumbent.model.id, capacity: capacityFor(incumbent) }; if (pool.length) trace.push(`sticky: ${runtime.stickyModelId} no longer survives the gates, switching despite the cache cost`); }
-  if (!pool.length) {
+  // TOG-7160 (port of TOG-930): a degraded sticky incumbent is released so
+  // real traffic can test recovery elsewhere; the last-resort case (every
+  // candidate degraded) still retains the incumbent via routingPool below.
+  if (config.routing.stickyModelWithinIssue && runtime.stickyModelId) { const stickyBase = budgetGate === "downshift" ? routingPool : withCapacity.filter((entry) => !degraded.has(entry.model.id)); const stickyPool = stickyBase.filter((entry) => !(capacityEnabled && config.capacityRouting.mode === "enforce") || usable(entry)); const incumbent = stickyPool.find((entry) => entry.model.id === runtime.stickyModelId); if (incumbent) return { ...base, outcome: "selected", modelId: incumbent.model.id, capacity: capacityFor(incumbent) }; if (degraded.has(runtime.stickyModelId)) trace.push(`sticky: released degraded incumbent ${runtime.stickyModelId}`); if (routingPool.length) trace.push(`sticky: ${runtime.stickyModelId} no longer survives the gates, switching despite the cache cost`); }
+  if (!routingPool.length) {
     const fallbackId = config.routing.fallbackModelId;
     if (!fallbackId) return base;
     const model = config.models.find((entry) => entry.id === fallbackId && entry.enabled);
@@ -306,7 +358,7 @@ export function selectModel(input: SelectInput): RoutingDecision {
     }
     return { ...base, outcome: "selected", modelId: fallbackId, fallbackUsed: true, capacity: { ...capacityFor(fallback), fallbackEvents: [`configured fallback ${fallbackId} used`] } };
   }
-  const winner = pool[0]!;
+  const winner = routingPool[0]!;
   if (paceActive) trace.push(`pace ordering: ${winner.model.id} lane ${winner.pace ? `${winner.pace.state}${winner.pace.score ? ` (deviation ${winner.pace.score.deviation.toFixed(3)})` : ""}` : "unknown"}`);
   trace.push(capacityEnabled && config.capacityRouting.mode === "enforce" ? `selected ${winner.model.id} using capacity evidence ${winner.evidence?.source}/${winner.evidence?.laneLabel}` : `selected ${winner.model.id} at an expected $${winner.cost.toFixed(5)}`);
   if (capacityEnabled && config.capacityRouting.mode === "shadow" && shadow && shadow.model.id !== winner.model.id) trace.push(`capacity shadow would choose ${shadow.model.id}; serving remains ${winner.model.id}`);

@@ -1,12 +1,11 @@
 /**
  * G20 (TOG-7846 rev 2, card [TOG-7899](/TOG/issues/TOG-7899)): the gitleaks
- * install hardening + scanner self-test wiring live in
+ * install hardening + scanner self-test wiring shipped as
  * `docs/operator/tog-488-ci-secret-scan.patch`, which no agent can push
  * ([ADR 0008](../docs/decisions/0008-workflow-files-are-operator-applied.md)).
- * Until a human applies it, the live `secret-scan` job still installs gitleaks
- * with an unverified `curl | tar` pipe and never runs
- * `scripts/gitleaks-selftest.sh` — and `npm run check:workflows` stays red by
- * design while the patch is pending, so it cannot be part of `npm run verify`.
+ * A human applied it (operator PR #101, `8d36ffa`, 2026-09-28) and the patch
+ * is now deleted per the operator runbook — the live `secret-scan` job
+ * carries the hardening itself, so this spec exercises the cleaned-up state.
  *
  * This spec is the part that CAN run on every commit: it pins the agreement
  * between the patch and the tree, in whichever lifecycle state they are in:
