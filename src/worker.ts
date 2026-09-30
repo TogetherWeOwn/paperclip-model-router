@@ -15,7 +15,6 @@ import {
 import type { RouterConfig } from "./config/types.js";
 import {
   ACTION_KEYS,
-  DECISION_LOG_RETENTION_DAYS,
   ISSUE_STICKINESS_MAX_ENTRIES,
   JOB_KEYS,
   PENDING_INVOCATION_TTL_MS,
@@ -28,7 +27,8 @@ import {
   DECISION_QUERY_MAX_LIMIT,
   decisionInsertSql,
   decisionPruneCompanySql,
-  decisionPruneSql,
+  decisionCompaniesSql,
+  decisionRetentionCutoff,
   decisionQuerySql,
   decisionRecordParams,
   decisionRowToRecord,
@@ -262,67 +262,32 @@ export function createPlugin() {
         resolveConfig(await ctx.config.get(companyId));
       const migratedDecisionLogs = new Set<string>();
 
-      /**
-       * TOG-7897: the company's configured retention window in days. The
-       * resolver clamps out-of-range values to the default, so a stored
-       * config always yields a usable bound here.
-       */
-      const decisionRetentionDays = async (companyId: string): Promise<number> => {
+      /** Unknown policy defers maintenance; only a successfully read absent policy defaults. */
+      const decisionRetentionDays = async (companyId: string): Promise<number | null> => {
         try {
           return (await companyConfig(companyId)).decisionLog.retentionDays;
         } catch {
-          return DECISION_LOG_RETENTION_DAYS;
+          ctx.logger.warn("Decision retention policy unavailable; pruning and legacy reconciliation deferred", { companyId });
+          return null;
         }
       };
 
-      /**
-       * TOG-7897: instance-scoped index of every company that has written a
-       * decision row (`{ companyIds: string[] }`), so the startup sweep can
-       * prune each writer's own retention window. `ctx.state` has no listing
-       * primitive, hence the explicit index — the same pattern as the
-       * TOG-7417 per-run pending-invocation index. Best-effort: companies
-       * missing here still get the default-window backstop in the sweep.
-       */
-      const decisionWriterIndexKey = {
-        scopeKind: "instance" as const,
-        stateKey: STATE_KEYS.decisionWriterCompanies,
-      };
-
-      const rememberDecisionWriter = async (companyId: string): Promise<void> => {
-        try {
-          const stored = asRecord(await ctx.state.get(decisionWriterIndexKey));
-          const companyIds = Array.isArray(stored.companyIds)
-            ? (stored.companyIds as unknown[]).filter((id): id is string => typeof id === "string")
-            : [];
-          if (!companyIds.includes(companyId)) {
-            await ctx.state.set(decisionWriterIndexKey, { companyIds: [...companyIds, companyId] });
-          }
-        } catch {
-          ctx.logger.warn("Could not record the decision writer; its retention sweep still uses the default window", { companyId });
-        }
-      };
-
-      /**
-       * TOG-7897: prune one company's window. Runs on every write, so a
-       * lowered retention takes effect on the company's next write even when
-       * the worker has not restarted since — and so rows from a company whose
-       * index entry was lost are still bounded by its own window on its next
-       * write. Never throws: a failed prune must not fail the invocation it
-       * rides on; the startup sweep retries it.
-       */
+      /** Every write retries maintenance, preserving history AND the current UTC accounting month. */
       const pruneCompanyDecisionRecords = async (companyId: string, retentionDays: number): Promise<void> => {
         try {
           await ctx.db.execute(
             decisionPruneCompanySql(ctx.db.namespace),
-            [companyId, new Date().toISOString(), retentionDays],
+            [companyId, decisionRetentionCutoff(retentionDays, new Date())],
           );
         } catch {
-          ctx.logger.warn("Could not prune decision records; the startup sweep will retry", { companyId });
+          ctx.logger.warn("Could not prune decision records; the next write or startup sweep will retry", { companyId });
         }
       };
 
       const migrateLegacyDecisionLog = async (companyId: string): Promise<void> => {
         if (migratedDecisionLogs.has(companyId)) return;
+        const retentionDays = await decisionRetentionDays(companyId);
+        if (retentionDays === null) return;
         const migrationKey = {
           scopeKind: "company" as const,
           scopeId: companyId,
@@ -334,8 +299,7 @@ export function createPlugin() {
           stateKey: STATE_KEYS.legacyDecisionLog,
         });
         if (Array.isArray(legacy)) {
-          const retentionDays = await decisionRetentionDays(companyId);
-          const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1_000;
+          const cutoff = Date.parse(decisionRetentionCutoff(retentionDays, new Date()));
           for (const value of legacy) {
             const record = legacyDecisionRecord(companyId, value);
             if (record && Date.parse(record.at) >= cutoff) {
@@ -347,32 +311,18 @@ export function createPlugin() {
         migratedDecisionLogs.add(companyId);
       };
 
-      /**
-       * TOG-7897: startup sweep. Prunes each known writer's own retention
-       * window, then the default window over the whole table as a backstop
-       * for writers the index never saw (older workers, a lost index row).
-       * The global default sweep is first so a redacted-row edge that aborts
-       * one company's prune still leaves the historical 90-day bound enforced
-       * everywhere. Keeps the exact historical SQL shape and params so the
-       * pre-existing retention test still pins it.
-       */
+      /** Startup enumerates persisted writers; no global default can override a company's policy. */
       const pruneDecisionRecords = async (): Promise<void> => {
-        await ctx.db.execute(
-          decisionPruneSql(ctx.db.namespace),
-          [new Date().toISOString(), DECISION_LOG_RETENTION_DAYS],
-        );
-        let companyIds: string[] = [];
+        let companies: Array<{ company_id: string }>;
         try {
-          const stored = asRecord(await ctx.state.get(decisionWriterIndexKey));
-          if (Array.isArray(stored.companyIds)) {
-            companyIds = (stored.companyIds as unknown[]).filter((id): id is string => typeof id === "string");
-          }
+          companies = await ctx.db.query<{ company_id: string }>(decisionCompaniesSql(ctx.db.namespace), []);
         } catch {
-          ctx.logger.warn("Could not read the decision writer index; default-window prune already ran");
+          ctx.logger.warn("Could not enumerate decision writers; pruning deferred until next write or startup");
           return;
         }
-        for (const companyId of companyIds) {
-          await pruneCompanyDecisionRecords(companyId, await decisionRetentionDays(companyId));
+        for (const { company_id: companyId } of companies) {
+          const retentionDays = await decisionRetentionDays(companyId);
+          if (retentionDays !== null) await pruneCompanyDecisionRecords(companyId, retentionDays);
         }
       };
 
@@ -867,8 +817,7 @@ export function createPlugin() {
         // first and honors the same window, so the legacy backlog never
         // re-imports rows the prune is about to delete.
         const retentionDays = await decisionRetentionDays(companyId);
-        await pruneCompanyDecisionRecords(companyId, retentionDays);
-        await rememberDecisionWriter(companyId);
+        if (retentionDays !== null) await pruneCompanyDecisionRecords(companyId, retentionDays);
         await ctx.metrics.write(`model_router.invoke.${result.outcome}`, 1);
         // TOG-7885 (G8): company-scoped degraded-age counter. Native metrics
         // carry no company tag (see OPERATIONS.md), so the metric name itself
@@ -1017,6 +966,8 @@ export function createPlugin() {
         // selectModel) is unchanged — only the fraction's source changes here.
         const authoritativeBudgetSpentFraction =
           extractAuthoritativeBudgetSpentFraction(actorContext);
+        // Import accounting evidence before it is summed, including rows hidden by short history retention.
+        await migrateLegacyDecisionLog(companyId);
         const monthlyLedger = await readMonthlySpendLedger(
           ctx.db, ctx.logger, companyId, config, new Date(),
         );
@@ -1544,15 +1495,14 @@ export function createPlugin() {
        * see its own company's routing history. The window start is derived
        * from the company's configured retention, and the row limit is
        * clamped to [1, DECISION_QUERY_MAX_LIMIT] so the action cannot page
-       * the table. Every returned record is stamped with the caller's own
-       * company id, so a misbound query (or a row that outlived a prune)
-       * can never smuggle another company's rows into the result.
+       * the table. Isolation is enforced by the SQL company predicate;
+       * stamping returned records with the host scope is only normalization.
        */
       const queryDecisionsFor = async (
         companyId: string,
         rawLimit: unknown,
       ): Promise<{ companyId: string; retentionDays: number; limit: number; records: DecisionRecord[] }> => {
-        const retentionDays = await decisionRetentionDays(companyId);
+        const retentionDays = (await companyConfig(companyId)).decisionLog.retentionDays;
         const requested = typeof rawLimit === "number" && Number.isFinite(rawLimit) ? Math.floor(rawLimit) : DECISION_QUERY_MAX_LIMIT;
         const limit = Math.min(Math.max(requested, 1), DECISION_QUERY_MAX_LIMIT);
         const windowStart = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1_000).toISOString();
@@ -1862,17 +1812,7 @@ export function createPlugin() {
           if (rawSecretError) errors.push(rawSecretError);
         }
       }
-      // TOG-7897: retention is an integer in days, 1 through 3650. The
-      // resolver falls back to the 90-day default for anything else, so
-      // validate against the RAW payload — not the resolved config — to
-      // report the operator's actual value instead of the default it became.
-      const decisionLogRaw = asRecord(raw.decisionLog);
-      if (raw.decisionLog !== undefined) {
-        const retentionDays = decisionLogRaw.retentionDays;
-        if (!Number.isInteger(retentionDays) || (retentionDays as number) < 1 || (retentionDays as number) > 3650) {
-          errors.push("decisionLog.retentionDays must be an integer from 1 through 3650");
-        }
-      }
+      // resolveConfig already validates supplied decisionLog values; omitted retention defaults to 90.
       return { ok: errors.length === 0, errors, warnings };
     },
 

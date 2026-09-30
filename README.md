@@ -134,18 +134,30 @@ Disable `capacityRouting` to restore v1 selection exactly.
 
 ### `decisionLog` — routing-history retention and read path (TOG-7897)
 
-Every invocation appends a company-scoped audit row to durable storage. Two
-knobs govern that history:
+Every invocation appends a company-scoped audit row to durable storage. One
+optional setting governs history visibility:
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `retentionDays` | integer 1–3650 | `90` | How long a company's decision rows are kept, in days. Bounds both the prune sweep and the read path below. |
+| `retentionDays` | integer 1–3650 | `90` | The company's visible routing-history window, in days. Physical deletion also preserves the current UTC accounting month. |
 
-A lowered retention takes effect on the company's next write — each write
-prunes that company's own window first — plus a per-company sweep at worker
-startup (with the historical 90-day whole-table sweep kept as a backstop).
-Out-of-range values are rejected at config validation and fall back to 90
-days in the stored config.
+Omitting `decisionLog` or supplying `decisionLog: {}` defaults to 90 days.
+Malformed explicit values are rejected, including in stored configuration.
+
+**Physical-retention exception:** `decision_records` also feeds monthly spend-cap
+enforcement. Deletion therefore uses the **earlier** of the configured history
+cutoff and the current UTC month start, unconditionally — even if caps are
+currently disabled. Current-month accounting rows outside a short history window
+remain stored but are not returned by `query-decisions`. After the month rolls
+over, those rows can be deleted once they are also outside the history window.
+Legacy import applies the same floor and reconciles before the monthly ledger read.
+
+Each write prunes that company's own rows using this cutoff. Startup enumerates
+persisted company IDs from `decision_records` and applies their individual policies;
+there is no whole-table default DELETE or writer-state-index dependency. If policy
+cannot be read or resolved, pruning is skipped and legacy reconciliation is deferred
+without marking it complete. A later write or worker restart retries after recovery.
+A successfully read absent policy, unlike an unavailable policy, uses the default.
 
 Run the company-scoped `query-decisions` action to inspect recent routing
 history:

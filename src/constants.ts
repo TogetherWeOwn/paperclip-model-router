@@ -74,14 +74,6 @@ export const STATE_KEYS = {
    */
   pendingInvocationsByRun: "pending-invocations-by-run",
   /**
-   * TOG-7897: one instance-scoped row holding the company ids that have
-   * written decision rows (`{ companyIds: string[] }`), so the startup sweep
-   * can prune each company's own retention window. Same pattern as the
-   * TOG-7417 per-run index: `ctx.state` has no listing primitive, and
-   * companies the index never saw still get the default-window backstop.
-   */
-  decisionWriterCompanies: "decision-writer-companies",
-  /**
    * TOG-7160 (port of TOG-930): company-scoped invocation-derived model
    * health overlay (`ModelHealthState`). `ctx.config` is read-only to the
    * plugin, so the probe records health here and selection reads the overlay

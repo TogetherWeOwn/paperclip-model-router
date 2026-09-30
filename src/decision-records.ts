@@ -1,6 +1,7 @@
 import type { RouterConfig } from "./config/types.js";
 import type { RoutingDecision } from "./engine/types.js";
 import type { InferenceResult, NormalizedStopReason } from "./inference/types.js";
+import { monthWindowUtc } from "./spend-ledger.js";
 
 export interface DecisionRecord {
   id: string;
@@ -104,20 +105,27 @@ export function decisionRecordParams(record: DecisionRecord): unknown[] {
   ];
 }
 
-export function decisionPruneSql(namespace: string): string {
-  return `DELETE FROM ${decisionTable(namespace)}
-   WHERE recorded_at < $1::timestamptz - ($2 * interval '1 day')`;
+/** Startup discovers durable writers from the table, not a lossy state index. */
+export function decisionCompaniesSql(namespace: string): string {
+  return `SELECT DISTINCT company_id FROM ${decisionTable(namespace)}`;
 }
 
 /**
- * TOG-7897: per-company prune. The worker sweeps the whole table at startup
- * (mixed retentions), but a company that writes also prunes its own window
- * first, so a lowered retention takes effect on the next write even when the
- * worker has not restarted since.
+ * History visibility follows retentionDays; physical retention also preserves
+ * the whole current UTC accounting month, even when monthly caps are disabled.
+ * Legacy import uses the same floor so a short history window cannot erase
+ * evidence consumed by the monthly spend ledger.
  */
+export function decisionRetentionCutoff(retentionDays: number, now: Date): string {
+  const historyCutoff = now.getTime() - retentionDays * 86_400_000;
+  const monthStart = Date.parse(monthWindowUtc(now).startIso);
+  return new Date(Math.min(historyCutoff, monthStart)).toISOString();
+}
+
+/** Per-company prune; $2 is the physical cutoff, not the history window. */
 export function decisionPruneCompanySql(namespace: string): string {
   return `DELETE FROM ${decisionTable(namespace)}
-   WHERE company_id = $1 AND recorded_at < $2::timestamptz - ($3 * interval '1 day')`;
+   WHERE company_id = $1 AND recorded_at < $2::timestamptz`;
 }
 
 /** Columns the read path returns, in SELECT order. */
@@ -202,9 +210,9 @@ function dbString(value: unknown): string | null {
 
 /**
  * TOG-7897: map one raw `decision_records` row to the `DecisionRecord`
- * shape. `companyId` is the host-authorized scope, not a row field, so a
- * misbound query can never smuggle another company's rows into the result —
- * every returned record is stamped with the caller's own company.
+ * shape. `companyId` is the host-authorized scope, not a row field.
+ * Isolation is enforced by decisionQuerySql's company predicate, not by
+ * stamping the result envelope.
  */
 export function decisionRowToRecord(
   row: Record<string, unknown>,

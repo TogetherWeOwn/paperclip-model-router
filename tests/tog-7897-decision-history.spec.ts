@@ -48,7 +48,7 @@ function openAiSuccess() {
 
 async function workerWithConfigs(
   overrides: Record<string, Record<string, unknown>> = {},
-  seedState: Array<{ key: { scopeKind: "instance" | "company"; scopeId?: string; stateKey: string }; value: unknown }> = [],
+  persistedCompanyIds: string[] = [],
 ) {
   const configs = new Map<string, Record<string, unknown>>();
   for (const [company, fixture] of [["a", COMPANY_A], ["b", COMPANY_B]] as const) {
@@ -71,11 +71,11 @@ async function workerWithConfigs(
   };
   harness.ctx.http = { async fetch() { return openAiSuccess(); } };
   vi.stubGlobal("fetch", async () => openAiSuccess());
-  // Seeds land before setup, so they read like rows a previous worker
-  // generation left behind (e.g. the writer index at restart).
-  for (const entry of seedState) {
-    await harness.ctx.state.set(entry.key, entry.value);
-  }
+  harness.ctx.db.query = async <T>(sql: string, params?: unknown[]): Promise<T[]> => {
+    harness.dbQueries.push({ sql, params });
+    return (sql.startsWith("SELECT DISTINCT company_id FROM")
+      ? persistedCompanyIds.map((company_id) => ({ company_id })) : []) as T[];
+  };
   const { definition } = createPlugin();
   await definition.setup(harness.ctx);
   return { harness, definition };
@@ -235,9 +235,9 @@ describe("TOG-7897: configurable retention", () => {
   it("defaults to 90 days and rejects out-of-range overrides at validate time", async () => {
     expect(resolveConfig({}).decisionLog).toEqual({ retentionDays: 90 });
     expect(resolveConfig({ decisionLog: { retentionDays: 7 } }).decisionLog).toEqual({ retentionDays: 7 });
-    // The resolver is the stored-config backstop: garbage becomes the default.
-    expect(resolveConfig({ decisionLog: { retentionDays: 0 } }).decisionLog).toEqual({ retentionDays: 90 });
-    expect(resolveConfig({ decisionLog: { retentionDays: 3651 } }).decisionLog).toEqual({ retentionDays: 90 });
+    // Malformed stored policy must not silently authorize default-window pruning.
+    expect(() => resolveConfig({ decisionLog: { retentionDays: 0 } })).toThrow("decisionLog.retentionDays");
+    expect(() => resolveConfig({ decisionLog: { retentionDays: 3651 } })).toThrow("decisionLog.retentionDays");
 
     const { definition } = await workerWithConfigs();
     const base = readFixture("company-a") as Record<string, unknown>;
@@ -252,7 +252,7 @@ describe("TOG-7897: configurable retention", () => {
     expect(await definition.onValidateConfig!(base)).toMatchObject({ ok: true });
   });
 
-  it("honors a lowered retention on write: prunes the company's own window and records the writer", async () => {
+  it("honors a lowered retention on write with the UTC accounting floor", async () => {
     const now = new Date("2026-09-06T12:00:00.000Z");
     vi.useFakeTimers();
     vi.setSystemTime(now);
@@ -262,44 +262,35 @@ describe("TOG-7897: configurable retention", () => {
 
       const prunes = harness.dbExecutes.filter((entry) =>
         entry.sql.includes("DELETE FROM") && entry.sql.includes(".decision_records"));
-      // Startup default-window sweep first, then the per-company write prune.
-      expect(prunes).toHaveLength(2);
-      expect(prunes[0]?.params).toEqual([now.toISOString(), 90]);
-      expect(prunes[0]?.sql).not.toContain("company_id");
-      expect(prunes[1]?.params).toEqual([COMPANY_A, now.toISOString(), 7]);
-      expect(prunes[1]?.sql).toContain("company_id = $1");
-
-      const index = harness.getState({ scopeKind: "instance", stateKey: STATE_KEYS.decisionWriterCompanies });
-      expect(index).toEqual({ companyIds: [COMPANY_A] });
+      // Empty startup table needs no delete; the seven-day cutoff is earlier than month start here.
+      expect(prunes).toHaveLength(1);
+      expect(prunes[0]?.params).toEqual([COMPANY_A, "2026-08-30T12:00:00.000Z"]);
+      expect(prunes[0]?.sql).toContain("company_id = $1");
+      expect(harness.dbQueries[0]?.sql).toContain("SELECT DISTINCT company_id FROM");
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("the startup sweep prunes each known writer's own window after the default backstop", async () => {
+  it("the startup sweep prunes each persisted writer's own window without a global backstop", async () => {
     const now = new Date("2026-09-06T12:00:00.000Z");
     vi.useFakeTimers();
     vi.setSystemTime(now);
     try {
-      // A restarted worker that inherits only the writer index from the
-      // previous generation: setup's sweep is the only execute source.
+      // Setup discovers companies from persisted decision rows, not state.
       const { harness } = await workerWithConfigs(
         {
           [COMPANY_A]: { decisionLog: { retentionDays: 7 } },
           [COMPANY_B]: { decisionLog: { retentionDays: 30 } },
         },
-        [{
-          key: { scopeKind: "instance", stateKey: STATE_KEYS.decisionWriterCompanies },
-          value: { companyIds: [COMPANY_A, COMPANY_B] },
-        }],
+        [COMPANY_A, COMPANY_B],
       );
 
       const prunes = harness.dbExecutes.filter((entry) =>
         entry.sql.includes("DELETE FROM") && entry.sql.includes(".decision_records"));
       expect(prunes.map((entry) => entry.params)).toEqual([
-        [now.toISOString(), 90],
-        [COMPANY_A, now.toISOString(), 7],
-        [COMPANY_B, now.toISOString(), 30],
+        [COMPANY_A, "2026-08-30T12:00:00.000Z"],
+        [COMPANY_B, "2026-08-07T12:00:00.000Z"],
       ]);
     } finally {
       vi.useRealTimers();

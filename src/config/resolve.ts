@@ -260,18 +260,14 @@ function resolveCapacitySources(value: unknown): CapacityRoutingConfig["sources"
   });
 }
 
-/**
- * TOG-7897: resolve the decision-history retention. Out-of-range values
- * (minimum 1, maximum 3650 days) fall back to the 90-day default rather than
- * silently storing a bound neither the prune sweep nor the read path would
- * honor; `onValidateConfig` reports them first, so this is the stored-config
- * backstop, not the operator's error surface.
- */
+/** Only absent policy defaults; malformed policy must not authorize deletion. */
 function resolveDecisionLog(value: unknown): DecisionLogConfig {
-  if (!isRecord(value)) return { ...DEFAULT_DECISION_LOG };
-  const retentionDays = pickNumber(value.retentionDays, DEFAULT_DECISION_LOG.retentionDays);
-  if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650) {
-    return { ...DEFAULT_DECISION_LOG };
+  if (value === undefined) return { ...DEFAULT_DECISION_LOG };
+  if (!isRecord(value)) throw new Error("decisionLog must be an object");
+  if (value.retentionDays === undefined) return { ...DEFAULT_DECISION_LOG };
+  const retentionDays = value.retentionDays;
+  if (typeof retentionDays !== "number" || !Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650) {
+    throw new Error("decisionLog.retentionDays must be an integer from 1 through 3650");
   }
   return { retentionDays };
 }

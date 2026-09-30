@@ -358,7 +358,7 @@ export const ROUTER_CONFIG_SCHEMA = {
           maximum: 3650,
           default: 90,
           description:
-            "TOG-7897: how long a company's routing decision rows are kept, in days. Bounds both the prune sweep and the query-decisions read path.",
+            "TOG-7897: visible routing-history window in days. Physical pruning also preserves the entire current UTC accounting month, even with spend caps disabled.",
         },
       },
     },

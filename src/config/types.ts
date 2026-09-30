@@ -15,9 +15,9 @@ export interface RouterConfig {
   capacityRouting: CapacityRoutingConfig;
   rule0: Rule0Config;
   /**
-   * TOG-7897: decision-history retention. How long a company's routing
-   * decision rows are kept before the worker prunes them. The
-   * `query-decisions` read path only ever returns rows inside this window.
+   * TOG-7897: visible decision-history window. Physical pruning also
+   * preserves the current UTC accounting month for spend-cap enforcement.
+   * `query-decisions` only returns rows inside the history window.
    */
   decisionLog: DecisionLogConfig;
 }
@@ -116,9 +116,9 @@ export interface CapacityRoutingConfig {
 export type SourcePaceDefinition = import("../capacity/types.js").LanePaceDefinition;
 
 /**
- * TOG-7897: decision-history retention. `retentionDays` bounds both the
- * prune sweep (rows older than the window are deleted) and the
- * `query-decisions` read path (which never returns rows outside it).
+ * TOG-7897: `retentionDays` bounds visible history. Pruning and legacy import
+ * preserve the earlier of this cutoff and the current UTC month start;
+ * `query-decisions` never returns rows outside the history window.
  */
 export interface DecisionLogConfig {
   retentionDays: number;

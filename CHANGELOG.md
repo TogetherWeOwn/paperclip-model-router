@@ -108,17 +108,23 @@ version is not present here.
     from params — so a caller can only ever see its own company's history;
     every returned record is stamped with the caller's company id.
   - New optional `decisionLog.retentionDays` company config (integer
-    1–3650, default 90): bounds both the prune sweep and the read path.
-    Enforced on every write (not only at worker startup), so a lowered
-    retention takes effect on the company's next write; the startup sweep
-    prunes each known writer's own window with the historical 90-day
-    whole-table sweep kept as a backstop. The legacy import honors the
-    same window. Out-of-range values are rejected at config validation.
-  - `tests/tog-7897-decision-history.spec.ts`: 8 tests (zero cross-company
-    leakage incl. the issued-SQL binding, limit clamping, retention
-    override on write/sweep/import, validate-time rejection). Three
-    mutation families (dropped company filter, hardcoded retention,
-    row-stamped company id) all go red.
+    1–3650, default 90): bounds visible history. Physical pruning and
+    legacy import preserve the earlier of the history cutoff and current
+    UTC month start, including cap-disabled companies, so a short window
+    cannot erase monthly spend-cap evidence. Legacy reconciliation precedes
+    the ledger read. Each write retries maintenance; startup enumerates
+    company IDs from persisted decision rows and applies per-company DELETEs,
+    with no global default sweep or lossy writer index. Unreadable policy
+    skips pruning and defers reconciliation without marking it complete.
+    Absent policy (including `decisionLog: {}`) defaults; malformed explicit
+    policy is rejected at validation and resolution. These corrections
+    address the PR #85 CHANGES findings (TOG-10716).
+  - `tests/tog-7897-decision-history.spec.ts`: company isolation, limit
+    clamping, retention override on write/sweep/import and validation.
+    `tests/tog-10716-retention-accounting.spec.ts`: mixed 7/365-day persisted
+    writers without an index, startup/config outages and recovery, repeated
+    $1.25/$1 over-cap halts, legacy accounting and UTC month rollover,
+    cap-disabled physical retention, and optional/malformed policy agreement.
   - `scripts/validate-migrations-against-host.mjs` rehearses the new
     SELECT and the per-company prune against real Postgres, and the host
     query validator accepts the read SQL.
