@@ -296,31 +296,81 @@ export function createPlugin() {
         stateKey: STATE_KEYS.issueStickiness,
       });
 
-      const readStickyModel = async (companyId: string, issueId: string | undefined) => {
+      // TOG-11795: a sticky entry records the agent whose selection
+      // established it, so an agent-to-agent reassignment never keeps serving
+      // the old agent's model. Legacy rows store a bare model-id string (no
+      // owner); they are honored once and upgraded to the owned shape on the
+      // next write. Anything else is junk and reads as absent (the write path
+      // prunes it, per TOG-7877).
+      interface StickyEntry {
+        modelId: string;
+        agentId: string | null;
+      }
+
+      const asStickyEntry = (value: unknown): StickyEntry | null => {
+        if (typeof value === "string") return { modelId: value, agentId: null };
+        if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+        const record = value as Record<string, unknown>;
+        if (typeof record.modelId !== "string") return null;
+        const agentId = record.agentId;
+        if (agentId !== null && agentId !== undefined && typeof agentId !== "string") return null;
+        return { modelId: record.modelId, agentId: typeof agentId === "string" ? agentId : null };
+      };
+
+      const readStickyModel = async (
+        companyId: string,
+        issueId: string | undefined,
+        agentId: string | null,
+      ) => {
         if (!issueId) return undefined;
         const map = asRecord(await ctx.state.get(stickyKey(companyId)));
-        return typeof map[issueId] === "string" ? (map[issueId] as string) : undefined;
+        const entry = asStickyEntry(map[issueId]);
+        if (!entry) return undefined;
+        // A foreign agent's entry is invisible: the caller re-decides from its
+        // own context instead of inheriting the previous agent's model. An
+        // unknown caller (null) cannot prove foreignness, so it honors the
+        // entry exactly like the pre-TOG-11795 reader did.
+        if (entry.agentId !== null && agentId !== null && entry.agentId !== agentId) return undefined;
+        return entry.modelId;
       };
 
       // TOG-7877 (G15): bounded insertion-ordered LRU. The written issue
       // moves to most-recent; entries past ISSUE_STICKINESS_MAX_ENTRIES are
       // dropped oldest-first. Also prunes junk from malformed rows (a legacy
-      // or hand-edited row may carry non-string values that would otherwise
-      // hold a slot forever). Reads never move recency, so the sticky hot
-      // path (same issue, same model) performs no state write.
+      // or hand-edited row may carry values that are neither a model-id
+      // string nor a sticky entry, which would otherwise hold a slot
+      // forever). Reads never move recency, so the sticky hot path (same
+      // issue, same model, same agent) performs no state write.
+      //
+      // TOG-11795: a fallback selection never sticks. The sticky incumbent is
+      // what keeps a fallback serving after its primary recovers (the next
+      // invoke would honor the fallback instead of re-deciding), so the write
+      // is skipped and any older non-fallback entry is left in place — that
+      // entry is exactly what lets the recovered primary get honored again
+      // with no repin pass. Skipping also covers the "first selection is a
+      // fallback" case: every later invoke re-decides until a non-fallback
+      // model selects.
       const writeStickyModel = async (
         companyId: string,
         issueId: string | undefined,
         modelId: string | null,
+        options?: { agentId?: string | null; fallbackUsed?: boolean },
       ): Promise<void> => {
         if (!issueId || !modelId) return;
+        if (options?.fallbackUsed) return;
+        const agentId = options?.agentId ?? null;
         const stored = asRecord(await ctx.state.get(stickyKey(companyId)));
-        if (stored[issueId] === modelId) return;
-        const map: Record<string, string> = {};
+        const existing = asStickyEntry(stored[issueId]);
+        if (existing && existing.modelId === modelId && existing.agentId === agentId) return;
+        const map: Record<string, string | StickyEntry> = {};
         for (const [key, value] of Object.entries(stored)) {
-          if (key !== issueId && typeof value === "string") map[key] = value;
+          if (key === issueId) continue;
+          const entry = asStickyEntry(value);
+          if (entry) map[key] = value as string | StickyEntry;
         }
-        map[issueId] = modelId;
+        // Agent-less writes stay a bare string: compact, and readable by a
+        // pre-TOG-11795 worker during a staged rollout.
+        map[issueId] = agentId === null ? modelId : { modelId, agentId };
         const excess = Object.keys(map).length - ISSUE_STICKINESS_MAX_ENTRIES;
         if (excess > 0) {
           for (const key of Object.keys(map).slice(0, excess)) delete map[key];
@@ -954,7 +1004,7 @@ export function createPlugin() {
             paceVerdicts: config.capacityRouting.paceOrdering ? capacity.paceVerdicts : undefined,
             modelLaneByPace: config.capacityRouting.paceOrdering ? capacity.modelLaneByPace : undefined,
             stickyModelId: config.routing.stickyModelWithinIssue
-              ? await readStickyModel(companyId, request.task.issueId)
+              ? await readStickyModel(companyId, request.task.issueId, actor.agentId)
               : undefined,
             degradedModelIds: degradedModelIds(health),
           },
@@ -1002,7 +1052,10 @@ export function createPlugin() {
           }
         }
 
-        await writeStickyModel(companyId, request.task.issueId, decision.modelId);
+        await writeStickyModel(companyId, request.task.issueId, decision.modelId, {
+          agentId: actor.agentId,
+          fallbackUsed: decision.fallbackUsed,
+        });
         if (!config.upstream.credentialSecretRef) {
           result = {
             outcome: "error",
