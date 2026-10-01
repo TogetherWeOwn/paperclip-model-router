@@ -1,0 +1,28 @@
+{
+  "windowHours": 24,
+  "generatedAt": "2026-10-01T21:29:34.184Z",
+  "windowOldest": "2026-10-01T20:53:50.404Z",
+  "windowNewest": "2026-10-01T21:28:32.512Z",
+  "distinctIssues": 134,
+  "rawExactMatches": 1725,
+  "rawExactDenominator": 1800,
+  "totalRuns": 5000,
+  "routedRuns": 2125,
+  "routedShare": 0.425,
+  "noModelRuns": 1090,
+  "fidelityMatches": 1725,
+  "fidelityDenominator": 1800,
+  "fidelity": 0.9583333333333334,
+  "fidelityNoModelRuns": 325,
+  "firstRunTotal": 682,
+  "firstRunDecided": 0,
+  "firstRunCoverage": 0,
+  "escapedRuns": 50,
+  "escapedIssueIds": [
+    "fbceeef6-1921-4131-9df9-67da0a911f0a",
+    "3541acf7-64ed-45b7-8b67-1e75d26fbb9d"
+  ],
+  "pinsTotal": 64,
+  "staleSecretPins": 64,
+  "caveat": "Interim pin-vs-run proxy: each run is compared with the pin as it is now, not the pin at run time. Re-point at contextSnapshot.modelDecision once TOG-11792 ships."
+}
