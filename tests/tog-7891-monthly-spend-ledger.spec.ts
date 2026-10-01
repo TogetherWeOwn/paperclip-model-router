@@ -137,6 +137,7 @@ const invocation = {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("month window (UTC calendar month, half-open)", () => {
@@ -394,6 +395,11 @@ describe("gates move off the ledger end to end", () => {
   });
 
   it("the trace names the ledger dollars, cap, and month for hand recomputation", async () => {
+    // Pinned to September: the worker windows on the live clock, so an
+    // unpinned `new Date()` would move the trace month out from under the
+    // hand fixture every October.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-15T12:00:00.000Z"));
     const { harness } = await sharedWorker({ ledgerRows: spendRows(130), monthlyCapUsd: 250 });
     const result = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as {
       decision: { trace: string[] };
@@ -408,6 +414,10 @@ describe("gates move off the ledger end to end", () => {
   it("rows outside the month and company never reach the gates", async () => {
     // The worker passes a half-open UTC window and the company id as params;
     // the DB does the exclusion. This pins the params the gates depend on.
+    // Pinned to September so the August control row below falls outside the
+    // window on every run (in August it would land inside and fail).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-15T12:00:00.000Z"));
     const { harness } = await sharedWorker({ ledgerRows: [], monthlyCapUsd: 250 });
     await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A });
     const spends = harness.dbQueries.filter((entry) => entry.sql.includes("output_tokens"));
@@ -459,6 +469,11 @@ describe("reviewer acceptance: month-boundary rows match the hand fixture", () =
     // The SQL window is what excludes the August control row — the reviewer
     // reproduces this by running the recorded query with the recorded params
     // against their seeded table and comparing with the $4.57 hand total.
+    // Pinned to September: the worker windows on the live clock, so an
+    // unpinned `new Date()` moves the window out from under the September
+    // seed rows every October (0 rows instead of 5).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-15T12:00:00.000Z"));
     const { harness } = await sharedWorker({ ledgerRows: LEDGER_ROWS, monthlyCapUsd: 250 });
     const result = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as {
       decision: { gates: { budget: string }; budget: { source: string; fraction: number; ledger: { totalUsd: number; monthLabel: string } | null } };
