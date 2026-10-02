@@ -44,19 +44,33 @@ version is not present here.
 
 - **`docs/OPERATIONS.md` rewritten post-public (TOG-7889, gap G19).** The
   TOG-532 "not authorized for a public release or live installation" ban is
-  dropped — stale since the repo went public on hosted runners — and replaced
-  with the current path: release (tag → published tarball), pin
-  (`npm run check:pin --for-card`), install (hash-verified download, ordinary
-  `plugin upgrade` vs capability-approval path per the release's Compatibility
-  entry), and a rollback section covering package + config restore. Verified
-  command transcripts throughout: `npm run verify` green (47 files, 536 tests,
-  strict host checks, `REHEARSAL PASSED`) on a clean
-  `v0.8.0` checkout, full two-company `rehearse` output quoted, the
-  `gh release download v0.8.0` sha256 recorded, and the pin gate's refusal of a
-  stale tag quoted as the gate working. The refresh-SLO section gains the
-  `docs/decisions/0010` promotion pointer. `tests/docs-install-version.spec.ts`
-  flips with it: it now requires the install path in OPERATIONS.md and refuses
-  any TOG-532 ban text. No code changes.
+  dropped, stale since the repo went public on hosted runners. The runbook
+  now separates checkout commands (run verbatim, output quoted) from
+  instance-admin commands (not run; each cites host source or the recorded
+  v0.5.0 deployment). Verified transcripts, 2026-10-02: `npm run verify` on a
+  clean `v0.8.0` checkout (38 files, 453 tests, strict host checks,
+  `REHEARSAL PASSED`; `main` reports 71 files, 822 tests); the full
+  three-company `rehearse` output including Evidence 8; `check:pin --for-card`
+  passing at the tag and refusing from `main`; and an unauthenticated `curl`
+  download, sha256 check and unpack of the v0.8.0 asset. Corrections:
+  - **Upgrade.** The ordinary upgrade re-reads the package from the plugin
+    row's `package_path`. So the row is repointed at a fresh directory
+    first; a symlink repoint serves the cached old manifest.
+  - **Rollback.** Rollback is that same procedure aimed at the old
+    directory. `plugin install "$OLD_DIR"` is refused with 409 on a live
+    key.
+  - **Config restore.** Config restore passes `{configJson}`, not the whole
+    saved record.
+  - **Capability-escalating path.** The path documents the soft-uninstall
+    requirement, and does not call it canonical.
+  - **Refresh SLO.** The SLO query counts only capacity-routed decisions,
+    which excludes pre-002 and capacity-off rows. It guards an empty window
+    with `NULLIF` and is marked unreleased; it was tested against a scratch
+    database.
+
+  `tests/docs-install-version.spec.ts` pins the install path, the TOG-532
+  removal, the `package_path` upgrade, the 409-safe rollback and the SLO
+  denominator. No code changes.
 
 - **Gitleaks operator-patch agreement is pinned by a regression spec
   (TOG-7899, gap G20).** The digest-verified gitleaks install +

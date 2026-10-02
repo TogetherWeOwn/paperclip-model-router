@@ -47,6 +47,8 @@ const DOCS = ["README.md", "docs/OPERATIONS.md"];
  */
 const COMMANDS: ReadonlyArray<{ label: string; pattern: RegExp }> = [
   { label: "gh release download", pattern: /gh release download\s+v(\d+\.\d+\.\d+)/g },
+  { label: "VERSION= assignment", pattern: /^VERSION=(\d+\.\d+\.\d+)$/gm },
+  { label: "releases/download URL", pattern: /releases\/download\/v(\d+\.\d+\.\d+)\//g },
   {
     label: "tarball filename",
     pattern: /togetherweown-paperclip-model-router-(\d+\.\d+\.\d+)\.tgz/g,
@@ -78,8 +80,10 @@ describe("documented install commands", () => {
   it("documents the install path in OPERATIONS.md, not in the README", () => {
     const readme = readFileSync(join(repo, "README.md"), "utf8");
     const operations = readFileSync(join(repo, "docs/OPERATIONS.md"), "utf8");
-    expect(readme).not.toMatch(/gh release download|paperclipai plugin install/);
-    expect(operations).toMatch(/gh release download/);
+    expect(readme).not.toMatch(/gh release download|releases\/download|paperclipai plugin install/);
+    // The repo is public: the primary download is an unauthenticated curl of the
+    // release asset, so a reviewer without a GitHub token can follow it verbatim.
+    expect(operations).toMatch(/curl -fsSLO "https:\/\/github\.com\/TogetherWeOwn\/paperclip-model-router\/releases\/download\/v\$VERSION\/\$TGZ"/);
   });
 
   it("keeps executable install commands pinned if a future authorization adds them", () => {
