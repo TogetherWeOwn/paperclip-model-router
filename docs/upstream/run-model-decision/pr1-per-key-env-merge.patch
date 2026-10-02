@@ -1,0 +1,132 @@
+From d685b373100deca7631b4c770d7c2b39e7cd8006 Mon Sep 17 00:00:00 2001
+From: Upstream Draft <draft@example.invalid>
+Date: Fri, 2 Oct 2026 20:57:38 +0000
+Subject: [PATCH] fix(heartbeat): merge issue override env per key
+
+A shallow spread of assigneeAdapterOverrides.adapterConfig replaces the whole
+env object, so an override that sets one env key drops every other key of the
+agent config, secret references included. Merge env per key instead.
+---
+ .../execution-workspace-policy.test.ts        | 43 +++++++++++++++++++
+ .../services/execution-workspace-policy.ts    | 23 ++++++++++
+ server/src/services/heartbeat.ts              |  7 ++-
+ 3 files changed, 71 insertions(+), 2 deletions(-)
+
+diff --git a/server/src/__tests__/execution-workspace-policy.test.ts b/server/src/__tests__/execution-workspace-policy.test.ts
+index e5cf70cf0..5dd733816 100644
+--- a/server/src/__tests__/execution-workspace-policy.test.ts
++++ b/server/src/__tests__/execution-workspace-policy.test.ts
+@@ -13,6 +13,7 @@ import {
+   parseIssueExecutionWorkspaceSettings,
+   parseProjectExecutionWorkspacePolicy,
+   ManagedSandboxUnavailableError,
++  mergeIssueAdapterConfigOverrides,
+   resolveEffectiveWorkspaceStrategyType,
+   resolveExecutionWorkspaceEnvironmentId,
+   resolvePinnedIssueWorkspaceStrategyType,
+@@ -756,4 +757,46 @@ describe("operator default isolated execution workspaces", () => {
+       }),
+     ).toBe(false);
+   });
++
++  it("merges issue override env per key over the base agent env", () => {
++    const secretRef = { type: "secret_ref", secretId: "sec-1" };
++    const merged = mergeIssueAdapterConfigOverrides(
++      {
++        model: "base-model",
++        env: { KEEP_ME: secretRef, SHARED: "base" },
++      },
++      {
++        model: "override-model",
++        env: { ADDED: "new", SHARED: "override" },
++      },
++    );
++    // 1. override env adds a key
++    expect((merged.env as Record<string, unknown>).ADDED).toBe("new");
++    // 2. override env shadows a base key
++    expect((merged.env as Record<string, unknown>).SHARED).toBe("override");
++    // 3. a base secret_ref survives an override that omits it
++    expect((merged.env as Record<string, unknown>).KEEP_ME).toEqual(secretRef);
++    // other keys keep shallow replace semantics
++    expect(merged.model).toBe("override-model");
++  });
++
++  it("does not mutate the base or override config", () => {
++    const base = { env: { A: "1" } };
++    const override = { env: { B: "2" } };
++    const merged = mergeIssueAdapterConfigOverrides(base, override);
++    expect(merged.env).toEqual({ A: "1", B: "2" });
++    expect(base.env).toEqual({ A: "1" });
++    expect(override.env).toEqual({ B: "2" });
++  });
++
++  it("leaves env alone when the override carries none", () => {
++    const merged = mergeIssueAdapterConfigOverrides(
++      { model: "base", env: { A: "1" } },
++      { model: "override" },
++    );
++    expect(merged.env).toEqual({ A: "1" });
++    expect(mergeIssueAdapterConfigOverrides({ model: "base" }, null)).toEqual({
++      model: "base",
++    });
++  });
+ });
+diff --git a/server/src/services/execution-workspace-policy.ts b/server/src/services/execution-workspace-policy.ts
+index dd36825a2..45d01ffce 100644
+--- a/server/src/services/execution-workspace-policy.ts
++++ b/server/src/services/execution-workspace-policy.ts
+@@ -446,3 +446,26 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
+ 
+   return nextConfig;
+ }
++
++/**
++ * Merge an issue's `assigneeAdapterOverrides.adapterConfig` over a base agent
++ * config. Every key keeps shallow replace semantics except `env`, which merges
++ * per key (`{ ...base.env, ...override.env }`).
++ *
++ * A shallow spread replaces the whole `env` object, so an override that sets
++ * one env key drops every other key of the agent config, secret references
++ * included. Merging `env` per key keeps the base keys that the override omits.
++ * An override key still shadows the base key.
++ */
++export function mergeIssueAdapterConfigOverrides(
++  base: Record<string, unknown>,
++  override: Record<string, unknown> | null | undefined,
++): Record<string, unknown> {
++  const next = { ...base, ...(override ?? {}) };
++  if (override && "env" in override) {
++    const baseEnv = parseObject(base.env);
++    const overrideEnv = parseObject(override.env);
++    next.env = { ...baseEnv, ...overrideEnv };
++  }
++  return next;
++}
+diff --git a/server/src/services/heartbeat.ts b/server/src/services/heartbeat.ts
+index e41bd2acf..69dc59d54 100644
+--- a/server/src/services/heartbeat.ts
++++ b/server/src/services/heartbeat.ts
+@@ -483,6 +483,7 @@ import {
+   gateProjectExecutionWorkspacePolicy,
+   issueExecutionWorkspaceModeForPersistedWorkspace,
+   isUnrunnableWorktreeCombo,
++  mergeIssueAdapterConfigOverrides,
+   parseIssueExecutionWorkspaceSettings,
+   parseProjectExecutionWorkspacePolicy,
+   resolveEffectiveWorkspaceStrategyType,
+@@ -21567,8 +21568,10 @@ export function heartbeatService(
+           issueAssigneeOverrides?.useProjectWorkspace ?? null,
+       });
+       const mergedConfig = {
+-        ...workspaceManagedConfig,
+-        ...(issueAssigneeOverrides?.adapterConfig ?? {}),
++        ...mergeIssueAdapterConfigOverrides(
++          workspaceManagedConfig,
++          issueAssigneeOverrides?.adapterConfig ?? null,
++        ),
+         // The base below is already task-owned. Keep directory transport while
+         // preserving isolated mode and the mandatory sandbox preflight.
+         ...(useIsolatedTaskDirectory ? { workspaceStrategy: { type: "project_primary" } } : {}),
+-- 
+2.47.3
+

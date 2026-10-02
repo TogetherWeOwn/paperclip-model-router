@@ -1,0 +1,2180 @@
+From d736b3105c98838cc86b1ee22a683104bf71c771 Mon Sep 17 00:00:00 2001
+From: Upstream Draft <draft@example.invalid>
+Date: Fri, 2 Oct 2026 20:57:38 +0000
+Subject: [PATCH] feat(heartbeat): add run-scoped model decision hook behind
+ requireRunModelDecision
+
+---
+ doc/plugins/PLUGIN_SPEC.md                    |  25 +
+ packages/plugins/sdk/src/define-plugin.ts     |  13 +
+ packages/plugins/sdk/src/index.ts             |   2 +
+ packages/plugins/sdk/src/protocol.ts          |  54 ++
+ packages/plugins/sdk/src/worker-rpc-host.ts   |  11 +
+ packages/shared/src/constants.ts              |   3 +
+ packages/shared/src/feature-catalog.ts        |   8 +
+ packages/shared/src/index.ts                  |   1 +
+ packages/shared/src/types/index.ts            |   1 +
+ packages/shared/src/types/instance.ts         |   7 +
+ packages/shared/src/types/plugin.ts           |  11 +
+ packages/shared/src/validators/instance.ts    |   3 +
+ packages/shared/src/validators/plugin.ts      |  11 +
+ .../instance-settings-service.test.ts         |   1 +
+ .../src/__tests__/run-model-decision.test.ts  | 474 +++++++++++++
+ .../src/services/execution-projection.test.ts |   5 +
+ server/src/services/execution-projection.ts   |   4 +
+ .../execution-recovery-attempt.test.ts        |  18 +-
+ .../services/execution-recovery-attempt.ts    |  10 +-
+ server/src/services/heartbeat.ts              | 367 +++++++++-
+ server/src/services/instance-settings.ts      |   2 +
+ .../legacy-execution-recovery.test.ts         |  13 +
+ .../src/services/legacy-execution-recovery.ts |   3 +
+ server/src/services/run-model-decision.ts     | 661 ++++++++++++++++++
+ .../InstanceExperimentalSettings.test.tsx     |   1 +
+ 25 files changed, 1692 insertions(+), 17 deletions(-)
+ create mode 100644 server/src/__tests__/run-model-decision.test.ts
+ create mode 100644 server/src/services/run-model-decision.ts
+
+diff --git a/doc/plugins/PLUGIN_SPEC.md b/doc/plugins/PLUGIN_SPEC.md
+index 8c0292b4d..1fd25ac61 100644
+--- a/doc/plugins/PLUGIN_SPEC.md
++++ b/doc/plugins/PLUGIN_SPEC.md
+@@ -641,6 +641,30 @@ The host provides:
+ 
+ The worker executes the tool and returns a typed result (string content, structured data, or error).
+ 
++### 13.11 `resolveRunModel`
++
++Decides the model for one issue run before the run starts. Requires the `run.model.resolve` capability. Only one plugin per company may hold this capability.
++
++The host calls this method inside run execution, after it reads the issue override and before it merges the adapter config. The host provides:
++
++- run ID, company ID, agent ID, issue ID, adapter type, invocation source and wake reason
++- the agent default model
++- the previous run on the same issue and agent, with its decision ID
++- the issue override model, if any
++- the deadline in milliseconds
++
++The worker returns one of three answers:
++
++- `decide`: run on `model`. The answer can also set `effort` and `env`. Every `env` key must be declared in the manifest field `modelRouting.envKeys`. Values must be plain strings. The host rejects a key that is a secret binding in the agent config.
++- `keep`: the agent default or the existing override is correct.
++- `defer`: no decision yet. The host parks the run and retries later.
++
++The decision applies to this run only. The host records it in the run context as `modelDecision`.
++
++The host skips the call for runs without an issue, issues assigned to a human, and issues that carry an override model.
++
++The instance setting `requireRunModelDecision` is off by default. While it is off, the call is advisory: the host records the answer and the run starts on the configured model. While it is on, an invalid answer, a timeout or `defer` parks the run as a bounded retry. After the last retry the host surfaces the issue. The run never starts on the default model. A run that a user requested directly is exempt and starts on the default model.
++
+ ## 14. SDK Surface
+ 
+ Plugins do not talk to the DB directly.
+@@ -860,6 +884,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
+ - `http.outbound`
+ - `secrets.read-ref`
+ - `environment.drivers.register`
++- `run.model.resolve`
+ 
+ ### Agent Tools
+ 
+diff --git a/packages/plugins/sdk/src/define-plugin.ts b/packages/plugins/sdk/src/define-plugin.ts
+index ef5c5dc6f..f1bebacc8 100644
+--- a/packages/plugins/sdk/src/define-plugin.ts
++++ b/packages/plugins/sdk/src/define-plugin.ts
+@@ -85,6 +85,8 @@ import type {
+   PluginExternalObjectResolveResult,
+   RefreshExternalObjectsParams,
+   RefreshExternalObjectsResult,
++  ResolveRunModelParams,
++  ResolveRunModelResult,
+   PluginLoginPtyOpenParams,
+   PluginLoginPtyOpenResult,
+   PluginLoginPtyInputParams,
+@@ -359,6 +361,17 @@ export interface PluginDefinition {
+     params: RefreshExternalObjectsParams,
+   ): Promise<RefreshExternalObjectsResult>;
+ 
++  /**
++   * Called inside an issue run, before the adapter config merge, to decide
++   * which model the run uses. Must answer within `params.deadlineMs`; past
++   * it the host defers the run. Never fetch remote data on this path.
++   *
++   * Requires `run.model.resolve` (one holder per company).
++   */
++  onResolveRunModel?(
++    params: ResolveRunModelParams,
++  ): Promise<ResolveRunModelResult>;
++
+   /**
+    * Called to validate provider-specific configuration for a plugin-hosted
+    * environment driver.
+diff --git a/packages/plugins/sdk/src/index.ts b/packages/plugins/sdk/src/index.ts
+index 788247f39..99aa70895 100644
+--- a/packages/plugins/sdk/src/index.ts
++++ b/packages/plugins/sdk/src/index.ts
+@@ -173,6 +173,8 @@ export type {
+   PluginExternalObjectResolveResult,
+   RefreshExternalObjectsParams,
+   RefreshExternalObjectsResult,
++  ResolveRunModelParams,
++  ResolveRunModelResult,
+   PluginEnvironmentDiagnostic,
+   PluginEnvironmentDriverBaseParams,
+   PluginEnvironmentValidateConfigParams,
+diff --git a/packages/plugins/sdk/src/protocol.ts b/packages/plugins/sdk/src/protocol.ts
+index 5476c10be..c176eae1b 100644
+--- a/packages/plugins/sdk/src/protocol.ts
++++ b/packages/plugins/sdk/src/protocol.ts
+@@ -534,6 +534,55 @@ export interface ResolveExternalObjectParams {
+   object: PluginExternalObjectRecordSnapshot;
+ }
+ 
++// ---------------------------------------------------------------------------
++// Run model decision
++// ---------------------------------------------------------------------------
++
++/**
++ * Input to `onResolveRunModel`. The host asks the `run.model.resolve` holder
++ * which model an issue run uses, inside `executeRun`, before the adapter
++ * config merge. Requires the `run.model.resolve` capability.
++ */
++export interface ResolveRunModelParams {
++  runId: string;
++  companyId: string;
++  agentId: string;
++  issueId: string | null;
++  adapterType: string;
++  invocationSource: string;
++  wakeReason: string | null;
++  /** Resolved agent `adapterConfig.model`. */
++  agentDefaultModel: string | null;
++  /** Last run on the same issue and agent, with its recorded decision. */
++  previous: { runId: string; model: string | null; decisionId: string | null } | null;
++  /** Human/operator override model, if any. */
++  issueOverrideModel: string | null;
++  /** Host deadline for this call; past it the run defers. */
++  deadlineMs: number;
++}
++
++/**
++ * Answer to `onResolveRunModel`.
++ * - `decide`: run on `model`. `env` carries plain strings only, and every key
++ *   must be declared in the manifest's `modelRouting.envKeys`.
++ * - `keep`: the agent default / existing override is correct.
++ * - `defer`: no decision yet; the host parks the run and retries later.
++ */
++export type ResolveRunModelResult =
++  | {
++      kind: "decide";
++      decisionId: string;
++      model: string;
++      effort?: string;
++      env?: Record<string, string>;
++      tier?: string;
++      source: string;
++      fallback?: boolean;
++      reason?: string;
++    }
++  | { kind: "keep" }
++  | { kind: "defer"; retryAfterMs: number; reason: string };
++
+ export interface PluginExternalObjectResolvedSnapshot {
+   displayKey?: string | null;
+   iconKey?: string | null;
+@@ -1358,6 +1407,10 @@ export interface HostToWorkerMethods {
+     params: RefreshExternalObjectsParams,
+     result: RefreshExternalObjectsResult,
+   ];
++  resolveRunModel: [
++    params: ResolveRunModelParams,
++    result: ResolveRunModelResult,
++  ];
+   environmentValidateConfig: [
+     params: PluginEnvironmentValidateConfigParams,
+     result: PluginEnvironmentValidationResult,
+@@ -1480,6 +1533,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[]
+   "detectExternalObjects",
+   "resolveExternalObject",
+   "refreshExternalObjects",
++  "resolveRunModel",
+   "environmentValidateConfig",
+   "environmentProbe",
+   "environmentAcquireLease",
+diff --git a/packages/plugins/sdk/src/worker-rpc-host.ts b/packages/plugins/sdk/src/worker-rpc-host.ts
+index 78d8308a2..1ba735be4 100644
+--- a/packages/plugins/sdk/src/worker-rpc-host.ts
++++ b/packages/plugins/sdk/src/worker-rpc-host.ts
+@@ -86,6 +86,7 @@ import type {
+   DetectExternalObjectsParams,
+   ResolveExternalObjectParams,
+   RefreshExternalObjectsParams,
++  ResolveRunModelParams,
+   PluginEnvironmentAcquireLeaseParams,
+   PluginEnvironmentDestroyLeaseParams,
+   PluginEnvironmentExecuteParams,
+@@ -1624,6 +1625,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
+         return handleResolveExternalObject(params as ResolveExternalObjectParams);
+       case "refreshExternalObjects":
+         return handleRefreshExternalObjects(params as RefreshExternalObjectsParams);
++      case "resolveRunModel":
++        return handleResolveRunModel(params as ResolveRunModelParams);
+ 
+       case "environmentValidateConfig":
+         return handleEnvironmentValidateConfig(params as PluginEnvironmentValidateConfigParams);
+@@ -1738,6 +1741,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
+     if (plugin.definition.onDetectExternalObjects) supportedMethods.push("detectExternalObjects");
+     if (plugin.definition.onResolveExternalObject) supportedMethods.push("resolveExternalObject");
+     if (plugin.definition.onRefreshExternalObjects) supportedMethods.push("refreshExternalObjects");
++    if (plugin.definition.onResolveRunModel) supportedMethods.push("resolveRunModel");
+     if (plugin.definition.onEnvironmentValidateConfig) supportedMethods.push("environmentValidateConfig");
+     if (plugin.definition.onEnvironmentProbe) supportedMethods.push("environmentProbe");
+     if (plugin.definition.onEnvironmentAcquireLease) supportedMethods.push("environmentAcquireLease");
+@@ -1992,6 +1996,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
+     return plugin.definition.onResolveExternalObject(params);
+   }
+ 
++  async function handleResolveRunModel(params: ResolveRunModelParams) {
++    if (!plugin.definition.onResolveRunModel) {
++      throw methodNotImplemented("resolveRunModel");
++    }
++    return plugin.definition.onResolveRunModel(params);
++  }
++
+   async function handleRefreshExternalObjects(params: RefreshExternalObjectsParams) {
+     if (!plugin.definition.onRefreshExternalObjects) {
+       throw methodNotImplemented("refreshExternalObjects");
+diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
+index 61a2b2b5b..33683a0e2 100644
+--- a/packages/shared/src/constants.ts
++++ b/packages/shared/src/constants.ts
+@@ -1408,6 +1408,9 @@ export const PLUGIN_CAPABILITIES = [
+   "secrets.read-ref",
+   "environment.drivers.register",
+   "local.folders",
++  // Decide the model for each issue run before it starts. One
++  // holder per company; called synchronously from executeRun with a deadline.
++  "run.model.resolve",
+   // Agent Tools
+   "agent.tools.register",
+   // UI
+diff --git a/packages/shared/src/feature-catalog.ts b/packages/shared/src/feature-catalog.ts
+index f2c404a3b..1f48616e3 100644
+--- a/packages/shared/src/feature-catalog.ts
++++ b/packages/shared/src/feature-catalog.ts
+@@ -317,6 +317,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
+     cloudDefault: false,
+     selfHostedDefault: false,
+   },
++  requireRunModelDecision: {
++    title: "Require Run Model Decision",
++    description:
++      "Issue runs wait for the model routing plugin to decide their model and never start on the agent default. Off keeps the decision advisory.",
++    tier: "managed",
++    cloudDefault: false,
++    selfHostedDefault: false,
++  },
+   enableWorktreeRunExecution: {
+     title: "Worktree Run Execution",
+     description:
+diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
+index 692abd65d..b0bebad2f 100644
+--- a/packages/shared/src/index.ts
++++ b/packages/shared/src/index.ts
+@@ -1592,6 +1592,7 @@ export type {
+   PluginManagedSkillDeclaration,
+   PluginManagedSkillFileDeclaration,
+   PluginLocalFolderDeclaration,
++  PluginModelRoutingDeclaration,
+   PluginManagedAgentResolution,
+   PluginManagedProjectResolution,
+   PluginManagedRoutineResolution,
+diff --git a/packages/shared/src/types/index.ts b/packages/shared/src/types/index.ts
+index e29909435..55c0c889a 100644
+--- a/packages/shared/src/types/index.ts
++++ b/packages/shared/src/types/index.ts
+@@ -1029,6 +1029,7 @@ export type {
+   PluginManagedSkillDeclaration,
+   PluginManagedSkillFileDeclaration,
+   PluginLocalFolderDeclaration,
++  PluginModelRoutingDeclaration,
+   PluginManagedAgentResolution,
+   PluginManagedProjectResolution,
+   PluginManagedRoutineResolution,
+diff --git a/packages/shared/src/types/instance.ts b/packages/shared/src/types/instance.ts
+index 6ae25e8af..fcc1c6b50 100644
+--- a/packages/shared/src/types/instance.ts
++++ b/packages/shared/src/types/instance.ts
+@@ -129,6 +129,13 @@ export interface InstanceExperimentalSettings {
+    * enableNativeRunner and this value has no runtime effect.
+    */
+   enableRunnerPreviewIngress: boolean;
++  /**
++   * Issue runs ask the `run.model.resolve` plugin holder which model to use
++   * before the adapter config merge. On: no decision parks the run on a
++   * bounded retry and never falls back to the default. Off: advisory only,
++   * the run starts on the default and records `outcome: "timeout"`.
++   */
++  requireRunModelDecision: boolean;
+   /**
+    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
+    * heartbeat run engine by default so previews never self-execute tasks. When
+diff --git a/packages/shared/src/types/plugin.ts b/packages/shared/src/types/plugin.ts
+index 68662753a..20dfc0a8c 100644
+--- a/packages/shared/src/types/plugin.ts
++++ b/packages/shared/src/types/plugin.ts
+@@ -656,6 +656,15 @@ export interface PluginObjectReferenceProviderDeclaration {
+ // Plugin Manifest V1
+ // ---------------------------------------------------------------------------
+ 
++/**
++ * Declares the env keys a `run.model.resolve` holder may set on a run's
++ * adapter config. The host rejects any decision env key outside this list.
++ */
++export interface PluginModelRoutingDeclaration {
++  /** Plain env keys the decision may set (never secret bindings). */
++  envKeys: string[];
++}
++
+ /**
+  * The manifest shape every plugin package must export.
+  * See PLUGIN_SPEC.md §10.1 for the normative definition.
+@@ -720,6 +729,8 @@ export interface PaperclipPluginManifestV1 {
+   localFolders?: PluginLocalFolderDeclaration[];
+   /** External object reference providers this plugin contributes. */
+   objectReferences?: PluginObjectReferenceProviderDeclaration[];
++  /** Run-scoped model decisions. Requires `run.model.resolve` capability. */
++  modelRouting?: PluginModelRoutingDeclaration;
+   /**
+    * Legacy top-level launcher declarations.
+    * Prefer `ui.launchers` for new manifests.
+diff --git a/packages/shared/src/validators/instance.ts b/packages/shared/src/validators/instance.ts
+index 016368b09..5d6db6b1c 100644
+--- a/packages/shared/src/validators/instance.ts
++++ b/packages/shared/src/validators/instance.ts
+@@ -84,6 +84,9 @@ export const instanceExperimentalSettingsSchema = z.object({
+   // Deprecated compatibility key. Runner ingress follows enableNativeRunner;
+   // this remains accepted so older stored rows and managed configs keep loading.
+   enableRunnerPreviewIngress: z.boolean().default(false),
++  // Issue runs wait for the run.model.resolve holder's decision and
++  // never start on the default. Off = advisory (run on the default).
++  requireRunModelDecision: z.boolean().default(false),
+   enableWorktreeRunExecution: z.boolean().default(false),
+   worktreeRunExecutionActivatedAt: z.string().datetime().nullable().default(null),
+   worktreeRunExecutionActivationInstanceId: z.string().min(1).nullable().default(null),
+diff --git a/packages/shared/src/validators/plugin.ts b/packages/shared/src/validators/plugin.ts
+index 55a915a06..8e94e845a 100644
+--- a/packages/shared/src/validators/plugin.ts
++++ b/packages/shared/src/validators/plugin.ts
+@@ -799,6 +799,9 @@ export const pluginManifestV1Schema = z.object({
+   skills: z.array(pluginManagedSkillDeclarationSchema).optional(),
+   localFolders: z.array(pluginLocalFolderDeclarationSchema).optional(),
+   objectReferences: z.array(pluginObjectReferenceProviderDeclarationSchema).optional(),
++  modelRouting: z.object({
++    envKeys: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "envKeys must be env var names")).max(32),
++  }).optional(),
+   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
+   ui: z.object({
+     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
+@@ -897,6 +900,14 @@ export const pluginManifestV1Schema = z.object({
+     }
+   }
+ 
++  if (manifest.modelRouting && !manifest.capabilities.includes("run.model.resolve")) {
++    ctx.addIssue({
++      code: z.ZodIssueCode.custom,
++      message: "Capability 'run.model.resolve' is required when modelRouting is declared",
++      path: ["capabilities"],
++    });
++  }
++
+   if (manifest.localFolders && manifest.localFolders.length > 0) {
+     if (!manifest.capabilities.includes("local.folders")) {
+       ctx.addIssue({
+diff --git a/server/src/__tests__/instance-settings-service.test.ts b/server/src/__tests__/instance-settings-service.test.ts
+index 31b6d1751..6eb2a7622 100644
+--- a/server/src/__tests__/instance-settings-service.test.ts
++++ b/server/src/__tests__/instance-settings-service.test.ts
+@@ -69,6 +69,7 @@ describe("instance settings service", () => {
+       enableOwnerInstanceAdmin: false,
+       enableSandboxDuplexBridge: false,
+       enableRunnerPreviewIngress: false,
++      requireRunModelDecision: false,
+       enableWorktreeRunExecution: false,
+       worktreeRunExecutionActivatedAt: null,
+       worktreeRunExecutionActivationInstanceId: null,
+diff --git a/server/src/__tests__/run-model-decision.test.ts b/server/src/__tests__/run-model-decision.test.ts
+new file mode 100644
+index 000000000..238492791
+--- /dev/null
++++ b/server/src/__tests__/run-model-decision.test.ts
+@@ -0,0 +1,474 @@
++import { describe, expect, it, vi } from "vitest";
++import {
++  RUN_MODEL_DECISION_CAPABILITY,
++  RUN_MODEL_DECISION_DEFAULT_DELAY_MS,
++  RUN_MODEL_DECISION_DEFAULT_MAX_ATTEMPTS,
++  RUN_MODEL_DECISION_RETRY_REASON,
++  RUN_MODEL_DECISION_RPC_TIMEOUT_MS,
++  RunModelDecisionDeferral,
++  applyRunModelDecisionToAdapterConfig,
++  evaluateRunModelDecisionSkip,
++  isRunModelDecisionDeferral,
++  isSecretEnvBinding,
++  readPreviousRunModelDecision,
++  resolveRunModelDecision,
++  resolveRunModelDecisionNoDecision,
++  runModelDecisionChangesModel,
++  selectRunModelDecisionHolder,
++  validateRunModelDecisionAnswer,
++  type ResolveRunModelDecisionInput,
++  type RunModelDecisionHolderSelection,
++} from "../services/run-model-decision.ts";
++import { shouldResetTaskSessionForModelChange } from "../services/heartbeat.ts";
++
++const ALLOWLIST = ["ROUTED_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL"];
++
++const HOLDER: RunModelDecisionHolderSelection = {
++  kind: "single",
++  holder: { pluginId: "plugin-1", pluginKey: "model-router", envKeys: ALLOWLIST },
++};
++
++function decide(overrides: Record<string, unknown> = {}) {
++  return {
++    kind: "decide",
++    decisionId: "dec-1",
++    model: "claude-opus-5-5",
++    source: "router",
++    ...overrides,
++  };
++}
++
++/** A clock that advances 7 ms per read, so latency is deterministic. */
++function steppingClock() {
++  let t = 1_000;
++  return () => {
++    t += 7;
++    return t;
++  };
++}
++
++function input(
++  overrides: Partial<ResolveRunModelDecisionInput> = {},
++): ResolveRunModelDecisionInput {
++  return {
++    requireDecision: true,
++    skip: { issueId: "issue-1", assigneeIsHuman: false, issueOverrideModel: null },
++    isUserRequestedWake: false,
++    holder: HOLDER,
++    params: {
++      runId: "run-1",
++      companyId: "co-1",
++      agentId: "agent-1",
++      issueId: "issue-1",
++      adapterType: "claude_local",
++      invocationSource: "assignment",
++      wakeReason: "issue_assigned",
++      agentDefaultModel: "agent-default-model",
++      previous: null,
++      issueOverrideModel: null,
++    },
++    baseEnv: {},
++    call: async () => decide(),
++    now: steppingClock(),
++    ...overrides,
++  };
++}
++
++describe("run model decision hook", () => {
++  // 1. decision applied
++  it("applies a decide answer to the run config and records it", async () => {
++    const call = vi.fn(async () =>
++      decide({
++        effort: "xhigh",
++        tier: "frontier",
++        env: { ROUTED_MODEL: "claude-opus-5-5" },
++      }),
++    );
++    const resolution = await resolveRunModelDecision(input({ call }));
++
++    expect(call).toHaveBeenCalledWith(
++      "plugin-1",
++      expect.objectContaining({ runId: "run-1", deadlineMs: RUN_MODEL_DECISION_RPC_TIMEOUT_MS }),
++      RUN_MODEL_DECISION_RPC_TIMEOUT_MS,
++    );
++    expect(resolution.action).toBe("proceed");
++    if (resolution.action !== "proceed" || !resolution.answer) throw new Error("expected answer");
++    expect(resolution.record).toEqual({
++      decisionId: "dec-1",
++      pluginKey: "model-router",
++      model: "claude-opus-5-5",
++      effort: "xhigh",
++      tier: "frontier",
++      source: "router",
++      latencyMs: 7,
++      outcome: "decided",
++    });
++
++    const merged = applyRunModelDecisionToAdapterConfig(
++      { model: "agent-default-model", env: { KEEP: "1", ROUTED_MODEL: "old" } },
++      resolution.answer,
++    );
++    expect(merged).toEqual({
++      model: "claude-opus-5-5",
++      effort: "xhigh",
++      env: { KEEP: "1", ROUTED_MODEL: "claude-opus-5-5" },
++    });
++  });
++
++  // 2. env allowlist enforced
++  it("parks the run when decision env names a key outside the manifest allowlist", async () => {
++    const resolution = await resolveRunModelDecision(
++      input({ call: async () => decide({ env: { OPENAI_API_KEY: "x" } }) }),
++    );
++    expect(resolution).toMatchObject({
++      action: "park",
++      reason: "invalid answer: env_key_not_allowlisted",
++      record: { outcome: "deferred", model: null, decisionId: null },
++    });
++  });
++
++  it("rejects non-string decision env values", () => {
++    const validated = validateRunModelDecisionAnswer(
++      decide({ env: { ROUTED_MODEL: { type: "plain", value: "m" } } }),
++      { allowlistedEnvKeys: ALLOWLIST, baseEnv: {} },
++    );
++    expect(validated).toMatchObject({ valid: false, error: "env_value_not_plain_string" });
++  });
++
++  // 3. secret_ref key rejected
++  it("parks the run when an allowlisted env key is a secret binding in the base config", async () => {
++    for (const binding of [
++      { type: "secret_ref", secretId: "sec-1" },
++      { type: "user_secret_ref", key: "anthropic" },
++    ]) {
++      const resolution = await resolveRunModelDecision(
++        input({
++          baseEnv: { ROUTED_MODEL: binding },
++          call: async () => decide({ env: { ROUTED_MODEL: "plain" } }),
++        }),
++      );
++      expect(resolution).toMatchObject({
++        action: "park",
++        reason: "invalid answer: env_key_is_secret_ref",
++      });
++    }
++    expect(isSecretEnvBinding({ type: "plain", value: "x" })).toBe(false);
++    expect(isSecretEnvBinding("plain-string")).toBe(false);
++  });
++
++  // 4. timeout → defer
++  it("parks the run when the RPC times out instead of running on the default", async () => {
++    const resolution = await resolveRunModelDecision(
++      input({
++        call: async () => {
++          throw new Error("Worker call resolveRunModel timed out after 1500ms");
++        },
++      }),
++    );
++    expect(resolution).toEqual({
++      action: "park",
++      retryAfterMs: RUN_MODEL_DECISION_DEFAULT_DELAY_MS,
++      reason: "Worker call resolveRunModel timed out after 1500ms",
++      record: expect.objectContaining({
++        outcome: "timeout",
++        model: null,
++        pluginKey: "model-router",
++      }),
++    });
++    expect(
++      resolveRunModelDecisionNoDecision({ consumedAttempts: 0, reason: "timed out" }),
++    ).toEqual({ action: "retry", retryAfterMs: RUN_MODEL_DECISION_DEFAULT_DELAY_MS, reason: "timed out" });
++  });
++
++  it("honours the router's retryAfterMs on an explicit defer", async () => {
++    const resolution = await resolveRunModelDecision(
++      input({ call: async () => ({ kind: "defer", retryAfterMs: 30_000, reason: "pacer closed" }) }),
++    );
++    expect(resolution).toMatchObject({
++      action: "park",
++      retryAfterMs: 30_000,
++      reason: "pacer closed",
++      record: { outcome: "deferred", reason: "pacer closed" },
++    });
++  });
++
++  it("parks the run when more than one plugin holds run.model.resolve", async () => {
++    const call = vi.fn();
++    const resolution = await resolveRunModelDecision(
++      input({ holder: { kind: "conflict", pluginKeys: ["a", "b"] }, call }),
++    );
++    expect(call).not.toHaveBeenCalled();
++    expect(resolution).toMatchObject({
++      action: "park",
++      reason: "multiple run.model.resolve holders: a, b",
++      record: { outcome: "deferred", pluginKey: null },
++    });
++  });
++
++  it("parks, never skips, when the host could not look up the holder", async () => {
++    const call = vi.fn();
++    const holder: RunModelDecisionHolderSelection = {
++      kind: "unavailable",
++      reason: "holder lookup failed: db down",
++    };
++    expect(await resolveRunModelDecision(input({ holder, call }))).toMatchObject({
++      action: "park",
++      retryAfterMs: RUN_MODEL_DECISION_DEFAULT_DELAY_MS,
++      reason: "holder lookup failed: db down",
++      record: { outcome: "timeout", pluginKey: null },
++    });
++    expect(
++      await resolveRunModelDecision(input({ holder, call, requireDecision: false })),
++    ).toMatchObject({
++      action: "proceed",
++      answer: null,
++      record: { advisory: { outcome: "timeout", reason: "holder lookup failed: db down" } },
++    });
++    expect(
++      await resolveRunModelDecision(input({ holder, call, isUserRequestedWake: true })),
++    ).toMatchObject({ action: "proceed", record: { outcome: "exempt" } });
++    expect(
++      (
++        await resolveRunModelDecision(
++          input({
++            holder,
++            call,
++            skip: { issueId: "issue-1", assigneeIsHuman: false, issueOverrideModel: "pinned" },
++          }),
++        )
++      ).record.outcome,
++    ).toBe("skipped");
++    expect(call).not.toHaveBeenCalled();
++  });
++
++  // 5. max attempts → surfaced, never default
++  it("surfaces the issue once attempts are exhausted; it never returns the default", () => {
++    expect(
++      resolveRunModelDecisionNoDecision({
++        consumedAttempts: RUN_MODEL_DECISION_DEFAULT_MAX_ATTEMPTS - 1,
++        reason: "pacer closed",
++      }),
++    ).toMatchObject({ action: "retry" });
++    expect(
++      resolveRunModelDecisionNoDecision({
++        consumedAttempts: RUN_MODEL_DECISION_DEFAULT_MAX_ATTEMPTS,
++        reason: "pacer closed",
++      }),
++    ).toEqual({ action: "surface", reason: "pacer closed" });
++    expect(RUN_MODEL_DECISION_RETRY_REASON).toBe("model_decision_pending");
++  });
++
++  // 6. user wake exempt
++  it("lets a user-requested wake run on the default when no decision comes, recorded exempt", async () => {
++    const resolution = await resolveRunModelDecision(
++      input({
++        isUserRequestedWake: true,
++        call: async () => ({ kind: "defer", retryAfterMs: 5_000, reason: "pacer closed" }),
++      }),
++    );
++    expect(resolution).toMatchObject({
++      action: "proceed",
++      answer: null,
++      record: { outcome: "exempt", reason: "pacer closed", model: null },
++    });
++  });
++
++  it("still applies a decision on a user-requested wake", async () => {
++    const resolution = await resolveRunModelDecision(input({ isUserRequestedWake: true }));
++    expect(resolution).toMatchObject({ action: "proceed", record: { outcome: "decided" } });
++  });
++
++  // 7. operator override skips
++  it("skips the hook when the issue carries an override model", async () => {
++    const call = vi.fn();
++    const resolution = await resolveRunModelDecision(
++      input({
++        skip: { issueId: "issue-1", assigneeIsHuman: false, issueOverrideModel: "operator-pin" },
++        call,
++      }),
++    );
++    expect(call).not.toHaveBeenCalled();
++    expect(resolution).toEqual({
++      action: "proceed",
++      answer: null,
++      record: expect.objectContaining({
++        outcome: "skipped",
++        reason: "operator_override",
++        pluginKey: null,
++        latencyMs: 0,
++      }),
++    });
++  });
++
++  // 8. flag off → advisory only
++  it("asks the holder but never applies its answer when the flag is off", async () => {
++    const resolution = await resolveRunModelDecision(
++      input({ requireDecision: false, call: async () => decide({ tier: "frontier" }) }),
++    );
++    expect(resolution).toEqual({
++      action: "proceed",
++      answer: null,
++      record: {
++        decisionId: null,
++        pluginKey: "model-router",
++        model: null,
++        source: null,
++        latencyMs: 7,
++        outcome: "timeout",
++        reason: "requireRunModelDecision disabled",
++        advisory: {
++          outcome: "decided",
++          decisionId: "dec-1",
++          model: "claude-opus-5-5",
++          tier: "frontier",
++          source: "router",
++        },
++      },
++    });
++  });
++
++  it("never parks when the flag is off, even if the holder fails", async () => {
++    const resolution = await resolveRunModelDecision(
++      input({
++        requireDecision: false,
++        call: async () => {
++          throw new Error("worker not running");
++        },
++      }),
++    );
++    expect(resolution).toMatchObject({
++      action: "proceed",
++      answer: null,
++      record: {
++        outcome: "timeout",
++        advisory: { outcome: "timeout", reason: "worker not running" },
++      },
++    });
++  });
++
++  // 9. model change resets session
++  it("resets the task session when the decided model differs from the session's model", async () => {
++    const resolution = await resolveRunModelDecision(input());
++    if (resolution.action !== "proceed" || !resolution.answer) throw new Error("expected answer");
++    const runConfig = applyRunModelDecisionToAdapterConfig(
++      { model: "agent-default-model" },
++      resolution.answer,
++    );
++    const sessionParams = { __paperclipConfiguredModel: "agent-default-model" };
++    expect(
++      shouldResetTaskSessionForModelChange({
++        configuredModel: runConfig.model as string,
++        taskSessionParams: sessionParams,
++      }),
++    ).toBe(true);
++    expect(runModelDecisionChangesModel("claude-opus-5-5", "agent-default-model")).toBe(true);
++
++    const keep = applyRunModelDecisionToAdapterConfig({ model: "agent-default-model" }, { kind: "keep" });
++    expect(
++      shouldResetTaskSessionForModelChange({
++        configuredModel: keep.model as string,
++        taskSessionParams: sessionParams,
++      }),
++    ).toBe(false);
++  });
++
++  // 10. non-issue run skips
++  it("skips non-issue runs, human assignees and companies without a holder", async () => {
++    const call = vi.fn();
++    const skipped = async (overrides: Partial<ResolveRunModelDecisionInput>) =>
++      (await resolveRunModelDecision(input({ call, ...overrides }))).record.reason;
++
++    expect(
++      await skipped({ skip: { issueId: null, assigneeIsHuman: false, issueOverrideModel: null } }),
++    ).toBe("non_issue_run");
++    expect(
++      await skipped({ skip: { issueId: "issue-1", assigneeIsHuman: true, issueOverrideModel: null } }),
++    ).toBe("human_assignee");
++    expect(await skipped({ holder: { kind: "none" } })).toBe("no_capability_holder");
++    expect(call).not.toHaveBeenCalled();
++    expect(
++      evaluateRunModelDecisionSkip({
++        issueId: "issue-1",
++        assigneeIsHuman: false,
++        issueOverrideModel: null,
++        hasCapabilityHolder: true,
++      }),
++    ).toEqual({ skip: false, reason: null });
++  });
++});
++
++describe("run model decision helpers", () => {
++  it("rejects malformed answers so the run parks", () => {
++    for (const raw of [
++      null,
++      "decide",
++      { kind: "nope" },
++      decide({ decisionId: "" }),
++      decide({ model: "" }),
++      decide({ model: "x".repeat(201) }),
++      decide({ env: "nope" }),
++    ]) {
++      expect(
++        validateRunModelDecisionAnswer(raw, { allowlistedEnvKeys: ALLOWLIST, baseEnv: {} }).valid,
++      ).toBe(false);
++    }
++  });
++
++  it("selects exactly one run.model.resolve holder and its env allowlist", () => {
++    const router = {
++      id: "p-router",
++      pluginKey: "model-router",
++      manifestJson: {
++        capabilities: [RUN_MODEL_DECISION_CAPABILITY, "events.subscribe"],
++        modelRouting: { envKeys: ["ROUTED_MODEL"] },
++      },
++    };
++    const other = { id: "p-other", pluginKey: "other", manifestJson: { capabilities: ["events.subscribe"] } };
++
++    expect(selectRunModelDecisionHolder([])).toEqual({ kind: "none" });
++    expect(selectRunModelDecisionHolder([other, { id: "x", pluginKey: "x", manifestJson: null }])).toEqual({
++      kind: "none",
++    });
++    expect(selectRunModelDecisionHolder([other, router])).toEqual({
++      kind: "single",
++      holder: { pluginId: "p-router", pluginKey: "model-router", envKeys: ["ROUTED_MODEL"] },
++    });
++    expect(
++      selectRunModelDecisionHolder([
++        { ...router, id: "p-z", pluginKey: "z-router" },
++        router,
++      ]),
++    ).toEqual({ kind: "conflict", pluginKeys: ["model-router", "z-router"] });
++  });
++
++  it("reads the previous run's recorded decision", () => {
++    expect(readPreviousRunModelDecision(null)).toBeNull();
++    expect(
++      readPreviousRunModelDecision({
++        id: "run-0",
++        contextSnapshot: { modelDecision: { model: "m", decisionId: "d", outcome: "decided" } },
++      }),
++    ).toEqual({ runId: "run-0", model: "m", decisionId: "d" });
++    expect(readPreviousRunModelDecision({ id: "run-0", contextSnapshot: null })).toEqual({
++      runId: "run-0",
++      model: null,
++      decisionId: null,
++    });
++  });
++
++  it("carries the park details on a typed deferral error", () => {
++    const record = {
++      decisionId: null,
++      pluginKey: "model-router",
++      model: null,
++      source: null,
++      latencyMs: 3,
++      outcome: "deferred" as const,
++      reason: "pacer closed",
++    };
++    const deferral = new RunModelDecisionDeferral({ retryAfterMs: 30_000, reason: "pacer closed", record });
++    expect(isRunModelDecisionDeferral(deferral)).toBe(true);
++    expect(isRunModelDecisionDeferral(new Error("x"))).toBe(false);
++    expect(deferral).toMatchObject({ code: "model_decision_pending", retryAfterMs: 30_000, record });
++  });
++});
+diff --git a/server/src/services/execution-projection.test.ts b/server/src/services/execution-projection.test.ts
+index df55aa800..11f7f1f74 100644
+--- a/server/src/services/execution-projection.test.ts
++++ b/server/src/services/execution-projection.test.ts
+@@ -57,6 +57,11 @@ describe("execution truth projection", () => {
+       scheduledRetryAttempt: 12, contextSnapshot: { failureRetriesBeforeAiConnectionWait: 0 } }), undefined, [], undefined, now))
+       .toMatchObject({ label: "Waiting for AI subscription", phase: "retry_scheduled", attempt: 1, recoveryOwner: null });
+   });
++  it("shows a model-decision wait as a resource wait", () => {
++    expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryReason: "model_decision_pending",
++      scheduledRetryAttempt: 4 }), undefined, [], undefined, now))
++      .toMatchObject({ label: "Waiting for model router", phase: "retry_scheduled", recoveryOwner: null });
++  });
+   it("shows a workspace wait without presenting its deferral count as failed attempts", () => {
+     expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryReason: "workspace_busy",
+       scheduledRetryAttempt: 12, contextSnapshot: { failureRetriesBeforeWorkspaceWait: 1 } }), undefined, [], undefined, now))
+diff --git a/server/src/services/execution-projection.ts b/server/src/services/execution-projection.ts
+index cab39d73e..707ed0150 100644
+--- a/server/src/services/execution-projection.ts
++++ b/server/src/services/execution-projection.ts
+@@ -235,6 +235,10 @@ export function projectExecution(
+     projection.nextAction = "Waiting for the AI subscription's current execution to finish; the scheduled check will revalidate access.";
+     return set("retry_scheduled", "Waiting for AI subscription");
+   }
++  if (run.status === "scheduled_retry" && run.scheduledRetryReason === "model_decision_pending") {
++    projection.nextAction = "Waiting for the model router to decide this run's model; the run never starts on the default.";
++    return set("retry_scheduled", "Waiting for model router");
++  }
+   if (run.status === "scheduled_retry" && run.scheduledRetryReason === "workspace_busy") {
+     projection.nextAction = "Waiting for the live workspace holder to finish; the scheduled check will revalidate ownership.";
+     return set("retry_scheduled", "Waiting for workspace");
+diff --git a/server/src/services/execution-recovery-attempt.test.ts b/server/src/services/execution-recovery-attempt.test.ts
+index 2673e2b33..49375457c 100644
+--- a/server/src/services/execution-recovery-attempt.test.ts
++++ b/server/src/services/execution-recovery-attempt.test.ts
+@@ -1,5 +1,5 @@
+ import { describe, expect, it } from "vitest";
+-import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
++import { accountingForScheduledRetry, executionFailureRetryCount, executionRetryAttemptCount } from "./execution-recovery-attempt.js";
+ 
+ describe("failure attempts across resource waits", () => {
+   it("preserves prior failures through subscription waits without trusting unrelated context", () => {
+@@ -27,7 +27,7 @@ describe("failure attempts across resource waits", () => {
+ });
+ 
+ describe("persisted independent accounting", () => {
+-  it.each(["max_turns_continuation", "issue_disposition_repair", "workspace_busy", "ai_connection_busy"])("%s cannot erase prior infrastructure debits or spend more", scheduledRetryReason => {
++  it.each(["max_turns_continuation", "issue_disposition_repair", "workspace_busy", "ai_connection_busy", "model_decision_pending"])("%s cannot erase prior infrastructure debits or spend more", scheduledRetryReason => {
+     expect(executionFailureRetryCount({ scheduledRetryReason, scheduledRetryAttempt: 20,
+       contextSnapshot: { executionRetryAccounting: { version: 1, failureRetries: 2, maxTurnContinuations: 1 } },
+     })).toBe(2);
+@@ -43,3 +43,17 @@ describe("persisted independent accounting", () => {
+     })).toBe(2);
+   });
+ });
++
++describe("model decision waits", () => {
++  const ledger = { executionRetryAccounting: { version: 1, failureRetries: 1, maxTurnContinuations: 0 } };
++  it("count their own attempts and never spend the failure budget", () => {
++    const parked = { scheduledRetryReason: "model_decision_pending", scheduledRetryAttempt: 7, contextSnapshot: ledger };
++    expect(executionRetryAttemptCount(parked, "model_decision_pending")).toBe(7);
++    expect(executionFailureRetryCount(parked)).toBe(1);
++    expect(accountingForScheduledRetry(parked, "model_decision_pending", 8).failureRetries).toBe(1);
++  });
++  it("start from zero after a different retry lane", () => {
++    expect(executionRetryAttemptCount({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 3,
++      contextSnapshot: ledger }, "model_decision_pending")).toBe(0);
++  });
++});
+diff --git a/server/src/services/execution-recovery-attempt.ts b/server/src/services/execution-recovery-attempt.ts
+index 689137d9d..fbce54d6c 100644
+--- a/server/src/services/execution-recovery-attempt.ts
++++ b/server/src/services/execution-recovery-attempt.ts
+@@ -12,6 +12,9 @@ export interface ExecutionRetryAccounting {
+   maxTurnContinuations: number;
+ }
+ 
++/** Waits that precede provider execution; each counts its own attempts. */
++const RESOURCE_WAIT_REASONS: ReadonlySet<string> = new Set(["workspace_busy", "ai_connection_busy", "model_decision_pending"]);
++
+ function count(value: unknown): number | null {
+   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+ }
+@@ -42,7 +45,8 @@ function historicalFailureCount(run: RetryRun): number {
+ 
+ export function executionRetryAccounting(run: RetryRun): ExecutionRetryAccounting {
+   const saved = savedAccounting(run);
+-  const nonFailureLane = ["max_turns_continuation", "issue_disposition_repair", "workspace_busy", "ai_connection_busy"].includes(run.scheduledRetryReason ?? "");
++  const reason = run.scheduledRetryReason ?? "";
++  const nonFailureLane = reason === "max_turns_continuation" || reason === "issue_disposition_repair" || RESOURCE_WAIT_REASONS.has(reason);
+   return {
+     version: 1,
+     failureRetries: Math.max(saved?.failureRetries ?? 0, saved && nonFailureLane ? 0 : historicalFailureCount(run)),
+@@ -57,7 +61,7 @@ export function executionFailureRetryCount(run: RetryRun): number {
+ }
+ 
+ export function executionRetryAttemptCount(run: RetryRun, reason: string): number {
+-  if (reason === "workspace_busy" || reason === "ai_connection_busy") {
++  if (RESOURCE_WAIT_REASONS.has(reason)) {
+     return run.scheduledRetryReason === reason ? count(run.scheduledRetryAttempt) ?? 0 : 0;
+   }
+   const accounting = executionRetryAccounting(run);
+@@ -67,6 +71,6 @@ export function executionRetryAttemptCount(run: RetryRun, reason: string): numbe
+ export function accountingForScheduledRetry(run: RetryRun, reason: string, attempt: number): ExecutionRetryAccounting {
+   const accounting = executionRetryAccounting(run);
+   if (reason === "max_turns_continuation") accounting.maxTurnContinuations = attempt;
+-  else if (reason !== "workspace_busy" && reason !== "ai_connection_busy") accounting.failureRetries = attempt;
++  else if (!RESOURCE_WAIT_REASONS.has(reason)) accounting.failureRetries = attempt;
+   return accounting;
+ }
+diff --git a/server/src/services/heartbeat.ts b/server/src/services/heartbeat.ts
+index 69dc59d54..7c26f86c3 100644
+--- a/server/src/services/heartbeat.ts
++++ b/server/src/services/heartbeat.ts
+@@ -138,6 +138,7 @@ import {
+   agentTaskSessions,
+   agentWakeupRequests,
+   activityLog,
++  pluginCompanySettings,
+   approvals,
+   assets,
+   chatActions,
+@@ -646,6 +647,21 @@ import {
+   type EffectiveRunConfigSecretManifestEntry,
+ } from "./effective-run-config-fingerprints.js";
+ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
++import { pluginRegistryService } from "./plugin-registry.js";
++import {
++  RUN_MODEL_DECISION_DEFAULT_MAX_ATTEMPTS,
++  RUN_MODEL_DECISION_RETRY_REASON,
++  RunModelDecisionDeferral,
++  applyRunModelDecisionToAdapterConfig,
++  isRunModelDecisionDeferral,
++  readPreviousRunModelDecision,
++  resolveRunModelDecision,
++  resolveRunModelDecisionNoDecision,
++  selectRunModelDecisionHolder,
++  type RunModelDecideAnswer,
++  type RunModelDecisionHolderSelection,
++  type RunModelDecisionPrevious,
++} from "./run-model-decision.js";
+ import { serverVersion } from "../version.js";
+ 
+ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
+@@ -10804,6 +10820,7 @@ export function heartbeatService(
+         executionWorkspaceId: issues.executionWorkspaceId,
+         executionWorkspacePreference: issues.executionWorkspacePreference,
+         assigneeAgentId: issues.assigneeAgentId,
++        assigneeUserId: issues.assigneeUserId,
+         assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+         executionPolicy: issues.executionPolicy,
+         executionState: issues.executionState,
+@@ -13155,6 +13172,7 @@ export function heartbeatService(
+       issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId),
+       startedAt: run.startedAt,
+       finishedAt: run.finishedAt,
++      modelDecision: parseObject(run.contextSnapshot).modelDecision ?? null,
+     });
+   }
+ 
+@@ -13170,6 +13188,11 @@ export function heartbeatService(
+     issueId: string | null;
+     startedAt: Date | null;
+     finishedAt: Date | null;
++    /**
++     * `contextSnapshot.modelDecision`. `agent.run.started` fires at
++     * claim, before the hook runs, so only later lifecycle events carry it.
++     */
++    modelDecision?: unknown;
+   }) {
+     const eventType =
+       run.status === "running"
+@@ -13204,6 +13227,7 @@ export function heartbeatService(
+         finishedAt: run.finishedAt
+           ? new Date(run.finishedAt).toISOString()
+           : null,
++        ...(run.modelDecision ? { modelDecision: run.modelDecision } : {}),
+       },
+     });
+   }
+@@ -16500,6 +16524,272 @@ export function heartbeatService(
+     }).catch(() => undefined);
+   }
+ 
++  /**
++   * Gather the rows the run model decision needs and ask the
++   * company's single `run.model.resolve` holder. The decision rules live in
++   * run-model-decision.ts; this function only loads data and makes the call.
++   */
++  async function resolveModelDecisionForRun(input: {
++    run: typeof heartbeatRuns.$inferSelect;
++    agent: typeof agents.$inferSelect;
++    context: Record<string, unknown>;
++    issueId: string | null;
++    issueContext: { assigneeAgentId: string | null; assigneeUserId: string | null } | null;
++    issueOverrideModel: string | null;
++    requireDecision: boolean;
++  }) {
++    const { run, agent, context, issueId } = input;
++    const manager = options.pluginWorkerManager;
++    let holder: RunModelDecisionHolderSelection = { kind: "none" };
++    let previous: RunModelDecisionPrevious | null = null;
++    let isUserRequestedWake = false;
++    if (manager && issueId) {
++      try {
++        // No settings row means enabled; an explicit `enabled = false` row is a
++        // company opting out, and its runs must not wait on that plugin.
++        const disabledPluginIds = new Set(
++          (
++            await db
++              .select({ pluginId: pluginCompanySettings.pluginId })
++              .from(pluginCompanySettings)
++              .where(
++                and(
++                  eq(pluginCompanySettings.companyId, run.companyId),
++                  eq(pluginCompanySettings.enabled, false),
++                ),
++              )
++          ).map((row) => row.pluginId),
++        );
++        const readyPlugins = await pluginRegistryService(db).listByStatus("ready");
++        holder = selectRunModelDecisionHolder(
++          readyPlugins.filter((row) => !disabledPluginIds.has(row.id)),
++        );
++      } catch (err) {
++        // Not knowing whether a holder exists is not "no holder": the
++        // orchestrator parks (flag on) or records advisory (flag off).
++        logger.warn({ err, runId: run.id }, "run model decision holder lookup failed");
++        holder = {
++          kind: "unavailable",
++          reason: `holder lookup failed: ${err instanceof Error ? err.message : String(err)}`,
++        };
++      }
++    }
++    if (manager && issueId && holder.kind !== "none") {
++      // Both lookups below only refine the call; a failure falls back to a
++      // non-exempt wake with no previous decision.
++      try {
++        const [request] = run.wakeupRequestId
++          ? await db
++              .select({ requestedByActorType: agentWakeupRequests.requestedByActorType })
++              .from(agentWakeupRequests)
++              .where(
++                and(
++                  eq(agentWakeupRequests.id, run.wakeupRequestId),
++                  eq(agentWakeupRequests.companyId, run.companyId),
++                ),
++              )
++          : [];
++        isUserRequestedWake = isManualUserRun({
++          contextSnapshot: context,
++          requestedByActorType:
++            (request?.requestedByActorType as "user" | "agent" | "system" | null | undefined) ?? null,
++          source: run.invocationSource as WakeupOptions["source"],
++          triggerDetail: run.triggerDetail as WakeupOptions["triggerDetail"],
++        });
++        const previousRun = await db
++          .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
++          .from(heartbeatRuns)
++          .where(
++            and(
++              eq(heartbeatRuns.companyId, run.companyId),
++              eq(heartbeatRuns.agentId, run.agentId),
++              ne(heartbeatRuns.id, run.id),
++              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
++              sql`${heartbeatRuns.contextSnapshot} -> 'modelDecision' is not null`,
++            ),
++          )
++          .orderBy(desc(heartbeatRuns.createdAt))
++          .limit(1)
++          .then((rows) => rows[0] ?? null);
++        previous = readPreviousRunModelDecision(previousRun);
++      } catch (err) {
++        logger.warn({ err, runId: run.id }, "run model decision context lookup failed");
++      }
++    }
++    const agentConfig = parseObject(agent.adapterConfig);
++    return resolveRunModelDecision({
++      requireDecision: input.requireDecision,
++      skip: {
++        issueId,
++        assigneeIsHuman:
++          Boolean(input.issueContext?.assigneeUserId) &&
++          !input.issueContext?.assigneeAgentId,
++        issueOverrideModel: input.issueOverrideModel,
++      },
++      isUserRequestedWake,
++      holder,
++      params: {
++        runId: run.id,
++        companyId: run.companyId,
++        agentId: agent.id,
++        issueId,
++        adapterType: agent.adapterType,
++        invocationSource: run.invocationSource,
++        wakeReason: readNonEmptyString(context.wakeReason),
++        agentDefaultModel: readNonEmptyString(agentConfig.model),
++        previous,
++        issueOverrideModel: input.issueOverrideModel,
++      },
++      baseEnv: parseObject(agentConfig.env),
++      call: (pluginId, params, timeoutMs) =>
++        manager
++          ? manager.call(pluginId, "resolveRunModel", params, timeoutMs)
++          : Promise.reject(new Error("plugin worker manager unavailable")),
++    });
++  }
++
++  /**
++   * The router gave no decision. Cancel before any provider work,
++   * schedule a bounded `model_decision_pending` retry, and once the attempts
++   * run out surface the issue. Never fall back to the default model.
++   */
++  async function finalizeRunModelDecisionDeferral(
++    run: typeof heartbeatRuns.$inferSelect,
++    deferral: RunModelDecisionDeferral,
++  ) {
++    const now = new Date();
++    const cancelWrite = await setRunStatusIfRunning(run.id, "cancelled", {
++      error: deferral.message,
++      errorCode: RUN_MODEL_DECISION_RETRY_REASON,
++      finishedAt: now,
++      resultJson: {
++        executionRecovery: {
++          kind: RUN_MODEL_DECISION_RETRY_REASON,
++          providerWorkStarted: false,
++        },
++      },
++      contextSnapshot: {
++        ...parseObject(run.contextSnapshot),
++        modelDecision: deferral.record,
++      },
++    });
++    if (!cancelWrite.updated) {
++      logger.info(
++        { runId: run.id, currentStatus: cancelWrite.run?.status ?? null },
++        "skipping model-decision deferral finalization because the run already left running state",
++      );
++      return;
++    }
++    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
++      finishedAt: now,
++      error: deferral.message,
++    }).catch(() => undefined);
++
++    const cancelledRun =
++      cancelWrite.run ?? (await getRun(run.id).catch(() => null));
++    const agentRow = await getAgent(run.agentId).catch(() => null);
++    const consumedAttempts = cancelledRun
++      ? executionRetryAttemptCount(cancelledRun, RUN_MODEL_DECISION_RETRY_REASON)
++      : 0;
++    const next = resolveRunModelDecisionNoDecision({
++      consumedAttempts,
++      retryAfterMs: deferral.retryAfterMs,
++      reason: deferral.reason,
++    });
++    let scheduleOutcome: string | null = null;
++    if (cancelledRun && agentRow && next.action === "retry") {
++      const scheduleResult = await scheduleBoundedRetryForRun(
++        cancelledRun,
++        agentRow,
++        {
++          now,
++          retryReason: RUN_MODEL_DECISION_RETRY_REASON,
++          wakeReason: `${RUN_MODEL_DECISION_RETRY_REASON}_retry`,
++          maxAttempts: RUN_MODEL_DECISION_DEFAULT_MAX_ATTEMPTS,
++          delayMs: next.retryAfterMs,
++        },
++      ).catch((scheduleErr) => {
++        logger.error(
++          { err: scheduleErr, runId: run.id },
++          "failed to schedule model-decision retry after deferral",
++        );
++        return null;
++      });
++      scheduleOutcome = scheduleResult?.outcome ?? null;
++    }
++    const retryScheduled = scheduleOutcome === "scheduled";
++
++    if (cancelledRun) {
++      await appendRunEvent(cancelledRun, {
++        eventType: "lifecycle",
++        stream: "system",
++        level: retryScheduled ? "info" : "warn",
++        message: retryScheduled
++          ? `Deferred: ${deferral.message}. Retry ${consumedAttempts + 1} of ${RUN_MODEL_DECISION_DEFAULT_MAX_ATTEMPTS} scheduled; the run does not start on the default model.`
++          : `Deferred: ${deferral.message}. No retry remains; the issue needs attention and the run does not start on the default model.`,
++        payload: {
++          modelDecision: deferral.record,
++          consumedAttempts,
++          maxAttempts: RUN_MODEL_DECISION_DEFAULT_MAX_ATTEMPTS,
++          retryScheduled,
++        },
++      }).catch(() => undefined);
++    }
++
++    if (cancelledRun && !retryScheduled) {
++      await releaseIssueExecutionAndPromote(cancelledRun).catch(
++        (releaseErr) => {
++          logger.error(
++            { err: releaseErr, runId: run.id },
++            "failed to release issue execution after model-decision deferral",
++          );
++        },
++      );
++      await surfaceRunModelDecisionExhaustion(cancelledRun, {
++        attempts: consumedAttempts,
++        reason: deferral.reason,
++      }).catch((surfaceErr) => {
++        logger.error(
++          { err: surfaceErr, runId: run.id },
++          "failed to surface exhausted model-decision deferral",
++        );
++      });
++    }
++
++    await finalizeAgentStatus(run.agentId, "cancelled", null, {
++      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
++    }).catch(() => undefined);
++  }
++
++  async function surfaceRunModelDecisionExhaustion(
++    run: typeof heartbeatRuns.$inferSelect,
++    input: { attempts: number; reason: string },
++  ) {
++    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
++    if (!issueId) return null;
++    const issue = await db
++      .select()
++      .from(issues)
++      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
++      .then((rows) => rows[0] ?? null);
++    if (
++      !issue ||
++      (issue.status !== "todo" &&
++        issue.status !== "in_progress" &&
++        issue.status !== "in_review")
++    )
++      return null;
++    return recovery.escalateStrandedAssignedIssue({
++      issue,
++      previousStatus: issue.status,
++      latestRun: run,
++      comment: [
++        `The model router has not decided a model for this issue after ${input.attempts} scheduled attempts (last reason: ${input.reason}).`,
++        "The run was not started on the default model. Check the model router plugin, then move the issue back to `todo`.",
++      ].join("\n\n"),
++    });
++  }
++
+   async function scheduleInteractionContinuationInfrastructureRetryIfEligible(
+     run: typeof heartbeatRuns.$inferSelect,
+     agent: typeof agents.$inferSelect,
+@@ -20698,6 +20988,40 @@ export function heartbeatService(
+           : null;
+       const experimentalInstanceSettings =
+         await instanceSettings.getExperimental();
++      // The model router decides this run's model before the
++      // adapter config merge and before any workspace or provider work. With
++      // `requireRunModelDecision` off the answer is only recorded (advisory).
++      const modelDecision = await resolveModelDecisionForRun({
++        run,
++        agent,
++        context,
++        issueId,
++        issueContext,
++        issueOverrideModel: readNonEmptyString(
++          issueAssigneeOverrides?.adapterConfig?.model,
++        ),
++        requireDecision: experimentalInstanceSettings.requireRunModelDecision,
++      });
++      context.modelDecision = modelDecision.record;
++      await db
++        .update(heartbeatRuns)
++        .set({
++          contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ modelDecision: modelDecision.record })}::jsonb`,
++        })
++        .where(eq(heartbeatRuns.id, run.id));
++      if (modelDecision.action === "park") {
++        throw new RunModelDecisionDeferral({
++          retryAfterMs: modelDecision.retryAfterMs,
++          reason: modelDecision.reason,
++          record: modelDecision.record,
++        });
++      }
++      const decidedModel: RunModelDecideAnswer | null =
++        modelDecision.answer?.kind === "decide" ? modelDecision.answer : null;
++      const withRunModelDecision = <T,>(config: T): T | Record<string, unknown> =>
++        decidedModel
++          ? applyRunModelDecisionToAdapterConfig(parseObject(config), decidedModel)
++          : config;
+       const isolatedWorkspacesEnabled =
+         experimentalInstanceSettings.enableIsolatedWorkspaces;
+       // Inert on its own: the operator default only reaches the resolver when
+@@ -21567,11 +21891,17 @@ export function heartbeatService(
+         legacyUseProjectWorkspace:
+           issueAssigneeOverrides?.useProjectWorkspace ?? null,
+       });
++      const overrideMergedConfig = mergeIssueAdapterConfigOverrides(
++        workspaceManagedConfig,
++        issueAssigneeOverrides?.adapterConfig ?? null,
++      );
++      // The router's decision is run-scoped and lands before secret
++      // resolution; its env keys were validated against the manifest
++      // allowlist and the base config's secret bindings.
+       const mergedConfig = {
+-        ...mergeIssueAdapterConfigOverrides(
+-          workspaceManagedConfig,
+-          issueAssigneeOverrides?.adapterConfig ?? null,
+-        ),
++        ...(decidedModel
++          ? applyRunModelDecisionToAdapterConfig(overrideMergedConfig, decidedModel)
++          : overrideMergedConfig),
+         // The base below is already task-owned. Keep directory transport while
+         // preserving isolated mode and the mandatory sandbox preflight.
+         ...(useIsolatedTaskDirectory ? { workspaceStrategy: { type: "project_primary" } } : {}),
+@@ -24082,14 +24412,16 @@ export function heartbeatService(
+                         : null,
+                     ...resolvePaperclipRunnerNativeProviderInput({
+                       backend: nativeRuntimeResolution.profile.backend,
+-                      adapterConfig: nativeRuntimeResolution.profile.backend === "codex_app_server"
+-                        || nativeRuntimeResolution.profile.backend === "opencode_server"
+-                        ? projectPaperclipRunnerTaskConfig(
+-                            nativeRuntimeResolution.profile.backend,
+-                            agent.adapterConfig,
+-                            issueAssigneeOverrides?.adapterConfig,
+-                          )
+-                        : agent.adapterConfig,
++                      adapterConfig: withRunModelDecision(
++                        nativeRuntimeResolution.profile.backend === "codex_app_server"
++                          || nativeRuntimeResolution.profile.backend === "opencode_server"
++                          ? projectPaperclipRunnerTaskConfig(
++                              nativeRuntimeResolution.profile.backend,
++                              agent.adapterConfig,
++                              issueAssigneeOverrides?.adapterConfig,
++                            )
++                          : agent.adapterConfig,
++                      ),
+                       managedProfile,
+                       agentCoreProfile,
+                     }),
+@@ -26308,6 +26640,17 @@ export function heartbeatService(
+             );
+           },
+         );
++      } else if (isRunModelDecisionDeferral(outerErr)) {
++        // No model decision yet. The run never starts on the
++        // default; park it as a bounded `model_decision_pending` retry.
++        await finalizeRunModelDecisionDeferral(run, outerErr).catch(
++          (deferralErr) => {
++            logger.error(
++              { err: deferralErr, runId },
++              "failed to finalize model-decision deferral",
++            );
++          },
++        );
+       } else {
+         // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
+         // The inner catch did not fire, so we must record the failure here.
+diff --git a/server/src/services/instance-settings.ts b/server/src/services/instance-settings.ts
+index 2e7d555f0..70269af2e 100644
+--- a/server/src/services/instance-settings.ts
++++ b/server/src/services/instance-settings.ts
+@@ -259,6 +259,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
+       enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
+       enableSandboxDuplexBridge: parsed.data.enableSandboxDuplexBridge ?? false,
+       enableRunnerPreviewIngress: parsed.data.enableRunnerPreviewIngress ?? false,
++      requireRunModelDecision: parsed.data.requireRunModelDecision ?? false,
+       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
+       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
+       worktreeRunExecutionActivationInstanceId:
+@@ -302,6 +303,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
+     enableOwnerInstanceAdmin: false,
+     enableSandboxDuplexBridge: false,
+     enableRunnerPreviewIngress: false,
++    requireRunModelDecision: false,
+     enableWorktreeRunExecution: false,
+     worktreeRunExecutionActivatedAt: null,
+     worktreeRunExecutionActivationInstanceId: null,
+diff --git a/server/src/services/legacy-execution-recovery.test.ts b/server/src/services/legacy-execution-recovery.test.ts
+index 52397bf50..517a7ee81 100644
+--- a/server/src/services/legacy-execution-recovery.test.ts
++++ b/server/src/services/legacy-execution-recovery.test.ts
+@@ -86,3 +86,16 @@ it("retains conversation retry eligibility for a transient restore lock timeout"
+     workspaceRestoreFailure: "restore_lock_timeout", conversationContinuation: "continue_conversation_v1",
+   } })).toBe(false);
+ });
++
++it("permits model-decision waits only with explicit evidence that provider work never started", () => {
++  const waiting = {
++    runtimeMode: "legacy", status: "cancelled", errorCode: "model_decision_pending", scheduledRetryAttempt: 3,
++    resultJson: { executionRecovery: { kind: "model_decision_pending", providerWorkStarted: false } },
++  };
++  expect(legacyExecutionNeedsReconciliation(waiting)).toBe(false);
++  expect(legacyExecutionNeedsReconciliation({ ...waiting, status: "failed" })).toBe(true);
++  expect(legacyExecutionNeedsReconciliation({ ...waiting, resultJson: {} })).toBe(true);
++  expect(legacyExecutionNeedsReconciliation({ ...waiting, resultJson: {
++    executionRecovery: { kind: "model_decision_pending", providerWorkStarted: true },
++  } })).toBe(true);
++});
+diff --git a/server/src/services/legacy-execution-recovery.ts b/server/src/services/legacy-execution-recovery.ts
+index 98c4c03f7..b979f44a0 100644
+--- a/server/src/services/legacy-execution-recovery.ts
++++ b/server/src/services/legacy-execution-recovery.ts
+@@ -42,6 +42,9 @@ export function legacyExecutionNeedsReconciliation(
+       evidence?.kind === "ai_connection_wait" && evidence.providerWorkStarted === false) return false;
+   if (run.status === "cancelled" && run.errorCode === "workspace_busy" &&
+       evidence?.kind === "workspace_wait" && evidence.providerWorkStarted === false) return false;
++  // Waiting for the model router's decision also precedes provider execution.
++  if (run.status === "cancelled" && run.errorCode === "model_decision_pending" &&
++      evidence?.kind === "model_decision_pending" && evidence.providerWorkStarted === false) return false;
+   // Setup owns the bounded retry budget for temporary workspace scans. Its
+   // exhaustion needs workspace repair, not reconciliation of provider actions
+   // that the bootstrap evidence proves never started. Keep unknown outcomes held.
+diff --git a/server/src/services/run-model-decision.ts b/server/src/services/run-model-decision.ts
+new file mode 100644
+index 000000000..491dd8dfb
+--- /dev/null
++++ b/server/src/services/run-model-decision.ts
+@@ -0,0 +1,661 @@
++/**
++ * Run-scoped model decision hook — pure decision logic.
++ *
++ * The host calls the `run.model.resolve` capability holder inside
++ * `executeRun` (after the override parse, before the adapter config merge)
++ * and feeds the validated answer through these helpers. All I/O (worker RPC,
++ * retry scheduling, run-row writes) stays at the heartbeat.ts call site; this
++ * module is pure so every decision case runs as a unit test.
++ */
++
++import type {
++  ResolveRunModelParams,
++  ResolveRunModelResult,
++} from "@paperclipai/plugin-sdk";
++
++/** Deadline for the host→worker `resolveRunModel` RPC call. */
++export const RUN_MODEL_DECISION_RPC_TIMEOUT_MS = 1500;
++
++/** `scheduleBoundedRetryForRun` reason used when no decision is available. */
++export const RUN_MODEL_DECISION_RETRY_REASON = "model_decision_pending";
++
++/** Capability key: exactly one holder per company may resolve run models. */
++export const RUN_MODEL_DECISION_CAPABILITY = "run.model.resolve";
++
++/** Default bounded-retry budget for a pending model decision. */
++export const RUN_MODEL_DECISION_DEFAULT_MAX_ATTEMPTS = 12;
++
++/** Default delay before the first `model_decision_pending` retry. */
++export const RUN_MODEL_DECISION_DEFAULT_DELAY_MS = 5_000;
++
++/** Max accepted length for a decided model id. */
++export const RUN_MODEL_DECISION_MAX_MODEL_LENGTH = 200;
++
++/** Input passed to the `onResolveRunModel` plugin hook. */
++export type RunModelDecisionInput = ResolveRunModelParams;
++export type RunModelDecisionPrevious = NonNullable<ResolveRunModelParams["previous"]>;
++export type RunModelDecisionAnswer = ResolveRunModelResult;
++export type RunModelDecideAnswer = Extract<ResolveRunModelResult, { kind: "decide" }>;
++export type RunModelKeepAnswer = Extract<ResolveRunModelResult, { kind: "keep" }>;
++export type RunModelDeferAnswer = Extract<ResolveRunModelResult, { kind: "defer" }>;
++
++// ---------------------------------------------------------------------------
++// Skip rules
++// ---------------------------------------------------------------------------
++
++export type RunModelDecisionSkipReason =
++  | "non_issue_run"
++  | "human_assignee"
++  | "operator_override"
++  | "no_capability_holder";
++
++export interface RunModelDecisionSkipInput {
++  issueId: string | null;
++  /** True when the issue assignee is a human, not an agent. */
++  assigneeIsHuman: boolean;
++  /**
++   * Issue-level override model, if any. The host cannot tell an operator pin
++   * from a legacy plugin pin, so any override wins and the hook is skipped;
++   * the plugin retires its own pins once the flag is on.
++   */
++  issueOverrideModel: string | null;
++  /** True when a `run.model.resolve` capability holder is installed. */
++  hasCapabilityHolder: boolean;
++}
++
++export type RunModelDecisionSkip =
++  | { skip: true; reason: RunModelDecisionSkipReason }
++  | { skip: false; reason: null };
++
++export function evaluateRunModelDecisionSkip(
++  input: RunModelDecisionSkipInput,
++): RunModelDecisionSkip {
++  if (!input.issueId) return { skip: true, reason: "non_issue_run" };
++  if (input.assigneeIsHuman) return { skip: true, reason: "human_assignee" };
++  if (input.issueOverrideModel) return { skip: true, reason: "operator_override" };
++  if (!input.hasCapabilityHolder) return { skip: true, reason: "no_capability_holder" };
++  return { skip: false, reason: null };
++}
++
++// ---------------------------------------------------------------------------
++// Answer validation
++// ---------------------------------------------------------------------------
++
++export type RunModelDecisionValidationError =
++  | "not_an_object"
++  | "unknown_kind"
++  | "missing_decision_id"
++  | "invalid_model"
++  | "invalid_env"
++  | "env_key_not_allowlisted"
++  | "env_value_not_plain_string"
++  | "env_key_is_secret_ref";
++
++export type RunModelDecisionValidation =
++  | { valid: true; answer: RunModelDecisionAnswer; error: null }
++  | { valid: false; answer: null; error: RunModelDecisionValidationError };
++
++function isRecord(value: unknown): value is Record<string, unknown> {
++  return typeof value === "object" && value !== null && !Array.isArray(value);
++}
++
++function readNonEmptyString(value: unknown): string | null {
++  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
++}
++
++/**
++ * True when a base-config env value is a secret binding. Decision env may only
++ * carry plain plugin-owned keys, so a decision key landing on one of these is
++ * rejected (the same secret-copy hazard a shallow env merge has, applied to decisions).
++ */
++export function isSecretEnvBinding(value: unknown): boolean {
++  if (!isRecord(value)) return false;
++  return value.type === "secret_ref" || value.type === "user_secret_ref";
++}
++
++export interface ValidateRunModelDecisionOptions {
++  /** Manifest `modelRouting.envKeys` allowlist of the capability holder. */
++  allowlistedEnvKeys: readonly string[];
++  /** Base adapter-config `env` (pre-merge), used for the secret_ref check. */
++  baseEnv: Record<string, unknown> | null | undefined;
++}
++
++export function validateRunModelDecisionAnswer(
++  raw: unknown,
++  options: ValidateRunModelDecisionOptions,
++): RunModelDecisionValidation {
++  if (!isRecord(raw)) return { valid: false, answer: null, error: "not_an_object" };
++  const kind = raw.kind;
++  if (kind === "keep") {
++    return { valid: true, answer: { kind: "keep" }, error: null };
++  }
++  if (kind === "defer") {
++    const retryAfterMs =
++      typeof raw.retryAfterMs === "number" && Number.isFinite(raw.retryAfterMs) && raw.retryAfterMs >= 0
++        ? Math.floor(raw.retryAfterMs)
++        : RUN_MODEL_DECISION_DEFAULT_DELAY_MS;
++    const reason = readNonEmptyString(raw.reason) ?? "deferred by router";
++    return { valid: true, answer: { kind: "defer", retryAfterMs, reason }, error: null };
++  }
++  if (kind !== "decide") {
++    return { valid: false, answer: null, error: "unknown_kind" };
++  }
++  const decisionId = readNonEmptyString(raw.decisionId);
++  if (!decisionId) {
++    return { valid: false, answer: null, error: "missing_decision_id" };
++  }
++  const model = readNonEmptyString(raw.model);
++  if (!model || model.length > RUN_MODEL_DECISION_MAX_MODEL_LENGTH) {
++    return { valid: false, answer: null, error: "invalid_model" };
++  }
++  const source = readNonEmptyString(raw.source) ?? "unknown";
++  let env: Record<string, string> | undefined;
++  if (raw.env !== undefined) {
++    if (!isRecord(raw.env)) {
++      return { valid: false, answer: null, error: "invalid_env" };
++    }
++    const allowlist = new Set(options.allowlistedEnvKeys);
++    const next: Record<string, string> = {};
++    for (const [key, value] of Object.entries(raw.env)) {
++      if (!allowlist.has(key)) {
++        return { valid: false, answer: null, error: "env_key_not_allowlisted" };
++      }
++      if (typeof value !== "string") {
++        return { valid: false, answer: null, error: "env_value_not_plain_string" };
++      }
++      if (isSecretEnvBinding(options.baseEnv?.[key])) {
++        return { valid: false, answer: null, error: "env_key_is_secret_ref" };
++      }
++      next[key] = value;
++    }
++    env = next;
++  }
++  const effort = readNonEmptyString(raw.effort) ?? undefined;
++  const tier = readNonEmptyString(raw.tier) ?? undefined;
++  const reason = readNonEmptyString(raw.reason) ?? undefined;
++  const fallback = raw.fallback === true ? true : undefined;
++  return {
++    valid: true,
++    answer: {
++      kind: "decide",
++      decisionId,
++      model,
++      ...(effort !== undefined ? { effort } : {}),
++      ...(env !== undefined ? { env } : {}),
++      ...(tier !== undefined ? { tier } : {}),
++      source,
++      ...(fallback !== undefined ? { fallback } : {}),
++      ...(reason !== undefined ? { reason } : {}),
++    },
++    error: null,
++  };
++}
++
++// ---------------------------------------------------------------------------
++// Merge application
++// ---------------------------------------------------------------------------
++
++/**
++ * Applies a validated `decide` answer to a base adapter config. Env merges
++ * per key; `keep` returns the base untouched.
++ */
++export function applyRunModelDecisionToAdapterConfig(
++  base: Record<string, unknown>,
++  answer: RunModelDecideAnswer | RunModelKeepAnswer,
++): Record<string, unknown> {
++  if (answer.kind === "keep") return base;
++  const baseEnv = isRecord(base.env) ? base.env : {};
++  return {
++    ...base,
++    model: answer.model,
++    ...(answer.effort !== undefined ? { effort: answer.effort } : {}),
++    env: { ...baseEnv, ...(answer.env ?? {}) },
++  };
++}
++
++/**
++ * True when the decided model differs from the model's previous session, i.e.
++ * the run must start a fresh session (the existing "configured model changed"
++ * reset sees the decided model).
++ */
++export function runModelDecisionChangesModel(
++  decidedModel: string | null,
++  previousSessionModel: string | null,
++): boolean {
++  if (!decidedModel) return false;
++  return decidedModel !== previousSessionModel;
++}
++
++// ---------------------------------------------------------------------------
++// Outcome recording
++// ---------------------------------------------------------------------------
++
++export type RunModelDecisionOutcome =
++  | "decided"
++  | "kept"
++  | "deferred"
++  | "timeout"
++  | "exempt"
++  | "skipped";
++
++/**
++ * What the holder answered while the flag was off. The run used the default,
++ * so the top-level record says `timeout`; this keeps the advice measurable.
++ */
++export interface RunModelDecisionAdvice {
++  outcome: "decided" | "kept" | "deferred" | "timeout";
++  decisionId: string | null;
++  model: string | null;
++  tier?: string;
++  source: string | null;
++  fallback?: boolean;
++  reason?: string;
++}
++
++export interface RunModelDecisionRecord {
++  decisionId: string | null;
++  pluginKey: string | null;
++  model: string | null;
++  effort?: string;
++  tier?: string;
++  source: string | null;
++  fallback?: boolean;
++  latencyMs: number;
++  outcome: RunModelDecisionOutcome;
++  /** Skip reason when `skipped`; why no decision when `deferred`/`timeout`/`exempt`. */
++  reason?: string;
++  /** Present only when `requireRunModelDecision` is off (advisory mode). */
++  advisory?: RunModelDecisionAdvice;
++}
++
++export function buildModelDecisionRecord(input: {
++  answer: RunModelDecisionAnswer | null;
++  pluginKey: string | null;
++  latencyMs: number;
++  outcome: RunModelDecisionOutcome;
++  reason?: string;
++}): RunModelDecisionRecord {
++  const answer = input.answer;
++  return {
++    decisionId:
++      answer?.kind === "decide" ? answer.decisionId : null,
++    pluginKey: input.pluginKey,
++    model: answer?.kind === "decide" ? answer.model : null,
++    ...(answer?.kind === "decide" && answer.effort !== undefined
++      ? { effort: answer.effort }
++      : {}),
++    ...(answer?.kind === "decide" && answer.tier !== undefined
++      ? { tier: answer.tier }
++      : {}),
++    source: answer?.kind === "decide" ? answer.source : null,
++    ...(answer?.kind === "decide" && answer.fallback === true
++      ? { fallback: true as const }
++      : {}),
++    latencyMs: Math.max(0, Math.floor(input.latencyMs)),
++    outcome: input.outcome,
++    ...(input.reason !== undefined ? { reason: input.reason } : {}),
++  };
++}
++
++// ---------------------------------------------------------------------------
++// No-decision path
++// ---------------------------------------------------------------------------
++
++export type RunModelDecisionNoDecision =
++  | { action: "retry"; retryAfterMs: number; reason: string }
++  | { action: "surface"; reason: string };
++
++/**
++ * After a timeout/defer/invalid answer the run parks via
++ * `scheduleBoundedRetryForRun` (`model_decision_pending`). Once attempts are
++ * exhausted the issue is surfaced — the run never falls back to the default.
++ */
++export function resolveRunModelDecisionNoDecision(input: {
++  consumedAttempts: number;
++  maxAttempts?: number;
++  retryAfterMs?: number;
++  reason: string;
++}): RunModelDecisionNoDecision {
++  const maxAttempts = Math.max(
++    0,
++    Math.floor(input.maxAttempts ?? RUN_MODEL_DECISION_DEFAULT_MAX_ATTEMPTS),
++  );
++  if (input.consumedAttempts >= maxAttempts) {
++    return { action: "surface", reason: input.reason };
++  }
++  return {
++    action: "retry",
++    retryAfterMs: Math.max(
++      0,
++      Math.floor(input.retryAfterMs ?? RUN_MODEL_DECISION_DEFAULT_DELAY_MS),
++    ),
++    reason: input.reason,
++  };
++}
++
++
++// ---------------------------------------------------------------------------
++// Flag-off advisory mode
++// ---------------------------------------------------------------------------
++
++/**
++ * When `experimental.requireRunModelDecision` is off the hook is advisory:
++ * the run proceeds on the default and records `outcome: "timeout"`. What the
++ * holder said, if anything, goes under `advisory` for before/after measurement.
++ */
++export function buildAdvisoryModelDecisionRecord(input: {
++  pluginKey: string | null;
++  latencyMs: number;
++  advice: RunModelDecisionAdvice;
++}): RunModelDecisionRecord {
++  return {
++    ...buildModelDecisionRecord({
++      answer: null,
++      pluginKey: input.pluginKey,
++      latencyMs: input.latencyMs,
++      outcome: "timeout",
++      reason: "requireRunModelDecision disabled",
++    }),
++    advisory: input.advice,
++  };
++}
++
++// ---------------------------------------------------------------------------
++// Capability holder
++// ---------------------------------------------------------------------------
++
++export interface RunModelDecisionHolderCandidate {
++  id: string;
++  pluginKey: string;
++  manifestJson: {
++    capabilities?: readonly string[];
++    modelRouting?: { envKeys?: readonly string[] };
++  } | null;
++}
++
++export interface RunModelDecisionHolder {
++  pluginId: string;
++  pluginKey: string;
++  /** Manifest `modelRouting.envKeys`: the only env keys a decision may set. */
++  envKeys: string[];
++}
++
++export type RunModelDecisionHolderSelection =
++  | { kind: "none" }
++  | { kind: "single"; holder: RunModelDecisionHolder }
++  | { kind: "conflict"; pluginKeys: string[] }
++  /**
++   * The host could not tell whether a holder exists (the plugin lookup
++   * failed). Treated as a holder that did not answer: never a skip.
++   */
++  | { kind: "unavailable"; reason: string };
++
++/**
++ * Picks the `run.model.resolve` holder among ready plugins. More than one
++ * holder is a conflict: the host asks nobody, and with the flag on the run
++ * defers rather than guessing which router is authoritative.
++ */
++export function selectRunModelDecisionHolder(
++  candidates: readonly RunModelDecisionHolderCandidate[],
++): RunModelDecisionHolderSelection {
++  const holders = candidates.filter((candidate) =>
++    candidate.manifestJson?.capabilities?.includes(RUN_MODEL_DECISION_CAPABILITY),
++  );
++  if (holders.length === 0) return { kind: "none" };
++  if (holders.length > 1) {
++    return {
++      kind: "conflict",
++      pluginKeys: holders.map((holder) => holder.pluginKey).sort(),
++    };
++  }
++  const holder = holders[0]!;
++  return {
++    kind: "single",
++    holder: {
++      pluginId: holder.id,
++      pluginKey: holder.pluginKey,
++      envKeys: [...(holder.manifestJson?.modelRouting?.envKeys ?? [])],
++    },
++  };
++}
++
++/** Reads `previous` from the last run on the same issue and agent. */
++export function readPreviousRunModelDecision(
++  row: { id: string; contextSnapshot: unknown } | null | undefined,
++): RunModelDecisionPrevious | null {
++  if (!row) return null;
++  const snapshot = isRecord(row.contextSnapshot) ? row.contextSnapshot : {};
++  const record = isRecord(snapshot.modelDecision) ? snapshot.modelDecision : {};
++  return {
++    runId: row.id,
++    model: readNonEmptyString(record.model),
++    decisionId: readNonEmptyString(record.decisionId),
++  };
++}
++
++// ---------------------------------------------------------------------------
++// Orchestration: one call per run, I/O injected
++// ---------------------------------------------------------------------------
++
++/** Thrown inside `executeRun` so the run parks as `model_decision_pending`. */
++export class RunModelDecisionDeferral extends Error {
++  readonly code = RUN_MODEL_DECISION_RETRY_REASON;
++  readonly retryAfterMs: number;
++  readonly reason: string;
++  readonly record: RunModelDecisionRecord;
++
++  constructor(input: {
++    retryAfterMs: number;
++    reason: string;
++    record: RunModelDecisionRecord;
++  }) {
++    super(`Model router has not decided this run's model: ${input.reason}`);
++    this.name = "RunModelDecisionDeferral";
++    this.retryAfterMs = input.retryAfterMs;
++    this.reason = input.reason;
++    this.record = input.record;
++  }
++}
++
++export function isRunModelDecisionDeferral(
++  error: unknown,
++): error is RunModelDecisionDeferral {
++  return error instanceof RunModelDecisionDeferral;
++}
++
++export type RunModelDecisionResolution =
++  | {
++      action: "proceed";
++      /** `null` runs on the agent default / existing override. */
++      answer: RunModelDecideAnswer | RunModelKeepAnswer | null;
++      record: RunModelDecisionRecord;
++    }
++  | {
++      action: "park";
++      retryAfterMs: number;
++      reason: string;
++      record: RunModelDecisionRecord;
++    };
++
++export interface ResolveRunModelDecisionInput {
++  /** `experimental.requireRunModelDecision`. */
++  requireDecision: boolean;
++  skip: Omit<RunModelDecisionSkipInput, "hasCapabilityHolder">;
++  /** User-requested wakes may run on the default when no decision comes. */
++  isUserRequestedWake: boolean;
++  holder: RunModelDecisionHolderSelection;
++  params: Omit<RunModelDecisionInput, "deadlineMs">;
++  /** Base adapter-config `env`, for the secret_ref check. */
++  baseEnv: Record<string, unknown> | null | undefined;
++  /** Host→worker RPC; must reject once `timeoutMs` passes. */
++  call: (
++    pluginId: string,
++    params: RunModelDecisionInput,
++    timeoutMs: number,
++  ) => Promise<unknown>;
++  now?: () => number;
++  timeoutMs?: number;
++}
++
++const MAX_RECORDED_REASON_LENGTH = 200;
++
++function describeCallFailure(error: unknown): string {
++  const message =
++    error instanceof Error && error.message.trim().length > 0
++      ? error.message.trim()
++      : "resolveRunModel call failed";
++  return message.slice(0, MAX_RECORDED_REASON_LENGTH);
++}
++
++export async function resolveRunModelDecision(
++  input: ResolveRunModelDecisionInput,
++): Promise<RunModelDecisionResolution> {
++  const skip = evaluateRunModelDecisionSkip({
++    ...input.skip,
++    hasCapabilityHolder: input.holder.kind !== "none",
++  });
++  if (skip.skip) {
++    return {
++      action: "proceed",
++      answer: null,
++      record: buildModelDecisionRecord({
++        answer: null,
++        pluginKey: null,
++        latencyMs: 0,
++        outcome: "skipped",
++        reason: skip.reason,
++      }),
++    };
++  }
++
++  const now = input.now ?? Date.now;
++  const timeoutMs = input.timeoutMs ?? RUN_MODEL_DECISION_RPC_TIMEOUT_MS;
++  const pluginKey =
++    input.holder.kind === "single" ? input.holder.holder.pluginKey : null;
++  const startedAt = now();
++
++  let answer: RunModelDecisionAnswer | null = null;
++  let failure: { outcome: "deferred" | "timeout"; reason: string } | null = null;
++  if (input.holder.kind === "conflict") {
++    failure = {
++      outcome: "deferred",
++      reason: `multiple ${RUN_MODEL_DECISION_CAPABILITY} holders: ${input.holder.pluginKeys.join(", ")}`,
++    };
++  } else if (input.holder.kind === "unavailable") {
++    failure = { outcome: "timeout", reason: input.holder.reason };
++  } else if (input.holder.kind === "single") {
++    let raw: unknown;
++    try {
++      raw = await input.call(
++        input.holder.holder.pluginId,
++        { ...input.params, deadlineMs: timeoutMs },
++        timeoutMs,
++      );
++    } catch (error) {
++      failure = { outcome: "timeout", reason: describeCallFailure(error) };
++    }
++    if (!failure) {
++      const validation = validateRunModelDecisionAnswer(raw, {
++        allowlistedEnvKeys: input.holder.holder.envKeys,
++        baseEnv: input.baseEnv,
++      });
++      if (!validation.valid) {
++        failure = { outcome: "deferred", reason: `invalid answer: ${validation.error}` };
++      } else {
++        answer = validation.answer;
++      }
++    }
++  }
++  const latencyMs = now() - startedAt;
++
++  if (!input.requireDecision) {
++    return {
++      action: "proceed",
++      answer: null,
++      record: buildAdvisoryModelDecisionRecord({
++        pluginKey,
++        latencyMs,
++        advice: failure
++          ? {
++              outcome: failure.outcome,
++              decisionId: null,
++              model: null,
++              source: null,
++              reason: failure.reason,
++            }
++          : toAdvice(answer!),
++      }),
++    };
++  }
++
++  if (answer && answer.kind !== "defer") {
++    return {
++      action: "proceed",
++      answer,
++      record: buildModelDecisionRecord({
++        answer,
++        pluginKey,
++        latencyMs,
++        outcome: answer.kind === "decide" ? "decided" : "kept",
++        ...(answer.kind === "decide" && answer.reason !== undefined
++          ? { reason: answer.reason }
++          : {}),
++      }),
++    };
++  }
++
++  const reason = failure?.reason ?? (answer?.kind === "defer" ? answer.reason : "no decision");
++  const outcome = failure?.outcome ?? "deferred";
++  if (input.isUserRequestedWake) {
++    return {
++      action: "proceed",
++      answer: null,
++      record: buildModelDecisionRecord({
++        answer: null,
++        pluginKey,
++        latencyMs,
++        outcome: "exempt",
++        reason,
++      }),
++    };
++  }
++  return {
++    action: "park",
++    retryAfterMs:
++      answer?.kind === "defer"
++        ? answer.retryAfterMs
++        : RUN_MODEL_DECISION_DEFAULT_DELAY_MS,
++    reason,
++    record: buildModelDecisionRecord({
++      answer: null,
++      pluginKey,
++      latencyMs,
++      outcome,
++      reason,
++    }),
++  };
++}
++
++function toAdvice(answer: RunModelDecisionAnswer): RunModelDecisionAdvice {
++  if (answer.kind === "keep") {
++    return { outcome: "kept", decisionId: null, model: null, source: null };
++  }
++  if (answer.kind === "defer") {
++    return {
++      outcome: "deferred",
++      decisionId: null,
++      model: null,
++      source: null,
++      reason: answer.reason,
++    };
++  }
++  return {
++    outcome: "decided",
++    decisionId: answer.decisionId,
++    model: answer.model,
++    ...(answer.tier !== undefined ? { tier: answer.tier } : {}),
++    source: answer.source,
++    ...(answer.fallback === true ? { fallback: true } : {}),
++    ...(answer.reason !== undefined ? { reason: answer.reason } : {}),
++  };
++}
+diff --git a/ui/src/pages/InstanceExperimentalSettings.test.tsx b/ui/src/pages/InstanceExperimentalSettings.test.tsx
+index 8e7d7d965..5ed32ca90 100644
+--- a/ui/src/pages/InstanceExperimentalSettings.test.tsx
++++ b/ui/src/pages/InstanceExperimentalSettings.test.tsx
+@@ -106,6 +106,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
+     enableOwnerInstanceAdmin: false,
+     enableSandboxDuplexBridge: false,
+     enableRunnerPreviewIngress: false,
++    requireRunModelDecision: false,
+     enableWorktreeRunExecution: false,
+     worktreeRunExecutionActivatedAt: null,
+     worktreeRunExecutionActivationInstanceId: null,
+-- 
+2.47.3
+
