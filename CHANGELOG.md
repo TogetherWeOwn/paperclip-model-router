@@ -12,6 +12,18 @@ version is not present here.
 
 ### Added
 
+- **Invocation-derived model health (TOG-7160, port of TOG-930).**
+  `src/health/` (types, reconcile, catalogue probe) tracks per-model health
+  in company-scoped plugin state: catalogue presence keeps a model unknown
+  (never healthy), 2 consecutive routed post-transport failures degrade it
+  (deprioritized, last-resort), 2 successes restore healthy, 2 consecutive
+  catalogue absences mark it dead (disabled unless the operator already
+  did). `select.ts` routes degraded models last with a ceiling lift for
+  healthier qualified models; `worker.ts` feeds sync + async-continuation
+  results (excluding 401s, cancellations, pre-transport terminals) and runs
+  a 15-minute `model-health-probe` job. `tests/health.spec.ts` (18 tests)
+  and `tests/job-health.spec.ts` (7 tests) port the original suites.
+
 - **Normative async-invocation contract section (TOG-7898, gap G18).**
   `docs/contracts/compatible-upstream-v1.md` gains section 10, derived from
   shipped code: submit/poll envelopes (§10.1), the shared-selection +
@@ -101,6 +113,27 @@ version is not present here.
   case-variant, dupe-vs-`fallbackModelId`, fallback stays exact, shipped
   fixtures stay green, schema backstop). Three mutation probes (throw
   removed / fold removed / validator catch removed) go 5 / 2 / 3 red.
+- **Rule 0 patterns precompile once and fail closed at config load (TOG-7881,
+  gap G2).** `matchRule0` (`src/engine/select.ts`) used to construct
+  `new RegExp` per invocation inside a try/catch: invalid patterns were
+  silently dead config and pathological ones were per-request ReDoS.
+  `resolveConfig` now compiles each `deterministicPatterns` entry once via
+  `compileRule0Pattern` (`src/config/rule0.ts`), throwing a fail-closed
+  `Rule0PatternError` naming the operator-visible array index on a
+  malformed, invalid, or nested-quantifier pattern; a syntactic
+  nested-quantifier guard rejects catastrophic-backtracking shapes (with the
+  residual alternation-ambiguity risk documented, not checked), and every
+  match runs over a 4096-char length-bounded summary. The hot path reuses
+  the stored regex and never constructs one. `onValidateConfig` surfaces the
+  refusal as `ok:false` instead of a thrown 500, and a broken *stored*
+  config now refuses at the invoke seam as an audited `invalid-config`
+  terminal (new `InferenceErrorCode`, persisted to the decision log) instead
+  of the misattributed `upstream-url-rejected`.
+  `tests/tog-7881-rule0-precompile.spec.ts`: 8 tests (load-time index,
+  nested-quantifier rejection, benign controls, malformed entries,
+  precompiled match, summary bound, validator refusal, invoke-seam terminal
+  with audit). Evil-pattern fixtures are assembled from characters, never
+  written as regex-source literals (CodeQL `polynomial-redos` stays green).
 - **Capacity-snapshot age observability (TOG-7885, gap G8).** Staleness is
   now a surfaced fact, not just a routing input.
   - The served decision carries `capacity.snapshotAgeMs` (wall-clock ms,

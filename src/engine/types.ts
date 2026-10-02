@@ -114,6 +114,13 @@ export interface RuntimeSignals {
   servingModelId?: string;
   stickyModelId?: string;
   /**
+   * TOG-7160 (port of TOG-930): ids of models currently verdict `degraded`
+   * in the invocation-derived health overlay. Selection deprioritizes them
+   * (last-resort only); a pin still honors them only when nothing healthier
+   * can serve. Absent means no health evidence — everything is routable.
+   */
+  degradedModelIds?: ReadonlySet<string>;
+  /**
    * TOG-2139 (slice 6): per-lane pace verdicts computed by the worker from the
    * same source documents the capacity evidence came from, keyed by lane id.
    * Consumed only when `capacityRouting.paceOrdering` is true; a missing or

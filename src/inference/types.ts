@@ -64,6 +64,14 @@ export type InferenceErrorCode =
   | "invalid-request"
   | "secret-unavailable"
   | "upstream-url-rejected"
+  /**
+   * TOG-7881 (G2): the stored company config itself fails closed at load
+   * (fail-closed `resolveConfig` throws: bad Rule 0 patterns, duplicate
+   * model ids, forbidden extraHeaders). A stored-config refusal, never a
+   * caller-request or upstream problem — non-retryable until the operator
+   * fixes the config. The message names the offending path and index.
+   */
+  | "invalid-config"
   | "upstream-redirect"
   | "upstream-connect"
   | "upstream-timeout"
