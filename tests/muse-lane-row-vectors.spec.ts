@@ -55,8 +55,11 @@ interface VectorCase {
   };
 }
 
+// The fixture lives beside this spec, not in tests/fixtures/: the host gate
+// validates every JSON file directly under tests/fixtures/ against the
+// instance config schema, which a synthetic vectors table can never satisfy.
 const fixture = JSON.parse(
-  readFileSync(join(here, "fixtures", "muse-lane-row-vectors.json"), "utf8"),
+  readFileSync(join(here, "muse-lane-row-vectors.fixture.json"), "utf8"),
 ) as {
   version: number;
   sources: Record<string, CapacitySourceDefinition>;
