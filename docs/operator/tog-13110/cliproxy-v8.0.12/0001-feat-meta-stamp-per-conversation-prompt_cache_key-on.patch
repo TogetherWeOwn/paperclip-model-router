@@ -1,0 +1,407 @@
+From 920ec37de73e3aa606faae8baca9a85335008d82 Mon Sep 17 00:00:00 2001
+From: Paperclip Agent <agent@paperclip.local>
+Date: Sat, 3 Oct 2026 04:35:37 +0000
+Subject: [PATCH] feat(meta): stamp per-conversation prompt_cache_key on Muse
+ Responses requests
+
+Derive a stable per-conversation prompt_cache_key for Meta Responses
+requests so Meta routes each conversation to backends that already hold
+its prefix. Precedence: an explicit client key (payload, original
+request, or translated body) is preserved; otherwise the key is a
+UUIDv5 over the conversation session identity (execution session first,
+then derived identity, then request-context session), namespaced by
+upstream model. With no session identity no key is set: a
+credential-scoped fallback would pin every conversation on one
+credential to the same backends.
+
+prompt_cache_retention stays stripped: it is a server-side eviction
+hint, orthogonal to the routing key.
+---
+ .../runtime/executor/meta_executor_execute.go |   7 +
+ .../runtime/executor/meta_prompt_cache_key.go |  54 ++++
+ .../executor/meta_prompt_cache_key_test.go    | 290 ++++++++++++++++++
+ 3 files changed, 351 insertions(+)
+ create mode 100644 internal/runtime/executor/meta_prompt_cache_key.go
+ create mode 100644 internal/runtime/executor/meta_prompt_cache_key_test.go
+
+diff --git a/internal/runtime/executor/meta_executor_execute.go b/internal/runtime/executor/meta_executor_execute.go
+index 70821219..9e22a234 100644
+--- a/internal/runtime/executor/meta_executor_execute.go
++++ b/internal/runtime/executor/meta_executor_execute.go
+@@ -76,10 +76,17 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, auth *clipro
+ 	body = helps.SetStringIfDifferent(body, "model", baseModel)
+ 	body = helps.SetBoolIfDifferent(body, "stream", stream)
+ 	body, _ = sjson.DeleteBytes(body, "generate")
++	// prompt_cache_retention stays stripped: retention is a server-side
++	// eviction hint with billing implications, orthogonal to the routing key
++	// below. Revisit it as a separate change with cost analysis.
+ 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
+ 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
+ 	body, _ = sjson.DeleteBytes(body, "stream_options")
+ 	body, _ = sjson.DeleteBytes(body, "client_metadata")
++	// Per-conversation routing key for Meta prefix-cache affinity. Must run
++	// after payload-config so an operator-configured key is preserved, and
++	// before the reasoning sanitizers so the retry-without-replay path keeps it.
++	body = resolveMetaPromptCacheKey(ctx, baseModel, req, opts, body)
+ 	applyPatch := helps.NewApplyPatchResponsesState(from, originalPayload, originalTranslated)
+ 	var errNormalizePatch error
+ 	body, errNormalizePatch = helps.NormalizeApplyPatchResponsesRequest(body, originalPayload)
+diff --git a/internal/runtime/executor/meta_prompt_cache_key.go b/internal/runtime/executor/meta_prompt_cache_key.go
+new file mode 100644
+index 00000000..8be3e157
+--- /dev/null
++++ b/internal/runtime/executor/meta_prompt_cache_key.go
+@@ -0,0 +1,54 @@
++package executor
++
++import (
++	"context"
++	"strings"
++
++	"github.com/google/uuid"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/tidwall/gjson"
++)
++
++// metaPromptCacheKeyNamespace scopes the derived per-conversation cache key so a
++// Meta key can never collide with a Codex or OpenAI-compat key for the same session.
++const metaPromptCacheKeyNamespace = "cli-proxy-api:meta:prompt-cache"
++
++// resolveMetaPromptCacheKey stamps a per-conversation prompt_cache_key onto a Meta
++// Responses request body. Meta routes same-key requests to the same backends, so
++// a stable per-conversation key keeps every turn of a conversation on backends
++// that already hold its prefix, while distinct conversations spread across
++// backends instead of converging on one hot spot.
++//
++// Precedence mirrors the Codex/OpenAI-compat derivation:
++//  1. A client-provided key wins: it is read from the incoming payload, the
++//     original request, or the already-translated body, and preserved as-is.
++//  2. Otherwise the key is derived from the conversation's session identity
++//     (long-lived execution session first, then the derived identity, then the
++//     request-context session installed by EnsureSessionContext), namespaced
++//     with the upstream model so one session talking to two models does not
++//     falsely share a key.
++//  3. With no session identity at all, no key is set: an API-key hash or any
++//     other credential-scoped fallback would pin every conversation on that
++//     credential to the same backends, which is the hot spot this exists to avoid.
++func resolveMetaPromptCacheKey(ctx context.Context, modelName string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) []byte {
++	for _, payload := range [][]byte{req.Payload, opts.OriginalRequest, body} {
++		if key := strings.TrimSpace(gjson.GetBytes(payload, "prompt_cache_key").String()); key != "" {
++			return helps.SetStringIfDifferent(body, "prompt_cache_key", key)
++		}
++	}
++	sessionID := helps.ProviderSessionUUID("meta", opts.Metadata, req.Metadata)
++	if sessionID == "" {
++		sessionID = strings.TrimSpace(util.SessionIDFromContext(ctx))
++	}
++	if sessionID == "" {
++		return body
++	}
++	identity := strings.Join([]string{
++		metaPromptCacheKeyNamespace,
++		strings.ToLower(strings.TrimSpace(modelName)),
++		sessionID,
++	}, "\x00")
++	return helps.SetStringIfDifferent(body, "prompt_cache_key", uuid.NewSHA1(uuid.NameSpaceOID, []byte(identity)).String())
++}
+diff --git a/internal/runtime/executor/meta_prompt_cache_key_test.go b/internal/runtime/executor/meta_prompt_cache_key_test.go
+new file mode 100644
+index 00000000..eaf97936
+--- /dev/null
++++ b/internal/runtime/executor/meta_prompt_cache_key_test.go
+@@ -0,0 +1,290 @@
++package executor
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/google/uuid"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
++	"github.com/tidwall/gjson"
++)
++
++func metaCacheTestRequest() (cliproxyexecutor.Request, cliproxyexecutor.Options) {
++	req := cliproxyexecutor.Request{
++		Model:   "muse-spark-1.3",
++		Payload: []byte(`{"model":"muse-spark-1.3","input":"hello"}`),
++		Metadata: map[string]any{
++			cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:meta-cache-test",
++		},
++	}
++	opts := cliproxyexecutor.Options{
++		SourceFormat: sdktranslator.FormatOpenAIResponse,
++		Stream:       true,
++	}
++	return req, opts
++}
++
++func resolveMetaKey(t *testing.T, ctx context.Context, model string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) string {
++	t.Helper()
++	body := []byte(`{"model":"` + model + `","input":"hello"}`)
++	return gjson.GetBytes(resolveMetaPromptCacheKey(ctx, model, req, opts, body), "prompt_cache_key").String()
++}
++
++func TestResolveMetaPromptCacheKey_SameSessionStable(t *testing.T) {
++	t.Parallel()
++
++	req, opts := metaCacheTestRequest()
++	first := resolveMetaKey(t, context.Background(), "muse-spark-1.3", req, opts)
++	second := resolveMetaKey(t, context.Background(), "muse-spark-1.3", req, opts)
++	if first == "" {
++		t.Fatal("expected a derived prompt_cache_key, got empty")
++	}
++	if _, err := uuid.Parse(first); err != nil {
++		t.Fatalf("derived prompt_cache_key %q is not a UUID: %v", first, err)
++	}
++	if first != second {
++		t.Fatalf("same session gave different keys: %q vs %q", first, second)
++	}
++}
++
++func TestResolveMetaPromptCacheKey_DistinctSessionsDiffer(t *testing.T) {
++	t.Parallel()
++
++	req, opts := metaCacheTestRequest()
++	first := resolveMetaKey(t, context.Background(), "muse-spark-1.3", req, opts)
++	req.Metadata = map[string]any{
++		cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:another-conversation",
++	}
++	other := resolveMetaKey(t, context.Background(), "muse-spark-1.3", req, opts)
++	if other == "" {
++		t.Fatal("expected a derived prompt_cache_key for the second session, got empty")
++	}
++	if other == first {
++		t.Fatalf("distinct sessions share prompt_cache_key %q: hot-spot risk", first)
++	}
++}
++
++func TestResolveMetaPromptCacheKey_ModelScoped(t *testing.T) {
++	t.Parallel()
++
++	req, opts := metaCacheTestRequest()
++	spark := resolveMetaKey(t, context.Background(), "muse-spark-1.3", req, opts)
++	other := resolveMetaKey(t, context.Background(), "muse-spark-scout", req, opts)
++	if spark == "" || other == "" {
++		t.Fatal("expected derived keys for both models")
++	}
++	if spark == other {
++		t.Fatalf("same key %q for two models: cross-model cache aliasing risk", spark)
++	}
++}
++
++func TestResolveMetaPromptCacheKey_ClientKeyPreserved(t *testing.T) {
++	t.Parallel()
++
++	for _, tc := range []struct {
++		name   string
++		mutate func(*cliproxyexecutor.Request, *cliproxyexecutor.Options, *[]byte)
++	}{
++		{"payload", func(req *cliproxyexecutor.Request, _ *cliproxyexecutor.Options, _ *[]byte) {
++			req.Payload = []byte(`{"model":"muse-spark-1.3","prompt_cache_key":"client-key","input":"hello"}`)
++		}},
++		{"original_request", func(_ *cliproxyexecutor.Request, opts *cliproxyexecutor.Options, _ *[]byte) {
++			opts.OriginalRequest = []byte(`{"model":"muse-spark-1.3","prompt_cache_key":"client-key","input":"hello"}`)
++		}},
++		{"translated_body", func(_ *cliproxyexecutor.Request, _ *cliproxyexecutor.Options, body *[]byte) {
++			*body = []byte(`{"model":"muse-spark-1.3","prompt_cache_key":"client-key","input":"hello"}`)
++		}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			t.Parallel()
++			req, opts := metaCacheTestRequest()
++			body := []byte(`{"model":"muse-spark-1.3","input":"hello"}`)
++			tc.mutate(&req, &opts, &body)
++			got := gjson.GetBytes(resolveMetaPromptCacheKey(context.Background(), "muse-spark-1.3", req, opts, body), "prompt_cache_key").String()
++			if got != "client-key" {
++				t.Fatalf("client prompt_cache_key = %q, want client-key", got)
++			}
++		})
++	}
++}
++
++func TestResolveMetaPromptCacheKey_BlankClientKeyFallsBackToSession(t *testing.T) {
++	t.Parallel()
++
++	req, opts := metaCacheTestRequest()
++	req.Payload = []byte(`{"model":"muse-spark-1.3","prompt_cache_key":"   ","input":"hello"}`)
++	got := resolveMetaKey(t, context.Background(), "muse-spark-1.3", req, opts)
++	if got == "" {
++		t.Fatal("blank client key with a session identity should derive a key, got empty")
++	}
++	if _, err := uuid.Parse(got); err != nil {
++		t.Fatalf("derived prompt_cache_key %q is not a UUID: %v", got, err)
++	}
++}
++
++func TestResolveMetaPromptCacheKey_NoIdentityNoKey(t *testing.T) {
++	t.Parallel()
++
++	req := cliproxyexecutor.Request{
++		Model:   "muse-spark-1.3",
++		Payload: []byte(`{"model":"muse-spark-1.3","input":"hello"}`),
++	}
++	opts := cliproxyexecutor.Options{
++		SourceFormat: sdktranslator.FormatOpenAIResponse,
++		Stream:       true,
++	}
++	if got := resolveMetaKey(t, context.Background(), "muse-spark-1.3", req, opts); got != "" {
++		t.Fatalf("prompt_cache_key = %q with no session identity, want empty (no credential-scoped fallback)", got)
++	}
++}
++
++func TestResolveMetaPromptCacheKey_SessionContextFallback(t *testing.T) {
++	t.Parallel()
++
++	req := cliproxyexecutor.Request{
++		Model:   "muse-spark-1.3",
++		Payload: []byte(`{"model":"muse-spark-1.3","input":"hello"}`),
++	}
++	opts := cliproxyexecutor.Options{
++		SourceFormat: sdktranslator.FormatOpenAIResponse,
++		Stream:       true,
++	}
++	ctx := util.WithSessionID(context.Background(), "session-ctx-conv-1")
++	first := resolveMetaKey(t, ctx, "muse-spark-1.3", req, opts)
++	second := resolveMetaKey(t, ctx, "muse-spark-1.3", req, opts)
++	if first == "" || first != second {
++		t.Fatalf("context session gave unstable keys: %q vs %q", first, second)
++	}
++	other := resolveMetaKey(t, util.WithSessionID(context.Background(), "session-ctx-conv-2"), "muse-spark-1.3", req, opts)
++	if other == first {
++		t.Fatalf("distinct context sessions share prompt_cache_key %q", first)
++	}
++}
++
++func TestResolveMetaPromptCacheKey_ExecutionSessionPreferred(t *testing.T) {
++	t.Parallel()
++
++	req, opts := metaCacheTestRequest()
++	derivedOnly := resolveMetaKey(t, context.Background(), "muse-spark-1.3", req, opts)
++	req.Metadata = map[string]any{
++		cliproxyexecutor.ExecutionSessionMetadataKey: "connection-7",
++		cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:meta-cache-test",
++	}
++	withExecution := resolveMetaKey(t, context.Background(), "muse-spark-1.3", req, opts)
++	if withExecution == "" {
++		t.Fatal("expected a key with execution session metadata, got empty")
++	}
++	if withExecution == derivedOnly {
++		t.Fatalf("execution session did not take precedence over derived identity: %q", withExecution)
++	}
++}
++
++// TestMetaExecutor_SetsPerConversationPromptCacheKey runs the full Execute path
++// against a fake Meta upstream: the wire body must carry a stable
++// per-conversation prompt_cache_key while prompt_cache_retention stays stripped.
++func TestMetaExecutor_SetsPerConversationPromptCacheKey(t *testing.T) {
++	var bodies [][]byte
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		got, errRead := io.ReadAll(r.Body)
++		if errRead != nil {
++			t.Fatalf("read body: %v", errRead)
++		}
++		bodies = append(bodies, got)
++		writeMetaResponsesOK(w, "ok")
++	}))
++	defer server.Close()
++
++	exec := NewMetaExecutor(&config.Config{})
++	auth := &cliproxyauth.Auth{
++		Provider: "meta",
++		Attributes: map[string]string{
++			"api_key":  "meta-token",
++			"base_url": server.URL,
++		},
++	}
++	metadata := map[string]any{
++		cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:meta-wire-conv",
++	}
++	newCall := func() (cliproxyexecutor.Request, cliproxyexecutor.Options) {
++		return cliproxyexecutor.Request{
++			Model:    "muse-spark-1.3",
++			Payload:  []byte(`{"model":"muse-spark-1.3","input":"hello"}`),
++			Metadata: metadata,
++		}, cliproxyexecutor.Options{
++			SourceFormat: sdktranslator.FormatOpenAIResponse,
++		}
++	}
++
++	for i := 0; i < 2; i++ {
++		req, opts := newCall()
++		if _, err := exec.Execute(context.Background(), auth, req, opts); err != nil {
++			t.Fatalf("Execute() turn %d error = %v", i, err)
++		}
++	}
++	if len(bodies) != 2 {
++		t.Fatalf("expected 2 upstream bodies, got %d", len(bodies))
++	}
++	first := gjson.GetBytes(bodies[0], "prompt_cache_key").String()
++	second := gjson.GetBytes(bodies[1], "prompt_cache_key").String()
++	if first == "" {
++		t.Fatalf("wire body missing prompt_cache_key: %s", bodies[0])
++	}
++	if first != second {
++		t.Fatalf("same conversation gave different wire keys: %q vs %q", first, second)
++	}
++	for i, body := range bodies {
++		if gjson.GetBytes(body, "prompt_cache_retention").Exists() {
++			t.Fatalf("body %d still carries prompt_cache_retention: %s", i, body)
++		}
++	}
++}
++
++// TestMetaExecutor_PreservesClientPromptCacheKeyEndToEnd proves an operator- or
++// client-configured key survives payload-config and reaches the wire untouched.
++func TestMetaExecutor_PreservesClientPromptCacheKeyEndToEnd(t *testing.T) {
++	var gotBody []byte
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		var errRead error
++		gotBody, errRead = io.ReadAll(r.Body)
++		if errRead != nil {
++			t.Fatalf("read body: %v", errRead)
++		}
++		writeMetaResponsesOK(w, "ok")
++	}))
++	defer server.Close()
++
++	exec := NewMetaExecutor(&config.Config{})
++	auth := &cliproxyauth.Auth{
++		Provider: "meta",
++		Attributes: map[string]string{
++			"api_key":  "meta-token",
++			"base_url": server.URL,
++		},
++	}
++	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
++		Model:   "muse-spark-1.3",
++		Payload: []byte(`{"model":"muse-spark-1.3","prompt_cache_key":"pinned-by-client","input":"hello"}`),
++		Metadata: map[string]any{
++			cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:meta-wire-conv",
++		},
++	}, cliproxyexecutor.Options{
++		SourceFormat: sdktranslator.FormatOpenAIResponse,
++	})
++	if err != nil {
++		t.Fatalf("Execute() error = %v", err)
++	}
++	if got := gjson.GetBytes(gotBody, "prompt_cache_key").String(); got != "pinned-by-client" {
++		t.Fatalf("wire prompt_cache_key = %q, want pinned-by-client; body=%s", got, gotBody)
++	}
++	if !strings.Contains(string(gotBody), "muse-spark-1.3") {
++		t.Fatalf("wire body lost model: %s", gotBody)
++	}
++}
+-- 
+2.47.3
+
