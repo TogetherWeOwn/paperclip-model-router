@@ -490,6 +490,89 @@ class EmitIntegrationTest(unittest.TestCase):
         self.assertEqual(list(inspect.signature(wrapper.emit).parameters), ["name", "ok", "msg"])
 
 
+def host_shaped_before_emit(record):
+    """Host-shaped BEFORE emit fixture: args [key,ok,err], drops text on success.
+
+    Mirrors the observed BEFORE shape (host lines 26-27 per the assembly STOP):
+    the message text is delivered only when ok is false.
+    """
+    def emit(key, ok, err):
+        if not ok:
+            record.append((key, ok, err))
+        return "pushed-%s" % ok
+    return emit
+
+
+def read_block(path, begin_marker, end_marker):
+    text = (HERE / path).read_text()
+    start = text.index(begin_marker)
+    end = text.index(end_marker) + len(end_marker)
+    return text[start:end] + "\n"
+
+
+class EmitAssemblyTest(unittest.TestCase):
+    """Host-shaped assembly checks for the two-def emit integration (assembly STOP)."""
+
+    def test_wrapper_repairs_host_shaped_before_on_success(self):
+        record = []
+        wrapper = load_emit_wrapper(host_shaped_before_emit(record))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = wrapper.emit("platform_router-mix", True, "pace info")
+        # BEFORE alone would have dropped this; the wrapper must log it ...
+        self.assertIn("pace info", buf.getvalue())
+        # ... and still push identical positional args through the BEFORE transport.
+        self.assertEqual(result, "pushed-True")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            wrapper.emit("platform_router-mix", False, "boom info")
+        self.assertEqual(record[-1], ("platform_router-mix", False, "boom info"))
+        self.assertIn("boom info", buf.getvalue())
+
+    def test_all_emit_call_sites_are_positional(self):
+        import ast
+        for path in ("TOG-13279-router-mix-detector.py", "TOG-13273-before-excerpt.py"):
+            tree = ast.parse((HERE / path).read_text())
+            calls = [n for n in ast.walk(tree)
+                     if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "emit"]
+            self.assertTrue(calls, "expected emit calls in %s" % path)
+            for call in calls:
+                self.assertFalse(call.keywords, "keyword emit call in %s" % path)
+        # The integration file holds no emit() call itself; its delegation to
+        # the BEFORE implementation must be positional (param-name agnostic).
+        tree = ast.parse((HERE / "TOG-13279-emit-integration.py").read_text())
+        delegations = [n for n in ast.walk(tree)
+                       if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_before_emit"]
+        self.assertEqual(len(delegations), 1)
+        self.assertFalse(delegations[0].keywords)
+
+    def test_instructed_assembly_passes_header_verify(self):
+        import ast
+        before = ("def emit(key, ok, err):\n"
+                  "    push(key, ok, err if not ok else None)\n")
+        assembly = (before
+                    + read_block("TOG-13279-router-mix-detector.py",
+                                 "# ===== TOG-13279 router_mix retune (BEGIN) =====",
+                                 "# ===== TOG-13279 router_mix retune (END) =====")
+                    + read_block("TOG-13279-emit-integration.py",
+                                 "# ===== TOG-13279 emit integration (BEGIN) =====",
+                                 "# ===== TOG-13279 emit integration (END) ====="))
+        compile(assembly, "<host-assembly>", "exec")
+        tree = ast.parse(assembly)
+        defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "emit"]
+        self.assertEqual(len(defs), 2, "assembly must hold BEFORE + wrapper emit defs")
+        self.assertEqual([[a.arg for a in d.args.args] for d in defs],
+                         [["key", "ok", "err"], ["name", "ok", "msg"]])
+        bind = assembly.index("_before_emit = emit")
+        self.assertLess(assembly.index("TOG-13279 emit integration (BEGIN)"), bind)
+        self.assertLess(bind, assembly.index("def emit(name, ok, msg):"))
+        self.assertIn("_before_emit(name, ok, msg)", assembly)
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "emit"]
+        self.assertTrue(calls)
+        self.assertTrue(all(not c.keywords for c in calls))
+
+
 class InfoRetentionTest(unittest.TestCase):
     def test_info_on_numerator_success(self):
         extra = {"cliproxy-claude": {"laneId": "cliproxy-claude", "verdict": dict(BEHIND_VERDICT),
