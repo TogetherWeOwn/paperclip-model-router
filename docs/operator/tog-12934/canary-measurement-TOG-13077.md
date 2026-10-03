@@ -46,13 +46,26 @@ reselections, and CLIProxy restart times from the log. Ask operator for session-
 enrichment (or a session-gap export) if expiry drops look material; TTL raise to ~2h
 is operator hot-reload, not this card.
 
-## Stop hook 2x2 (owner ask #3) — not yet started
+## Stop hook 2x2 (operator 16:43Z) — LIVE from 2026-10-03T16:43:42Z
 
-Cells: control / hook-only / replay-only / replay+hook, cut at ONE timestamp, hook on
-HALF of each arm balanced by run volume, Muse-model runs only, report cells +
-interaction, no before/after. Current phase is pre-hook baseline: hook on NEITHER arm
-(per confounder rule). The cut needs an operator `Operator:` card to the CEO with the
-timestamp + half-arm member lists; do not install unilaterally.
+PR #518 merged 16:35:51Z (merge `8bfc13614`, exact-head APPROVE); runtime in
+`/paperclip/muse-stop-guard/`. Hook OFF = per-agent env override
+`MUSE_STOP_GUARD_MAX_NUDGES=0` (still observed/logged, counterfactual).
+Cells (Muse-model runs only; Steward/Astra excluded; fleet on Muse until
+Mon 00:00Z via quota balancer):
+
+| | Hook ON (blocks) | Hook OFF (observe) |
+|---|---|---|
+| **Replay ON** (muse-canary) | Automation, Chief of Staff, CTO, Founding, Security | CEO, Community, Director, COO |
+| **Replay OFF** (muse-spark) | Chief Audit, CISO, DevOps, QA | CPO, Code Reviewer, Prompt & Model, Web |
+
+Measure per TOG-13005 from the cut: notices/parks per Muse run by cell,
+`summarize-decisions.mjs --since 2026-10-03T16:43:42Z`, transcript announce
+share. Report 4 cells + interaction, no before/after. Pre-cut phase stays
+pre-hook baseline (hook on neither arm). Rollback: `touch
+/paperclip/muse-stop-guard/DISABLED`; full: `install-muse-stop-guard.mjs
+uninstall --apply`; arm overrides: remove env key (before-state in
+`ops/model-floor/backups/stop-hook-arm-env-before-*`).
 
 ## Confounders
 
