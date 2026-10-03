@@ -43,7 +43,7 @@ interface VectorCase {
 }
 
 const fixture = JSON.parse(
-  readFileSync(join(here, "fixtures", "codex-claude-lane-row-vectors-pack-2.json"), "utf8"),
+  readFileSync(join(here, "codex-claude-lane-row-vectors-pack-2.fixture.json"), "utf8"),
 ) as {
   version: number;
   sources: Record<string, CapacitySourceDefinition>;
