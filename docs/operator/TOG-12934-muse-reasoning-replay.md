@@ -77,13 +77,13 @@ The switch is off by default, so the image swap itself is behaviour-neutral. Ver
    ```
 
    Run `CLIPROXY_API_KEY=... tools/muse_replay_multiaccount_probe.py --base-url http://cliproxy:8317 --model muse-canary --turns 8`. It forces consecutive turns onto different accounts with a fresh session id per turn and passes only if no turn fails, every thinking signature is a `meta#` tag and at least two accounts served the loop. Then run `muse_replay_hit_rate.py` over the same log window: `retries_without_replay` should be 0 here, and `dropped_foreign` should be non-zero (the rotation is real).
-3. **Canary, 48 h.** Pin 2–3 Muse agents to `muse-canary` and keep same-role agents on `muse-spark-1.3` as the control group. Pinning is outside this card (changing models is out of scope) and needs an owner of the agents' configuration.
+3. **Canary, 48 h.** See [`tog-12934/CANARY-PLAN.md`](tog-12934/CANARY-PLAN.md). Measured baseline: Muse leaves 8.7 missing-disposition follow-ups per 100 succeeded runs, Claude 0, and agents differ 5x, so the same 3 or more Muse agents alternate `muse-canary` and `muse-spark-1.3` in 12 h blocks instead of being compared with different agents. Pinning is outside this card (changing models is out of scope) and needs an owner of the agents' configuration.
 4. **Expand** only if parks per run drop materially against the control with zero replay 400s reaching agents: drop the `models` list to cover every Meta model, or widen it.
 5. **Rollback** is a hot reload with `enabled: false` (immediate, history stays valid), or `swap-image.sh` back.
 
 ### Metrics
 
-Baseline from the card (24 h before 2026-10-03): 352 missing-disposition notices, 225 parks, 5,662 succeeded runs (6.2 and 4.0 per 100 runs). I did not re-derive these and have no access to the queries behind them; use the operator's original queries for both arms so the arms are comparable.
+Baseline from the card (24 h before 2026-10-03): 352 missing-disposition notices, 225 parks, 5,662 succeeded runs (6.2 and 4.0 per 100 runs). I have no access to the queries behind these. `tools/muse_canary_metrics.py` reads the same signal from run records over the API (the `finish_successful_run_handoff` follow-up wake, attributed to the run that caused it): 6.9 per 100 over 2026-10-02, the same magnitude as the 6.2 notices, not reconciled run for run. Parks are not in run records; use the operator's original query for them, grouped by run model, so the arms are comparable.
 
 | Metric | Source | Expectation |
 | --- | --- | --- |
