@@ -41,6 +41,15 @@ Either condition means the fleet default moved under an unpinned-heavy mix.
 Neither condition on its own implies a router regression; treat the alert
 as a prompt to re-read the fidelity readout, not as a routing defect.
 
+## Guard implementation (propose-only)
+
+`scripts/lib/model-mix-guard.mjs` (`evaluateMixGuard`) implements this
+threshold as a side-effect-free comparison of two snapshots: it returns a
+proposal record (`triggered`, `reasons`, delta, top families) and changes no
+routing, config, or scheduling. Fixture pairs covering stable, share-move,
+exact-threshold, top-flip, both-conditions, and missing-data cases live in
+`tests/model-mix-guard.spec.ts`.
+
 ## Latest snapshot
 
 Window 2026-10-02T23:17:11Z → 2026-10-03T23:16:33Z (24 h, generated
