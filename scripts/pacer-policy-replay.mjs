@@ -3,7 +3,7 @@
  * Pacer policy replay (offline, fixtures only).
  *
  * Replays every synthetic capacity state in
- * tests/fixtures/pacer-policy-replay.json through the admit/deny policy table
+ * tests/pacer-policy-replay.fixture.json through the admit/deny policy table
  * and asserts the replayed decision matches the table. No live capacity poll,
  * no pacing write, no network.
  *
@@ -17,6 +17,10 @@
  *
  * Usage: node scripts/pacer-policy-replay.mjs [--report <path>]
  * Exit code is 1 when any state mismatches.
+ *
+ * The fixture lives beside the spec, not in tests/fixtures/: verify:host
+ * validates every JSON file in tests/fixtures/ against instanceConfigSchema
+ * and this synthetic policy table is not an instance config. Keep it out.
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -30,7 +34,7 @@ const reportPath = resolve(
 );
 
 const fixture = JSON.parse(
-  readFileSync(resolve(root, "tests/fixtures/pacer-policy-replay.json"), "utf8"),
+  readFileSync(resolve(root, "tests/pacer-policy-replay.fixture.json"), "utf8"),
 );
 
 /**
@@ -75,7 +79,7 @@ const mismatches = rows.filter((row) => !row.match);
 const lines = [
   "# Pacer policy replay report",
   "",
-  `Fixture: tests/fixtures/pacer-policy-replay.json (version ${fixture.version}, ${rows.length} synthetic states).`,
+  `Fixture: tests/pacer-policy-replay.fixture.json (version ${fixture.version}, ${rows.length} synthetic states).`,
   "Replay: node scripts/pacer-policy-replay.mjs. Offline; no live capacity poll, no pacing write.",
   `Result: ${rows.length - mismatches.length}/${rows.length} states decide as the policy table says.`,
   "",
