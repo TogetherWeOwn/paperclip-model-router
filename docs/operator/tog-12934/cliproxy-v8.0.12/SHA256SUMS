@@ -1,0 +1,4 @@
+641b3da27052adf1a0705ce97971b9310b5795ce08da0b008c4a555ea3e677f7  0001-feat-signature-add-account-provenance-tag-for-Muse-r.patch
+cc13a783903fe9ab9496512c76f58f88387b9a7d65c8e3fa143501ce6e2616b3  0002-feat-config-add-upstream.meta.reasoning-replay-switc.patch
+a39b1487579daa6312e63fb534e5d45dcf120ac2b9e618740b2c36e726a37d4b  0003-feat-translator-keep-Muse-tagged-reasoning-when-conv.patch
+126eb1e67bd44029a0a0ae33a7ab843fb6284e4d3966bde2659815019a81bd6d  0004-feat-meta-account-safe-replay-of-Muse-reasoning-acro.patch
