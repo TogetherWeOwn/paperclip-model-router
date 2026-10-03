@@ -1,0 +1,40 @@
+From 8c541488e70ffb1ff15b9a67b164b5db7682eedf Mon Sep 17 00:00:00 2001
+From: Paperclip Agent <noreply@paperclip.ing>
+Date: Sat, 3 Oct 2026 12:35:44 +0000
+Subject: [PATCH] chore(server): sync pnpm lockfile for MCP SDK devDependency
+
+Server devDependencies carries @modelcontextprotocol/sdk@^1.30.0 with no
+lockfile importer entry, so pnpm install --frozen-lockfile fails with
+ERR_PNPM_OUTDATED_LOCKFILE. Regenerated with pnpm 9.15.4 (repo-pinned);
+frozen install now passes.
+
+Refs: TOG-13295
+---
+ pnpm-lock.yaml | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 4544b619..023ca365 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1040,6 +1040,9 @@ importers:
+         specifier: ^4.4.3
+         version: 4.4.3
+     devDependencies:
++      '@modelcontextprotocol/sdk':
++        specifier: ^1.30.0
++        version: 1.30.0(zod@4.4.3)
+       '@paperclipai/paperclip-runner':
+         specifier: workspace:*
+         version: link:../packages/paperclip-runner
+@@ -7656,7 +7659,6 @@ packages:
+ 
+   opencode-ai@1.18.32:
+     resolution: {integrity: sha512-SCrZWdq44y/EoH2+fE4HLcXS+DzpVqHPzmXk3p2RrufYy8LWvpfhRhKtijb5ktvx8r94ScqToqwHxR0BwS65OQ==}
+-    cpu: [arm64, x64]
+     os: [darwin, linux, win32]
+     hasBin: true
+ 
+-- 
+2.47.3
+
