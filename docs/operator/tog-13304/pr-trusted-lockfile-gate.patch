@@ -1,0 +1,149 @@
+diff --git a/.github/scripts/check-pr-lockfile.mjs b/.github/scripts/check-pr-lockfile.mjs
+index e835200..482fbbf 100644
+--- a/.github/scripts/check-pr-lockfile.mjs
++++ b/.github/scripts/check-pr-lockfile.mjs
+@@ -1,24 +1,37 @@
+ #!/usr/bin/env node
+ /**
+  * check-pr-lockfile.mjs
+- * Checks that pnpm-lock.yaml was not manually edited.
++ * Admits a pnpm-lock.yaml hunk only when it is regenerable from the PR's
++ * manifests (TOG-13304). The hard byte-identity check runs in the
++ * `Block unregenerable lockfile edits` policy step in pr-trusted.yml; this
++ * comment-gate admits the same shape cheaply (lockfile + a package.json in
++ * the file list) so authors get guidance instead of a hard-fail surprise,
++ * and keeps blocking lockfile-only hunks with no manifest change.
+  * Export: checkLockfile(files, prAuthor, prBranch) → { passed, failures }
+  */
+ import { fileURLToPath } from 'node:url';
+ 
+ export function checkLockfile(files, prAuthor, prBranch) {
+-  const lockfileChanged = files.some(f => f.filename === 'pnpm-lock.yaml');
++  const names = files.map(f => f.filename);
++  const lockfileChanged = names.includes('pnpm-lock.yaml');
+   if (!lockfileChanged) return { passed: true, failures: [] };
+ 
+   const isRefreshBot =
+     prAuthor === 'github-actions[bot]' && prBranch === 'chore/refresh-lockfile';
++  if (isRefreshBot) return { passed: true, failures: [] };
++
++  const manifestChanged = names.some(n => /(^|\/)package\.json$/.test(n));
++  if (manifestChanged) return { passed: true, failures: [] };
+ 
+   return {
+-    passed: isRefreshBot,
+-    failures: isRefreshBot ? [] : [
+-      'You have changes to `pnpm-lock.yaml` — `pr.yml` will hard-fail this PR with a confusing message about lockfile edits. ' +
+-      'To fix: run `pnpm install` locally, exclude the lockfile from your commit, push again. ' +
+-      'The lockfile is regenerated automatically by the refresh bot on a schedule.',
++    passed: false,
++    failures: [
++      'You have changes to `pnpm-lock.yaml` with no `package.json` change in this PR. ' +
++      'The `Block unregenerable lockfile edits` policy step will fail unless the lockfile hunk ' +
++      'is exactly what `pnpm install` regenerates from the PR manifests. ' +
++      'To fix: run `pnpm install` locally and commit the regenerated lockfile alongside the ' +
++      'manifest change, or drop the lockfile hunk — the lockfile is regenerated automatically ' +
++      'by the refresh bot on a schedule.',
+     ],
+   };
+ }
+diff --git a/.github/scripts/tests/check-pr-lockfile.test.mjs b/.github/scripts/tests/check-pr-lockfile.test.mjs
+index 03d897f..c630da9 100644
+--- a/.github/scripts/tests/check-pr-lockfile.test.mjs
++++ b/.github/scripts/tests/check-pr-lockfile.test.mjs
+@@ -31,3 +31,27 @@ test('fails when lockfile changed by bot on wrong branch', () => {
+   );
+   assert.equal(result.passed, false);
+ });
++
++test('passes when lockfile changed alongside a workspace manifest', () => {
++  const result = checkLockfile(
++    makeFiles(['pnpm-lock.yaml', 'cli/package.json']),
++    'someuser',
++    'feat/add-dep'
++  );
++  assert.equal(result.passed, true);
++});
++
++test('passes when lockfile changed alongside the root manifest', () => {
++  const result = checkLockfile(
++    makeFiles(['pnpm-lock.yaml', 'package.json']),
++    'someuser',
++    'feat/add-dep'
++  );
++  assert.equal(result.passed, true);
++});
++
++test('fails when lockfile changed with no manifest (guidance mentions regen gate)', () => {
++  const result = checkLockfile(makeFiles(['pnpm-lock.yaml']), 'someuser', 'fix/bug');
++  assert.equal(result.passed, false);
++  assert.ok(result.failures[0].includes('Block unregenerable lockfile edits'));
++});
+diff --git a/.github/scripts/tests/lockfile-refresh-workflows.test.mjs b/.github/scripts/tests/lockfile-refresh-workflows.test.mjs
+index 7c19cf2..4850f20 100644
+--- a/.github/scripts/tests/lockfile-refresh-workflows.test.mjs
++++ b/.github/scripts/tests/lockfile-refresh-workflows.test.mjs
+@@ -23,3 +23,15 @@ test('lockfile repair workflows resolve dependencies instead of updating metadat
+     }
+   }
+ });
++
++test('policy gate admits regenerable lockfile hunks and still blocks hand-edits', async () => {
++  const contents = await readFile('.github/workflows/pr-trusted.yml', 'utf8');
++  // The old blanket ban must be gone.
++  assert.doesNotMatch(contents, /Block manual lockfile edits/);
++  assert.doesNotMatch(contents, /Do not commit pnpm-lock\.yaml in pull requests/);
++  // The amended gate must exist and enforce regen-identity.
++  assert.match(contents, /Block unregenerable lockfile edits/);
++  assert.match(contents, /package\\.json\$/);
++  assert.match(contents, /--resolution-only/);
++  assert.match(contents, /cmp -s pnpm-lock\.yaml/);
++});
+diff --git a/.github/workflows/pr-trusted.yml b/.github/workflows/pr-trusted.yml
+index d32dc11..687b830 100644
+--- a/.github/workflows/pr-trusted.yml
++++ b/.github/workflows/pr-trusted.yml
+@@ -265,7 +265,7 @@ jobs:
+           persist-credentials: false
+           fetch-depth: 0
+ 
+-      - name: Block manual lockfile edits
++      - name: Block unregenerable lockfile edits
+         if: >-
+           github.head_ref != 'chore/refresh-lockfile' &&
+           github.event.pull_request.user.login != 'dependabot[bot]'
+@@ -273,10 +273,32 @@ jobs:
+           # Diff the PR branch against its merge base so recent base-branch commits
+           # do not masquerade as changes made by the PR itself.
+           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+-          if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
+-            echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
++          if ! printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
++            exit 0
++          fi
++          # A lockfile hunk is allowed when the same PR also changes a
++          # package.json manifest. The hunk must then be exactly what
++          # `pnpm install` regenerates from the PR's manifests: check out
++          # the base lockfile, re-resolve with the PR's manifests, and
++          # require the regenerated tree to match the PR's lockfile
++          # byte-for-byte. Gratuitous hand-edits fail this check because
++          # the resolver never reproduces them (TOG-13304).
++          if ! printf '%s\n' "$changed" | grep -q 'package\.json$'; then
++            echo "Do not commit pnpm-lock.yaml without a package.json change in the same PR."
++            echo "The lockfile is regenerated automatically by the refresh bot on a schedule."
++            exit 1
++          fi
++          cp pnpm-lock.yaml /tmp/pr-pnpm-lock.yaml
++          git show "${{ github.event.pull_request.base.sha }}:pnpm-lock.yaml" > pnpm-lock.yaml
++          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
++          if ! cmp -s pnpm-lock.yaml /tmp/pr-pnpm-lock.yaml; then
++            echo "The committed pnpm-lock.yaml does not match what 'pnpm install' regenerates"
++            echo "from this PR's package.json manifests. Commit the regenerated lockfile instead"
++            echo "of hand-editing it (or drop the lockfile hunk; the refresh bot owns master)."
++            cp /tmp/pr-pnpm-lock.yaml pnpm-lock.yaml
+             exit 1
+           fi
++          echo "Lockfile hunk verified: regenerable from this PR's manifests."
+ 
+       - name: Setup Node.js for pnpm bootstrap
+         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
