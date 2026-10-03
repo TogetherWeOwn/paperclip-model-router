@@ -1,0 +1,411 @@
+{
+  "version": 1,
+  "description": "Frozen Muse lane-row validation vectors (mirror of Codex+Claude pack 2). Offline only: every payload below is a frozen model-usage-telemetry wire body run through the pure contract consumer (no HTTP, no live catalogue, no roster write). The muse source binds the roster's enabled Muse row (muse-spark-1.3-contributor, cliproxy-meta lane per the reviewed roster) the way pack 2 binds its two lanes. Cases pin model id, lane binding (evidence source), snapshot expiry, reset-countdown derivation and preference, serviceable/state agreement, and weekly-window projection. Each case lists the exact expected outcome; the spec asserts full equality so behavior drift in either direction fails loudly. Foreign-row markers (oc/gpt-5.6-codex, oc/claude-sonnet-5) are opaque stand-ins for other lanes' rows, borrowed only to prove they never project onto the Muse source.",
+  "clocks": {
+    "observedAt": "2026-09-10T12:00:00.000Z",
+    "fetchedAt": "2026-09-10T12:01:05.000Z",
+    "note": "Fetched 65s after observed. Countdown cases exploit the gap: an observedAt-anchored derivation differs from a fetch-anchored one, so the exact expected value proves which clock the consumer uses."
+  },
+  "sources": {
+    "muse": {
+      "id": "cliproxy-meta",
+      "statusUrl": "https://deployment.example.invalid/telemetry/muse",
+      "modelIds": ["muse-spark-1.3-contributor"],
+      "healthFields": ["state"],
+      "requestTimeoutMs": 5000,
+      "maxResponseBytes": 262144,
+      "windows": []
+    }
+  },
+  "cases": [
+    {
+      "id": "expiry-stale-snapshot",
+      "title": "a snapshot older than its own stale budget reads unavailable with no rows",
+      "source": "muse",
+      "fetchedAt": "2026-09-10T12:10:00.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "muse-spark-1.3-contributor": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.2,
+            "resetsAt": null,
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "unavailable",
+        "reasonCode": "capacity-snapshot-stale",
+        "rows": []
+      }
+    },
+    {
+      "id": "expiry-past-reset-preserved",
+      "title": "a row whose reset already passed still reports with its expiry timestamp intact",
+      "source": "muse",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "muse-spark-1.3-contributor": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.43,
+            "resetsAt": "2026-09-10T12:00:30.000Z",
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": [
+          {
+            "modelId": "muse-spark-1.3-contributor",
+            "source": "cliproxy-meta",
+            "health": "healthy",
+            "posture": "available",
+            "utilization": 0.43,
+            "resetsAt": "2026-09-10T12:00:30.000Z",
+            "resetInSeconds": 30,
+            "windows": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "countdown-producer-wins",
+      "title": "the producer's own reset countdown is preferred over the resetsAt-derived one",
+      "source": "muse",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "muse-spark-1.3-contributor": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.4,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": 3723,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": [
+          {
+            "modelId": "muse-spark-1.3-contributor",
+            "source": "cliproxy-meta",
+            "health": "healthy",
+            "posture": "available",
+            "utilization": 0.4,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": 3723,
+            "windows": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "countdown-derived-from-observed",
+      "title": "without a producer countdown the reset is derived against observedAt, not fetch time",
+      "source": "muse",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "muse-spark-1.3-contributor": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.4,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": [
+          {
+            "modelId": "muse-spark-1.3-contributor",
+            "source": "cliproxy-meta",
+            "health": "healthy",
+            "posture": "available",
+            "utilization": 0.4,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": 600,
+            "windows": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "countdown-invalid-falls-back",
+      "title": "a negative producer countdown is rejected and the resetsAt derivation is used",
+      "source": "muse",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "muse-spark-1.3-contributor": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.43,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": -5,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": [
+          {
+            "modelId": "muse-spark-1.3-contributor",
+            "source": "cliproxy-meta",
+            "health": "healthy",
+            "posture": "available",
+            "utilization": 0.43,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": 600,
+            "windows": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "agreement-exhausted-serviceable-dropped",
+      "title": "a muse row claiming exhausted yet serviceable is dropped, and another lane's agreeing row does not fall through onto the muse source",
+      "source": "muse",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "muse-spark-1.3-contributor": {
+            "serviceable": true,
+            "state": "exhausted",
+            "utilization": 1,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          },
+          "oc/gpt-5.6-codex": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.2,
+            "resetsAt": null,
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": []
+      }
+    },
+    {
+      "id": "agreement-available-unserviceable-dropped",
+      "title": "a muse row claiming available yet unserviceable is dropped with no error",
+      "source": "muse",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "muse-spark-1.3-contributor": {
+            "serviceable": false,
+            "state": "available",
+            "utilization": 0.4,
+            "resetsAt": null,
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": []
+      }
+    },
+    {
+      "id": "agreement-exhausted-unserviceable-kept",
+      "title": "an agreeing exhausted muse row is kept as unavailable, never silently routable",
+      "source": "muse",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "muse-spark-1.3-contributor": {
+            "serviceable": false,
+            "state": "exhausted",
+            "utilization": 1,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": [
+          {
+            "modelId": "muse-spark-1.3-contributor",
+            "source": "cliproxy-meta",
+            "health": "exhausted",
+            "posture": "unavailable",
+            "utilization": 1,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": 600,
+            "windows": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "binding-foreign-rows-ignored",
+      "title": "other lanes' agreeing rows in the same snapshot project to nothing on the muse source",
+      "source": "muse",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "oc/gpt-5.6-codex": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.2,
+            "resetsAt": null,
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          },
+          "oc/claude-sonnet-5": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.4,
+            "resetsAt": null,
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": []
+      }
+    },
+    {
+      "id": "windows-weekly-row-projects",
+      "title": "a muse row carrying a weekly window projects the window with its own utilization and reset",
+      "source": "muse",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "muse-spark-1.3-contributor": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.55,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": null,
+            "windows": [
+              {
+                "window": "weekly",
+                "utilization": 0.75,
+                "resetsAt": "2026-10-05T00:00:00.000Z",
+                "resetInSeconds": null
+              }
+            ],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": [
+          {
+            "modelId": "muse-spark-1.3-contributor",
+            "source": "cliproxy-meta",
+            "health": "healthy",
+            "posture": "available",
+            "utilization": 0.55,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": 600,
+            "windows": [
+              {
+                "name": "weekly",
+                "utilization": 0.75,
+                "remainingFraction": 0.25,
+                "resetsAt": "2026-10-05T00:00:00.000Z",
+                "sourcePath": "models[].windows.utilization"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
