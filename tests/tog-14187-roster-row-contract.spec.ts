@@ -25,7 +25,7 @@ interface ContractCase {
 }
 
 const fixture = JSON.parse(
-  readFileSync(join(here, "fixtures", "roster-row-contract.json"), "utf8"),
+  readFileSync(join(here, "roster-row-contract.fixture.json"), "utf8"),
 ) as { version: number; allowlist: string[]; lanes: string[]; cases: ContractCase[] };
 
 describe("roster row contract guard on frozen fixtures (offline)", () => {
