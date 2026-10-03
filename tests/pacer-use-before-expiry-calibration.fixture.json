@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "policy": "Per-lane use-before-expiry calibration vectors, offline fixtures only. Each lane burns toward a fixed weekly expiry while snapshots are taken nearer and nearer the reset; the spec drives every step through the real pace evaluator and the real model selector and pins the admit/deny sequence. Admission tightens monotonically (admit* deny*): once a lane denies near expiry it never re-admits. Deny steps trip the five-hour serviceability backstop; the weekly allowance alone never denies. Thresholds are lane-agnostic in the current code, so lanes differ only by window naming and burn schedule: the Muse lane burns hotter and denies one step earlier. No live capacity poll, no pacing write, no policy change.",
+  "expiry": "2026-10-05T00:00:00.000Z",
+  "lanes": {
+    "claude": {
+      "laneId": "claude",
+      "allowanceWindow": "seven_day",
+      "burn": [
+        { "id": "b0", "hoursBeforeExpiry": 96, "allowanceUtilization": 0.3, "fiveHourUtilization": 0.2, "expectState": "behind", "expectReason": "ok", "expectDecision": "admit" },
+        { "id": "b1", "hoursBeforeExpiry": 48, "allowanceUtilization": 0.75, "fiveHourUtilization": 0.5, "expectState": "on", "expectReason": "ok", "expectDecision": "admit" },
+        { "id": "b2", "hoursBeforeExpiry": 24, "allowanceUtilization": 0.97, "fiveHourUtilization": 0.85, "expectState": "ahead", "expectReason": "ok", "expectDecision": "admit" },
+        { "id": "b3", "hoursBeforeExpiry": 6, "allowanceUtilization": 0.99, "fiveHourUtilization": 0.93, "expectState": "exhausted", "expectReason": "serviceability-window-exhausted", "expectDecision": "deny" },
+        { "id": "b4", "hoursBeforeExpiry": 1, "allowanceUtilization": 0.995, "fiveHourUtilization": 0.97, "expectState": "exhausted", "expectReason": "serviceability-window-exhausted", "expectDecision": "deny" }
+      ],
+      "urgency": [
+        { "id": "u0", "hoursBeforeExpiry": 48, "expectState": "behind" },
+        { "id": "u1", "hoursBeforeExpiry": 25, "expectState": "behind" },
+        { "id": "u2", "hoursBeforeExpiry": 23, "expectState": "behind-urgent" },
+        { "id": "u3", "hoursBeforeExpiry": 6, "expectState": "behind-urgent" },
+        { "id": "u4", "hoursBeforeExpiry": 1, "expectState": "behind-urgent" }
+      ]
+    },
+    "codex": {
+      "laneId": "codex",
+      "allowanceWindow": "weekly",
+      "burn": [
+        { "id": "b0", "hoursBeforeExpiry": 96, "allowanceUtilization": 0.3, "fiveHourUtilization": 0.2, "expectState": "behind", "expectReason": "ok", "expectDecision": "admit" },
+        { "id": "b1", "hoursBeforeExpiry": 48, "allowanceUtilization": 0.75, "fiveHourUtilization": 0.5, "expectState": "on", "expectReason": "ok", "expectDecision": "admit" },
+        { "id": "b2", "hoursBeforeExpiry": 24, "allowanceUtilization": 0.97, "fiveHourUtilization": 0.85, "expectState": "ahead", "expectReason": "ok", "expectDecision": "admit" },
+        { "id": "b3", "hoursBeforeExpiry": 6, "allowanceUtilization": 0.99, "fiveHourUtilization": 0.93, "expectState": "exhausted", "expectReason": "serviceability-window-exhausted", "expectDecision": "deny" },
+        { "id": "b4", "hoursBeforeExpiry": 1, "allowanceUtilization": 0.995, "fiveHourUtilization": 0.97, "expectState": "exhausted", "expectReason": "serviceability-window-exhausted", "expectDecision": "deny" }
+      ],
+      "urgency": [
+        { "id": "u0", "hoursBeforeExpiry": 48, "expectState": "behind" },
+        { "id": "u1", "hoursBeforeExpiry": 25, "expectState": "behind" },
+        { "id": "u2", "hoursBeforeExpiry": 23, "expectState": "behind-urgent" },
+        { "id": "u3", "hoursBeforeExpiry": 6, "expectState": "behind-urgent" },
+        { "id": "u4", "hoursBeforeExpiry": 1, "expectState": "behind-urgent" }
+      ]
+    },
+    "kimi": {
+      "laneId": "kimi",
+      "allowanceWindow": "weekly",
+      "burn": [
+        { "id": "b0", "hoursBeforeExpiry": 96, "allowanceUtilization": 0.45, "fiveHourUtilization": 0.3, "expectState": "on", "expectReason": "ok", "expectDecision": "admit" },
+        { "id": "b1", "hoursBeforeExpiry": 48, "allowanceUtilization": 0.85, "fiveHourUtilization": 0.6, "expectState": "ahead", "expectReason": "ok", "expectDecision": "admit" },
+        { "id": "b2", "hoursBeforeExpiry": 24, "allowanceUtilization": 0.97, "fiveHourUtilization": 0.93, "expectState": "exhausted", "expectReason": "serviceability-window-exhausted", "expectDecision": "deny" },
+        { "id": "b3", "hoursBeforeExpiry": 6, "allowanceUtilization": 0.99, "fiveHourUtilization": 0.95, "expectState": "exhausted", "expectReason": "serviceability-window-exhausted", "expectDecision": "deny" },
+        { "id": "b4", "hoursBeforeExpiry": 1, "allowanceUtilization": 0.995, "fiveHourUtilization": 0.98, "expectState": "exhausted", "expectReason": "serviceability-window-exhausted", "expectDecision": "deny" }
+      ],
+      "urgency": [
+        { "id": "u0", "hoursBeforeExpiry": 48, "expectState": "behind" },
+        { "id": "u1", "hoursBeforeExpiry": 25, "expectState": "behind" },
+        { "id": "u2", "hoursBeforeExpiry": 23, "expectState": "behind-urgent" },
+        { "id": "u3", "hoursBeforeExpiry": 6, "expectState": "behind-urgent" },
+        { "id": "u4", "hoursBeforeExpiry": 1, "expectState": "behind-urgent" }
+      ]
+    }
+  }
+}
