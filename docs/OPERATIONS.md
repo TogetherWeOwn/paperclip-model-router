@@ -378,6 +378,7 @@ For a generation that may run past the host's RPC timeout, use the async submit/
 - Capacity evidence is keyed to exact opaque model IDs and records only sanitized source/lane labels and usage facts, never provider/account serving identity.
 - A transport failure never causes automatic replay or post-HTTP model fallback.
 - Decision records are company-scoped and exclude prompts, messages, tool inputs/results, credentials, full URLs, error bodies, and deployment identity.
+- `query-decisions` is company-scoped: the company id comes from the host-authorized action context and is bound as the query's `$1`, so a caller only ever sees its own company's rows. One call returns at most 200 rows, newest first, inside that company's `decisionLog.retentionDays` window (default 90 days, 1–3650).
 - Native metrics are aggregate and contain no company tag. The one exception
   is the degraded-age counter below, which is namespaced per company IN THE
   METRIC NAME (`model_router.company.<companyId>.capacity.snapshot_stale`)

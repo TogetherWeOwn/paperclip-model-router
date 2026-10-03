@@ -15,7 +15,6 @@ import {
 import type { RouterConfig } from "./config/types.js";
 import {
   ACTION_KEYS,
-  DECISION_LOG_RETENTION_DAYS,
   ISSUE_STICKINESS_MAX_ENTRIES,
   JOB_KEYS,
   PENDING_INVOCATION_TTL_MS,
@@ -25,9 +24,14 @@ import {
   TOOL_NAMES,
 } from "./constants.js";
 import {
+  DECISION_QUERY_MAX_LIMIT,
   decisionInsertSql,
-  decisionPruneSql,
+  decisionPruneCompanySql,
+  decisionCompaniesSql,
+  decisionRetentionCutoff,
+  decisionQuerySql,
   decisionRecordParams,
+  decisionRowToRecord,
   type DecisionRecord,
 } from "./decision-records.js";
 import { MODEL_TIER_ORDER, type RoutingDecision } from "./engine/types.js";
@@ -258,8 +262,32 @@ export function createPlugin() {
         resolveConfig(await ctx.config.get(companyId));
       const migratedDecisionLogs = new Set<string>();
 
+      /** Unknown policy defers maintenance; only a successfully read absent policy defaults. */
+      const decisionRetentionDays = async (companyId: string): Promise<number | null> => {
+        try {
+          return (await companyConfig(companyId)).decisionLog.retentionDays;
+        } catch {
+          ctx.logger.warn("Decision retention policy unavailable; pruning and legacy reconciliation deferred", { companyId });
+          return null;
+        }
+      };
+
+      /** Every write retries maintenance, preserving history AND the current UTC accounting month. */
+      const pruneCompanyDecisionRecords = async (companyId: string, retentionDays: number): Promise<void> => {
+        try {
+          await ctx.db.execute(
+            decisionPruneCompanySql(ctx.db.namespace),
+            [companyId, decisionRetentionCutoff(retentionDays, new Date())],
+          );
+        } catch {
+          ctx.logger.warn("Could not prune decision records; the next write or startup sweep will retry", { companyId });
+        }
+      };
+
       const migrateLegacyDecisionLog = async (companyId: string): Promise<void> => {
         if (migratedDecisionLogs.has(companyId)) return;
+        const retentionDays = await decisionRetentionDays(companyId);
+        if (retentionDays === null) return;
         const migrationKey = {
           scopeKind: "company" as const,
           scopeId: companyId,
@@ -271,7 +299,7 @@ export function createPlugin() {
           stateKey: STATE_KEYS.legacyDecisionLog,
         });
         if (Array.isArray(legacy)) {
-          const cutoff = Date.now() - DECISION_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
+          const cutoff = Date.parse(decisionRetentionCutoff(retentionDays, new Date()));
           for (const value of legacy) {
             const record = legacyDecisionRecord(companyId, value);
             if (record && Date.parse(record.at) >= cutoff) {
@@ -283,11 +311,19 @@ export function createPlugin() {
         migratedDecisionLogs.add(companyId);
       };
 
+      /** Startup enumerates persisted writers; no global default can override a company's policy. */
       const pruneDecisionRecords = async (): Promise<void> => {
-        await ctx.db.execute(
-          decisionPruneSql(ctx.db.namespace),
-          [new Date().toISOString(), DECISION_LOG_RETENTION_DAYS],
-        );
+        let companies: Array<{ company_id: string }>;
+        try {
+          companies = await ctx.db.query<{ company_id: string }>(decisionCompaniesSql(ctx.db.namespace), []);
+        } catch {
+          ctx.logger.warn("Could not enumerate decision writers; pruning deferred until next write or startup");
+          return;
+        }
+        for (const { company_id: companyId } of companies) {
+          const retentionDays = await decisionRetentionDays(companyId);
+          if (retentionDays !== null) await pruneCompanyDecisionRecords(companyId, retentionDays);
+        }
       };
 
       const stickyKey = (companyId: string) => ({
@@ -826,6 +862,12 @@ export function createPlugin() {
           capacitySnapshotStale: decision?.capacity.snapshotStale ?? false,
           shadowModelId: decision?.capacity.shadowModelId ?? null,
         });
+        // TOG-7897: enforce this company's own retention window on its next
+        // write, not only at worker startup. `migrateLegacyDecisionLog` runs
+        // first and honors the same window, so the legacy backlog never
+        // re-imports rows the prune is about to delete.
+        const retentionDays = await decisionRetentionDays(companyId);
+        if (retentionDays !== null) await pruneCompanyDecisionRecords(companyId, retentionDays);
         await ctx.metrics.write(`model_router.invoke.${result.outcome}`, 1);
         // TOG-7885 (G8): company-scoped degraded-age counter. Native metrics
         // carry no company tag (see OPERATIONS.md), so the metric name itself
@@ -974,6 +1016,8 @@ export function createPlugin() {
         // selectModel) is unchanged — only the fraction's source changes here.
         const authoritativeBudgetSpentFraction =
           extractAuthoritativeBudgetSpentFraction(actorContext);
+        // Import accounting evidence before it is summed, including rows hidden by short history retention.
+        await migrateLegacyDecisionLog(companyId);
         const monthlyLedger = await readMonthlySpendLedger(
           ctx.db, ctx.logger, companyId, config, new Date(),
         );
@@ -1497,6 +1541,36 @@ export function createPlugin() {
         return await readPendingInvocation(companyId, requestId) ?? { status: "not-found" };
       };
 
+      /**
+       * TOG-7897: the operator read path over durable decision records. The
+       * company id comes from the host-authorized action context and is
+       * bound as $1 — never taken from params — so a caller can only ever
+       * see its own company's routing history. The window start is derived
+       * from the company's configured retention, and the row limit is
+       * clamped to [1, DECISION_QUERY_MAX_LIMIT] so the action cannot page
+       * the table. Isolation is enforced by the SQL company predicate;
+       * stamping returned records with the host scope is only normalization.
+       */
+      const queryDecisionsFor = async (
+        companyId: string,
+        rawLimit: unknown,
+      ): Promise<{ companyId: string; retentionDays: number; limit: number; records: DecisionRecord[] }> => {
+        const retentionDays = (await companyConfig(companyId)).decisionLog.retentionDays;
+        const requested = typeof rawLimit === "number" && Number.isFinite(rawLimit) ? Math.floor(rawLimit) : DECISION_QUERY_MAX_LIMIT;
+        const limit = Math.min(Math.max(requested, 1), DECISION_QUERY_MAX_LIMIT);
+        const windowStart = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1_000).toISOString();
+        const rows = await ctx.db.query<Record<string, unknown>>(
+          decisionQuerySql(ctx.db.namespace),
+          [companyId, windowStart, limit],
+        );
+        return {
+          companyId,
+          retentionDays,
+          limit,
+          records: rows.map((row) => decisionRowToRecord(row, companyId)),
+        };
+      };
+
       invoke = invokeFor;
       invokeAsync = invokeAsyncFor;
       invokeResult = invokeResultFor;
@@ -1577,6 +1651,11 @@ export function createPlugin() {
         const runId = typeof params.runId === "string" && params.runId.length > 0 ? params.runId : "";
         if (!runId) throw new Error("runId is required");
         return cancelRunInvocationsFor(actionCtx.companyId, runId);
+      });
+
+      ctx.actions.register(ACTION_KEYS.queryDecisions, async (params, actionCtx) => {
+        if (!actionCtx.companyId) throw new Error("host-authorized company context is required");
+        return queryDecisionsFor(actionCtx.companyId, params.limit);
       });
 
       ctx.jobs.register(JOB_KEYS.reconcileAsyncInvocations, reconcileAsyncInvocations);
@@ -1786,6 +1865,7 @@ export function createPlugin() {
           if (rawSecretError) errors.push(rawSecretError);
         }
       }
+      // resolveConfig already validates supplied decisionLog values; omitted retention defaults to 90.
       return { ok: errors.length === 0, errors, warnings };
     },
 
