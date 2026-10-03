@@ -402,7 +402,6 @@ def router_mix(now_utc=None):
         ledger = qj("select value_json::text from plugin_state where plugin_id='%s' and state_key='laneLedger' order by updated_at desc limit 1" % ROUTER_PLUGIN_ID)
         pacing_cfg = qj("select config_json->'pacing' from plugin_config where plugin_id='%s'" % ROUTER_PLUGIN_ID)
         models = qj("select config_json->'models' from plugin_config where plugin_id='%s'" % ROUTER_PLUGIN_ID)
-        override_state = qj("select value_json::text from plugin_state where plugin_id='%s' and state_key='zaiPaceOverride' order by updated_at desc limit 1" % ROUTER_PLUGIN_ID)
         rows = q("""select usage_json->>'model', count(*) from heartbeat_runs
       where created_at > now()-interval '60 minutes' and usage_json->>'model' is not null group by 1""")
         share_rows = q("""select count(*) filter (where usage_json->>'model' = '%s'), count(*) from heartbeat_runs
@@ -422,6 +421,19 @@ def router_mix(now_utc=None):
     except Exception as exc:
         emit("platform_router-mix", False, "FAIL: detector data missing/stale (%s)%s" % (exc, ACTION_SUFFIX))
         return
+
+    # OPTIONAL zaiPaceOverride (live-input STOP 20261003-1245): the override
+    # normally has 0 rows, and host qj raises on empty stdout -- that absence
+    # is the default posture, NOT missing data, so it gets its own guarded
+    # fetch outside the fail-closed block above. qj conflates "0 rows" with a
+    # real query failure, so any failure here degrades to None (= deployed
+    # default margin via _override_margin); an override is never fabricated,
+    # and a genuine DB outage still fails closed through the required reads.
+    # Never create override/config rows to satisfy the detector.
+    try:
+        override_state = qj("select value_json::text from plugin_state where plugin_id='%s' and state_key='zaiPaceOverride' order by updated_at desc limit 1" % ROUTER_PLUGIN_ID)
+    except Exception:
+        override_state = None
 
     total = sum(mix.values())
     numerator = mix.get(ZAI_MODEL, 0)  # exact match only: glm-5.3-flash and friends do NOT count

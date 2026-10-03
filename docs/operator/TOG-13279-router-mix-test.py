@@ -69,7 +69,7 @@ class Harness:
     """Stub host plumbing (q/qj/emit) around the artifact module."""
 
     def __init__(self, ledger, models, mix_rows, share_rows, pins_rows=_PINS_DEFAULT,
-                 pacing=None, override=None, error_on=None):
+                 pacing=None, override=None, error_on=None, qj_raise_on=()):
         self.ledger = ledger
         self.models = models
         self.mix_rows = mix_rows
@@ -80,6 +80,9 @@ class Harness:
         self.pacing = pacing
         self.override = override
         self.error_on = error_on or set()
+        # Substrings of the SQL that make fake_qj raise the REAL host error
+        # (host qj raises on empty stdout, e.g. a 0-row optional read).
+        self.qj_raise_on = tuple(qj_raise_on)
         self.emitted = []
 
     def install(self):
@@ -90,6 +93,8 @@ class Harness:
     def fake_qj(self, sql):
         if "qj" in self.error_on:
             raise RuntimeError("qj boom")
+        if any(s in sql for s in self.qj_raise_on):
+            raise RuntimeError("db json query failed")
         if "laneLedger" in sql:
             return self.ledger
         if "zaiPaceOverride" in sql:
@@ -472,13 +477,15 @@ class EmitIntegrationTest(unittest.TestCase):
 
         wrapper = load_emit_wrapper(before)
         for ok in (True, False):
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 result = wrapper.emit("platform_router-mix", ok, "hello info")
             self.assertEqual(calls[-1], ("platform_router-mix", ok, "hello info"))
             self.assertEqual(result, "pushed-%s" % ok)
-            self.assertIn("hello info", buf.getvalue())
-            self.assertIn("ok=%s" % ok, buf.getvalue())
+            # INFO goes to stderr; stdout stays clean for the TSV push stream.
+            self.assertEqual(out.getvalue(), "")
+            self.assertIn("hello info", err.getvalue())
+            self.assertIn("ok=%s" % ok, err.getvalue())
 
     def test_wrapper_shares_signature_with_host_emit(self):
         import inspect
@@ -516,18 +523,20 @@ class EmitAssemblyTest(unittest.TestCase):
     def test_wrapper_repairs_host_shaped_before_on_success(self):
         record = []
         wrapper = load_emit_wrapper(host_shaped_before_emit(record))
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             result = wrapper.emit("platform_router-mix", True, "pace info")
         # BEFORE alone would have dropped this; the wrapper must log it ...
-        self.assertIn("pace info", buf.getvalue())
+        self.assertIn("pace info", err.getvalue())
+        self.assertEqual(out.getvalue(), "")
         # ... and still push identical positional args through the BEFORE transport.
         self.assertEqual(result, "pushed-True")
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             wrapper.emit("platform_router-mix", False, "boom info")
         self.assertEqual(record[-1], ("platform_router-mix", False, "boom info"))
-        self.assertIn("boom info", buf.getvalue())
+        self.assertIn("boom info", err.getvalue())
+        self.assertEqual(out.getvalue(), "")
 
     def test_all_emit_call_sites_are_positional(self):
         import ast
@@ -571,6 +580,112 @@ class EmitAssemblyTest(unittest.TestCase):
                  if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "emit"]
         self.assertTrue(calls)
         self.assertTrue(all(not c.keywords for c in calls))
+
+
+class OptionalOverrideTest(unittest.TestCase):
+    """Live-input STOP: 0-row zaiPaceOverride makes host qj raise; absence is
+    the default posture, not missing data. The detector must evaluate with
+    the deployed default margin, while genuine required-read failures still
+    fail closed."""
+
+    def run_zero_no_override_row(self, ledger, share, **kw):
+        # Models the REAL host qj behavior on an empty stdout (0 rows).
+        h = Harness(ledger, ZAI_ROSTER, [], share, qj_raise_on=("zaiPaceOverride",), **kw)
+        return h.run(TUE_0730)
+
+    def test_absent_override_uses_default_margin(self):
+        # Weekly 0.05 <= elapsed(~0) + default 0.15 -> open; 5h low, no pins
+        # -> explicit room -> FAIL with room (NOT "detector data").
+        _, ok, msg = self.run_zero_no_override_row(ROOM_LEDGER, SHARE_LOW)
+        self.assertFalse(ok, msg)
+        self.assertIn("lane has room", msg)
+        self.assertNotIn("detector data", msg)
+
+    def test_absent_override_preserves_denial(self):
+        # Weekly closed -> denial from the weekly leg alone -> PASS.
+        _, ok, msg = self.run_zero_no_override_row(WEEKLY_DENIED_LEDGER, SHARE_LOW)
+        self.assertTrue(ok, msg)
+        self.assertIn("weekly pace gate closed", msg)
+
+    def test_required_read_failure_still_closes(self):
+        # The same host error on a REQUIRED read (ledger) must fail closed.
+        h = Harness(ROOM_LEDGER, ZAI_ROSTER, [], SHARE_LOW, qj_raise_on=("laneLedger",))
+        _, ok, msg = h.run(TUE_0730)
+        self.assertFalse(ok, msg)
+        self.assertTrue(msg.startswith("FAIL: detector data"), msg)
+
+    def test_present_override_still_applies(self):
+        # A live override row keeps working when the read succeeds.
+        _, ok, msg = Harness(ROOM_LEDGER, ZAI_ROSTER, [], SHARE_LOW,
+                             override={"margin": 0.0, "until": "2030-01-01T00:00:00Z"}).run(TUE_0730)
+        self.assertTrue(ok, msg)
+        self.assertIn("weekly pace gate closed", msg)
+
+
+def tsv_push_before_emit(record):
+    """Producer fixture shaped like the host transport: BEFORE emit prints ONE
+    TSV line (key, true|false, err) to stdout; err defaults to "". Faithful
+    BEFORE behavior: the message text is delivered only when ok is false."""
+
+    def emit(key, ok, err=""):
+        line = "%s\t%s\t%s" % (key, "true" if ok else "false", err if not ok else "")
+        record.append(line)
+        print(line, flush=True)
+        return "pushed"
+    return emit
+
+
+def consume_like_push_script(stdout_text):
+    """Consumer fixture mirroring push-oncall-detect.sh: every stdout line must
+    split into tab fields with a valid endpoint key and strict true|false.
+    Returns (valid_lines, malformed_lines)."""
+    import re
+    valid, malformed = [], []
+    for line in stdout_text.splitlines():
+        fields = line.split("\t")
+        key_ok = len(fields) >= 1 and re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", fields[0]) is not None
+        ok_ok = len(fields) >= 2 and fields[1] in ("true", "false")
+        (valid if (len(fields) == 3 and key_ok and ok_ok) else malformed).append(line)
+    return valid, malformed
+
+
+class TransportTest(unittest.TestCase):
+    """End-to-end producer/consumer: wrapper + BEFORE stdout must be pure TSV
+    (live-input STOP: space-separated INFO was rejected as a bad endpoint key)."""
+
+    def test_stdout_stays_pure_tsv_info_on_stderr(self):
+        pushed = []
+        wrapper = load_emit_wrapper(tsv_push_before_emit(pushed))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            wrapper.emit("platform_router-mix", True, "OK: numerator 3/40 | INFO: cliproxy-claude pace=behind")
+            wrapper.emit("platform_router-mix", False, "FAIL: numerator 0/40 | INFO: cliproxy-zai pace=behind")
+        valid, malformed = consume_like_push_script(out.getvalue())
+        self.assertEqual(malformed, [])
+        self.assertEqual(len(valid), 2)
+        # Success: BEFORE drops the text (empty err); the wrapper's stderr
+        # copy is the ONLY record of the success INFO.
+        self.assertEqual(valid[0], "platform_router-mix\ttrue\t")
+        # Failure: BEFORE delivers the text in the err field, as before.
+        self.assertTrue(valid[1].startswith("platform_router-mix\tfalse\tFAIL: numerator 0/40"))
+        self.assertIn("pace=behind", valid[1])
+        # Both INFO texts survive on stderr (cron log, not the pipe).
+        self.assertIn("cliproxy-claude pace=behind", err.getvalue())
+        self.assertIn("cliproxy-zai pace=behind", err.getvalue())
+
+    def test_before_default_err_preserved(self):
+        import inspect
+        pushed = []
+        before = tsv_push_before_emit(pushed)
+        self.assertEqual(list(inspect.signature(before).parameters), ["key", "ok", "err"])
+        self.assertEqual(inspect.signature(before).parameters["err"].default, "")
+        wrapper = load_emit_wrapper(before)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            wrapper.emit("platform_router-mix", True, "msg")
+        valid, malformed = consume_like_push_script(out.getvalue())
+        self.assertEqual(malformed, [])
+        self.assertEqual(valid, ["platform_router-mix\ttrue\t"])
 
 
 class InfoRetentionTest(unittest.TestCase):

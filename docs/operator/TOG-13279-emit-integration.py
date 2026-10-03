@@ -11,16 +11,27 @@
 #
 # ASSEMBLY SHAPE (correction v2, see `operator-detector-assembly-stop-20261003-1245`):
 # the instructed host file contains TWO module-level emit definitions by
-# design: the untouched BEFORE `def emit(key, ok, err)` first, then this
+# design: the untouched BEFORE `def emit(key, ok, err="")` first, then this
 # wrapper `def emit(name, ok, msg)` with `_before_emit` bound between them.
 # Name rebinding is the mechanism, not a defect: after this block runs, the
 # module name `emit` IS the wrapper, and the wrapper delegates the push to
 # `_before_emit` (the BEFORE implementation). A prior VERIFY wrongly required
 # one definition; the VERIFY below asserts the intended two-def binding
 # instead. All emit call sites (BEFORE router_mix + new detector: 7 total) are
-# positional, so the (key,ok,err)/(name,ok,msg) parameter-name difference is
-# inert -- proven by `EmitAssemblyTest` in TOG-13279-router-mix-test.py, which
-# assembles a host-shaped fixture and runs these same assertions offline.
+# positional with 3 args, so the (key,ok,err)/(name,ok,msg) parameter-name
+# difference is inert -- proven by `EmitAssemblyTest` in
+# TOG-13279-router-mix-test.py, which assembles a host-shaped fixture and runs
+# these same assertions offline.
+#
+# TRANSPORT (correction v4, see `operator-detector-live-input-stop-20261003-1245`):
+# push-oncall-detect.sh pipes stdout EXCLUSIVELY through
+# `while IFS=<tab> read -r key ok err` into gatus_push, which validates the
+# key and requires success literally true|false. Any non-TSV stdout line
+# (including a human-readable INFO line) is consumed as an endpoint and
+# locally rejected. The wrapper therefore logs INFO to STDERR, which is not
+# piped: stdout carries only the BEFORE TSV heartbeat line, byte-identical to
+# today, while INFO still lands in the cron log. Both wrapper args and the
+# delegation stay positional, compatible with BEFORE's `err=""` default.
 #
 # Deploy (host operator under TOG-12270, with BEFORE copy + rollback):
 #   1. Locate the BEFORE `def emit(` line: there must be EXACTLY ONE line
@@ -49,7 +60,9 @@
 #   bind = src.index('_before_emit = emit')
 #   print('PASS: _before_emit binds BEFORE impl before wrapper def' if src.index('TOG-13279 emit integration (BEGIN)') < bind < src.index('def emit(name, ok, msg):') else 'FAIL: binding order')
 #   print('PASS: wrapper delegates push positionally' if '_before_emit(name, ok, msg)' in src else 'FAIL: delegation')
-#   print('PASS: wrapper logs on both paths' if 'print(' in src[src.index('def emit(name, ok, msg):'):] else 'FAIL: logging')
+#   _wstart = src.index('def emit(name, ok, msg):')
+#   _wend = src.index('TOG-13279 emit integration (END)')
+#   print('PASS: wrapper logs to stderr (stdout stays pure TSV)' if 'file=_sys.stderr' in src[_wstart:_wend] else 'FAIL: logging')
 #   calls = [n for n in ast.walk(tree) for n in [n] if isinstance(n, ast.Call) and getattr(n.func, 'id', '') == 'emit']
 #   print('PASS: all emit calls positional (%d sites)' % len(calls) if calls and all(not c.keywords for c in calls) else 'FAIL: keyword emit call')
 #   EOF
@@ -60,16 +73,18 @@
 # Transport-preserving success-INFO fix: BEFORE emit() delivered `msg` only on
 # the not-ok path. This wrapper keeps the BEFORE emit as the single push path
 # (shared-consumer compatible: identical positional (name, ok, msg) call, same
-# return) and additionally logs `msg` to stdout on BOTH paths so the cron log
-# retains pace=behind INFO on success. Placement: directly after the BEFORE
-# `def emit(...)` body; `_before_emit` binds the BEFORE implementation. If
-# `emit` is undefined here, NameError fails the cron run loudly (fail closed,
-# no silent swallow).
+# return) and additionally logs `msg` to STDERR on BOTH paths so the cron log
+# retains pace=behind INFO on success without polluting the stdout TSV stream
+# that push-oncall-detect.sh pipes into gatus_push. Placement: directly after
+# the BEFORE `def emit(...)` body; `_before_emit` binds the BEFORE
+# implementation. If `emit` is undefined here, NameError fails the cron run
+# loudly (fail closed, no silent swallow).
 _before_emit = emit  # noqa: F821 -- bound from the BEFORE host module scope
 
 
 def emit(name, ok, msg):
-    """TOG-13279 wrapper: always log the message text, then delegate the push."""
-    print("%s ok=%s %s" % (name, ok, msg), flush=True)
+    """TOG-13279 wrapper: always log the message text to stderr, then delegate the push."""
+    import sys as _sys
+    print("%s ok=%s %s" % (name, ok, msg), file=_sys.stderr, flush=True)
     return _before_emit(name, ok, msg)
 # ===== TOG-13279 emit integration (END) =====
