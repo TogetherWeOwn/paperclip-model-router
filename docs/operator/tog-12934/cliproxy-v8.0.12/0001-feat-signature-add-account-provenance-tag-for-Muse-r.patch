@@ -1,0 +1,231 @@
+From c7c7c8316a8c47f47286f77c59af99902fa96756 Mon Sep 17 00:00:00 2001
+From: Paperclip Agent <agent@togetherweown.invalid>
+Date: Sat, 3 Oct 2026 01:56:00 +0000
+Subject: [PATCH 1/4] feat(signature): add account provenance tag for Muse
+ reasoning envelopes
+
+Meta binds each reasoning encrypted_content envelope to the account that
+issued it and rejects a replay through any other account. Add a meta#<account>#<envelope>
+tag on top of the existing provider-prefix mechanism so the Meta executor can later tell
+whether an envelope came from the credential it selected.
+
+Detection still never claims a tagged envelope for any provider, so every other
+lane treats it exactly like the raw envelope: foreign.
+---
+ internal/signature/meta_reasoning.go         |  71 +++++++++++++
+ internal/signature/meta_reasoning_test.go    | 100 +++++++++++++++++++
+ internal/signature/provider_compatibility.go |   6 ++
+ 3 files changed, 177 insertions(+)
+ create mode 100644 internal/signature/meta_reasoning.go
+ create mode 100644 internal/signature/meta_reasoning_test.go
+
+diff --git a/internal/signature/meta_reasoning.go b/internal/signature/meta_reasoning.go
+new file mode 100644
+index 00000000..0029d07e
+--- /dev/null
++++ b/internal/signature/meta_reasoning.go
+@@ -0,0 +1,71 @@
++package signature
++
++import "strings"
++
++// SignatureProviderMeta is Meta's Muse model family. Its reasoning
++// encrypted_content is an opaque envelope bound to the Meta account that issued
++// it: Meta rejects a replay from any other account with
++// "reasoning encrypted_content was not issued to this caller". It carries no
++// self-describing marker, so detection never yields this family either. It is
++// only ever established through the explicit provenance tag below.
++const SignatureProviderMeta SignatureProvider = "meta"
++
++// MetaReasoningTagPrefix opens the provenance tag the proxy wraps around Muse
++// reasoning handed to a client: meta#<account-key>#<envelope>. The client
++// replays the whole string; the Meta executor keeps the envelope only when the
++// account key names the credential it selected for the request.
++const MetaReasoningTagPrefix = "meta#"
++
++// maxMetaReasoningAccountKeyLen bounds the account key so a hostile or corrupted
++// replay cannot make the tag parser retain an arbitrarily long prefix.
++const maxMetaReasoningAccountKeyLen = 64
++
++// TagMetaReasoning binds a Muse reasoning envelope to the account that issued
++// it. It returns the envelope unchanged when either part is empty or the key is
++// not a valid account key, so a caller that cannot identify the account never
++// emits a tag that would later be mistaken for provenance.
++func TagMetaReasoning(accountKey, envelope string) string {
++	if envelope == "" || !validMetaReasoningAccountKey(accountKey) {
++		return envelope
++	}
++	if _, _, tagged := ParseMetaReasoningTag(envelope); tagged {
++		return envelope
++	}
++	return MetaReasoningTagPrefix + accountKey + "#" + envelope
++}
++
++// ParseMetaReasoningTag splits meta#<account-key>#<envelope>. ok is false for
++// anything that is not a well-formed tag, including every legacy untagged Muse
++// envelope, so callers can treat "not a tag" and "foreign tag" differently.
++func ParseMetaReasoningTag(raw string) (accountKey, envelope string, ok bool) {
++	raw = strings.TrimSpace(raw)
++	if !strings.HasPrefix(raw, MetaReasoningTagPrefix) {
++		return "", "", false
++	}
++	accountKey, envelope, ok = strings.Cut(raw[len(MetaReasoningTagPrefix):], "#")
++	if !ok || envelope == "" || !validMetaReasoningAccountKey(accountKey) {
++		return "", "", false
++	}
++	return accountKey, envelope, true
++}
++
++// IsMetaReasoningTagged reports whether raw is a well-formed Muse provenance tag.
++func IsMetaReasoningTagged(raw string) bool {
++	_, _, ok := ParseMetaReasoningTag(raw)
++	return ok
++}
++
++func validMetaReasoningAccountKey(key string) bool {
++	if key == "" || len(key) > maxMetaReasoningAccountKeyLen {
++		return false
++	}
++	for i := 0; i < len(key); i++ {
++		c := key[i]
++		switch {
++		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
++		default:
++			return false
++		}
++	}
++	return true
++}
+diff --git a/internal/signature/meta_reasoning_test.go b/internal/signature/meta_reasoning_test.go
+new file mode 100644
+index 00000000..4523261e
+--- /dev/null
++++ b/internal/signature/meta_reasoning_test.go
+@@ -0,0 +1,100 @@
++package signature
++
++import (
++	"strings"
++	"testing"
++)
++
++const testMetaEnvelope = "Q-PaDgA1b2C3d4E5f6G7h8I9j0K_lMnOpQrStUvWxYz-0123456789AbCdEfGhIjKlMnOpQrStUvWxYz"
++
++func TestTagMetaReasoningRoundTrip(t *testing.T) {
++	tagged := TagMetaReasoning("a1b2c3", testMetaEnvelope)
++	if want := "meta#a1b2c3#" + testMetaEnvelope; tagged != want {
++		t.Fatalf("tag = %q, want %q", tagged, want)
++	}
++	key, envelope, ok := ParseMetaReasoningTag(tagged)
++	if !ok || key != "a1b2c3" || envelope != testMetaEnvelope {
++		t.Fatalf("parse = (%q, %q, %v)", key, envelope, ok)
++	}
++	if !IsMetaReasoningTagged(tagged) {
++		t.Fatal("IsMetaReasoningTagged = false for a well-formed tag")
++	}
++}
++
++func TestTagMetaReasoningIsIdempotentAndRefusesWithoutProvenance(t *testing.T) {
++	tagged := TagMetaReasoning("acct", testMetaEnvelope)
++	if again := TagMetaReasoning("other", tagged); again != tagged {
++		t.Fatalf("retagging a tagged envelope changed it: %q", again)
++	}
++	for _, key := range []string{"", "has space", "has#hash", strings.Repeat("a", maxMetaReasoningAccountKeyLen+1), "ünï"} {
++		if got := TagMetaReasoning(key, testMetaEnvelope); got != testMetaEnvelope {
++			t.Fatalf("key %q produced a tag: %q", key, got)
++		}
++	}
++	if got := TagMetaReasoning("acct", ""); got != "" {
++		t.Fatalf("empty envelope produced %q", got)
++	}
++}
++
++func TestParseMetaReasoningTagRejectsEverythingElse(t *testing.T) {
++	for _, raw := range []string{
++		"",
++		testMetaEnvelope, // legacy untagged Muse envelope
++		"meta#",
++		"meta#acct",
++		"meta#acct#",
++		"meta##" + testMetaEnvelope,
++		"meta#bad key#" + testMetaEnvelope,
++		"gpt#acct#" + testMetaEnvelope,
++		"claude#" + testMetaEnvelope,
++		"META#acct#" + testMetaEnvelope, // the prefix is case-sensitive: only the proxy mints it
++	} {
++		if key, envelope, ok := ParseMetaReasoningTag(raw); ok {
++			t.Fatalf("ParseMetaReasoningTag(%q) = (%q, %q, true), want not a tag", raw, key, envelope)
++		}
++	}
++}
++
++func TestMetaTagParticipatesInProviderPrefixMechanism(t *testing.T) {
++	provider, rest, ok := SplitSignatureProviderPrefix("meta#acct#" + testMetaEnvelope)
++	if !ok || provider != SignatureProviderMeta || rest != "acct#"+testMetaEnvelope {
++		t.Fatalf("SplitSignatureProviderPrefix = (%q, %q, %v)", provider, rest, ok)
++	}
++}
++
++// A tagged Muse envelope must be exactly as unreplayable on every non-Meta lane
++// as the raw envelope was before the tag existed. This is what keeps the change
++// from reaching the Claude, GPT, Gemini, Kimi and Grok lanes.
++func TestMetaTagIsForeignToEveryOtherLane(t *testing.T) {
++	tagged := TagMetaReasoning("acct", testMetaEnvelope)
++	if got := DetectSignatureProvider(tagged); got != SignatureProviderUnknown {
++		t.Fatalf("DetectSignatureProvider(tagged) = %q, want unknown", got)
++	}
++	if got, raw := DetectSignatureProvider(tagged), DetectSignatureProvider(testMetaEnvelope); got != raw {
++		t.Fatalf("tagged detects as %q but the raw envelope detects as %q", got, raw)
++	}
++	if IsRecognizedReasoningSignature(tagged) {
++		t.Fatal("tagged Muse envelope is recognized as a replayable reasoning signature")
++	}
++	for _, target := range []SignatureProvider{
++		SignatureProviderClaude, SignatureProviderGemini, SignatureProviderGPT,
++		SignatureProviderKimi, SignatureProviderGrok, SignatureProviderSWE,
++	} {
++		for _, kind := range []SignatureBlockKind{SignatureBlockKindUnknown, SignatureBlockKindClaudeThinking, SignatureBlockKindGPTReasoning} {
++			got := DecideSignatureCompatibility(target, tagged, kind)
++			want := DecideSignatureCompatibility(target, testMetaEnvelope, kind)
++			if got.Compatible || got.Action != want.Action || got.ReplacementSignature != want.ReplacementSignature {
++				t.Fatalf("target %q kind %q: tagged decision %+v differs from raw decision %+v", target, kind, got, want)
++			}
++		}
++	}
++	if _, err := InspectGrokEncryptedContent(tagged); err == nil {
++		t.Fatal("Grok accepted a Muse-tagged envelope")
++	}
++	if IsValidKimiThinkingSignature(tagged) {
++		t.Fatal("Kimi accepted a Muse-tagged envelope")
++	}
++	if IsValidGPTReasoningSignature(tagged) {
++		t.Fatal("GPT accepted a Muse-tagged envelope")
++	}
++}
+diff --git a/internal/signature/provider_compatibility.go b/internal/signature/provider_compatibility.go
+index 6df2c397..d9e60ec4 100644
+--- a/internal/signature/provider_compatibility.go
++++ b/internal/signature/provider_compatibility.go
+@@ -183,6 +183,10 @@ func DetectSignatureProviderForBlock(rawSignature string, blockKind SignatureBlo
+ 			if strings.HasPrefix(unprefixed, "sealed.v1.") {
+ 				return SignatureProviderSWE
+ 			}
++		case SignatureProviderMeta:
++			// A Muse envelope is only replayable to the account that issued it, which
++			// only the Meta executor can verify. Every other target must treat it as
++			// foreign, exactly as it treated the raw envelope before the tag existed.
+ 		}
+ 		return SignatureProviderUnknown
+ 	}
+@@ -345,6 +349,8 @@ func SignatureProviderFromCachePrefix(prefix string) SignatureProvider {
+ 		return SignatureProviderGPT
+ 	case "swe", "sealed":
+ 		return SignatureProviderSWE
++	case "meta":
++		return SignatureProviderMeta
+ 	default:
+ 		return SignatureProviderUnknown
+ 	}
+-- 
+2.47.3
+

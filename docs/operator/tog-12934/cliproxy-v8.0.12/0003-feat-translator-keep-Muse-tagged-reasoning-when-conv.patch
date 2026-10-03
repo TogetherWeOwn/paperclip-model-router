@@ -1,0 +1,109 @@
+From 11cd036713d8d41e6ec741c26b67da9765c1fdba Mon Sep 17 00:00:00 2001
+From: Paperclip Agent <agent@togetherweown.invalid>
+Date: Sat, 3 Oct 2026 01:56:00 +0000
+Subject: [PATCH 3/4] feat(translator): keep Muse-tagged reasoning when
+ converting Claude requests for Muse models
+
+appendReasoningContent kept only GPT and Grok signatures, so Muse never saw its own
+earlier reasoning between tool calls. Pass a provenance-tagged Muse signature through
+unchanged for Muse targets; the Meta executor decides whether it is replayable.
+Untagged Muse signatures and every other target behave as before.
+---
+ .../codex/claude/codex_claude_request.go      | 13 +++++
+ .../codex/claude/codex_claude_request_test.go | 49 +++++++++++++++++++
+ 2 files changed, 62 insertions(+)
+
+diff --git a/internal/translator/codex/claude/codex_claude_request.go b/internal/translator/codex/claude/codex_claude_request.go
+index 85f9cee1..28662bac 100644
+--- a/internal/translator/codex/claude/codex_claude_request.go
++++ b/internal/translator/codex/claude/codex_claude_request.go
+@@ -165,6 +165,12 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool,
+ 
+ 				rawSignature := part.Get("signature").String()
+ 				signature, ok := sigcompat.CompatibleSignatureForProvider(sigcompat.SignatureProviderGPT, rawSignature)
++				if !ok && codexClaudeTargetAcceptsMetaReasoning(modelName) && sigcompat.IsMetaReasoningTagged(rawSignature) {
++					// Keep the proxy's provenance tag intact. Only the Meta executor knows which
++					// account it selected, so it alone decides whether the envelope is replayable.
++					signature = strings.TrimSpace(rawSignature)
++					ok = true
++				}
+ 				if !ok && preserveEmptyThinkingBlocks && part.Get("signature").Type == gjson.String && strings.TrimSpace(rawSignature) != "" &&
+ 					sigcompat.DetectSignatureProviderForBlock(rawSignature, sigcompat.SignatureBlockKindClaudeThinking) == sigcompat.SignatureProviderUnknown {
+ 					signature = rawSignature
+@@ -471,6 +477,13 @@ func codexClaudeTargetAcceptsGrokSignature(modelName string) bool {
+ 	return strings.Contains(baseModel, "grok")
+ }
+ 
++// codexClaudeTargetAcceptsMetaReasoning reports whether modelName is a Meta Muse
++// model, the only target that can replay a Muse-tagged reasoning envelope.
++func codexClaudeTargetAcceptsMetaReasoning(modelName string) bool {
++	baseModel := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(modelName).ModelName))
++	return strings.Contains(baseModel, "muse")
++}
++
+ func normalizeCodexServiceTier(result gjson.Result) string {
+ 	if !result.Exists() || result.Type != gjson.String {
+ 		return ""
+diff --git a/internal/translator/codex/claude/codex_claude_request_test.go b/internal/translator/codex/claude/codex_claude_request_test.go
+index c26d9553..4de00133 100644
+--- a/internal/translator/codex/claude/codex_claude_request_test.go
++++ b/internal/translator/codex/claude/codex_claude_request_test.go
+@@ -691,6 +691,55 @@ func TestConvertClaudeRequestToCodex_IgnoresGrokSignatureForNonGrokTargets(t *te
+ 	}
+ }
+ 
++const testMuseTaggedSignature = "meta#4f9a1c2b7d3e#Q-PaDgA1b2C3d4E5f6G7h8I9j0K_lMnOpQrStUvWxYz-0123456789AbCdEf"
++
++func TestConvertClaudeRequestToCodex_MuseTaggedSignatureToReasoningItem(t *testing.T) {
++	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
++	payload, _ = sjson.SetBytes(payload, "messages.0.content.0.signature", testMuseTaggedSignature)
++
++	for _, modelName := range []string{"muse-spark-1.3", "muse-spark-1.2-contributor", "Muse-Spark-1.3(high)"} {
++		t.Run(modelName, func(t *testing.T) {
++			out := ConvertClaudeRequestToCodex(modelName, payload, false)
++			reasoning := gjson.GetBytes(out, "input.0")
++			if reasoning.Get("type").String() != "reasoning" {
++				t.Fatalf("input.0 type = %q, want reasoning; output=%s", reasoning.Get("type").String(), out)
++			}
++			// The tag must reach the Meta executor untouched: the translator cannot know
++			// which account the request will be routed to.
++			if got := reasoning.Get("encrypted_content").String(); got != testMuseTaggedSignature {
++				t.Fatalf("encrypted_content = %q, want the tagged signature unchanged", got)
++			}
++		})
++	}
++}
++
++// Untagged Muse envelopes (anything issued before the provenance tag existed, or
++// replayed by a client that stripped it) have no provable account, so they are
++// still dropped here exactly as before.
++func TestConvertClaudeRequestToCodex_DropsUntaggedMuseSignature(t *testing.T) {
++	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
++	payload, _ = sjson.SetBytes(payload, "messages.0.content.0.signature", "Q-PaDgA1b2C3d4E5f6G7h8I9j0K_lMnOpQrStUvWxYz-0123456789AbCdEf")
++
++	out := ConvertClaudeRequestToCodex("muse-spark-1.3", payload, false)
++	if got := countRequestInputItemsByType(out, "reasoning"); got != 0 {
++		t.Fatalf("got %d reasoning items for an untagged Muse signature, want 0; output=%s", got, out)
++	}
++}
++
++func TestConvertClaudeRequestToCodex_IgnoresMuseTaggedSignatureForNonMuseTargets(t *testing.T) {
++	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
++	payload, _ = sjson.SetBytes(payload, "messages.0.content.0.signature", testMuseTaggedSignature)
++
++	for _, modelName := range []string{"gpt-5.4", "claude-sonnet-4-6", "grok-4.5", "gemini-3-pro"} {
++		t.Run(modelName, func(t *testing.T) {
++			out := ConvertClaudeRequestToCodex(modelName, payload, false)
++			if got := countRequestInputItemsByType(out, "reasoning"); got != 0 {
++				t.Fatalf("got %d reasoning items for non-Muse target, want 0; output=%s", got, out)
++			}
++		})
++	}
++}
++
+ func TestConvertClaudeRequestToCodex_IgnoresNonCodexThinkingSignatures(t *testing.T) {
+ 	tests := []struct {
+ 		name      string
+-- 
+2.47.3
+
