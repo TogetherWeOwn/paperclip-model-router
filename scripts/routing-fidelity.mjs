@@ -11,15 +11,17 @@
  * See FIDELITY_CAVEAT. Re-point the decision fetch at
  * `contextSnapshot.modelDecision` once TOG-11792 ships.
  *
- * Notes on the API surface used here:
- * - `GET .../heartbeat-runs?limit=&offset=` paginates (default order is
- *   newest-first). There is no server-side time filter — `since` is ignored —
- *   so the window is applied client-side on `createdAt`.
+ * Notes on the API surface used here (details in scripts/lib/heartbeat-runs.mjs):
+ * - `GET .../heartbeat-runs` returns the newest `limit` rows (hard cap 1000)
+ *   and ignores `offset` and every cursor or time param, so it cannot be paged
+ *   backwards. `agentId=` is honored: the job reads one page per agent, dedupes
+ *   by run id and applies the window client-side on `createdAt`. An agent whose
+ *   whole page sits inside the window is listed in `truncatedAgents`.
  * - Runs with no `usage_json.model` are counted separately, never as matches.
  *
  * Usage:
  *   PAPERCLIP_API_URL=... PAPERCLIP_API_KEY=... PAPERCLIP_COMPANY_ID=... \
- *     node scripts/routing-fidelity.mjs --hours 24 [--max-runs 2000] [--markdown out.md]
+ *     node scripts/routing-fidelity.mjs --hours 24 [--until ISO] [--max-runs N] [--markdown out.md]
  */
 
 import { readFileSync } from "node:fs";
@@ -28,6 +30,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { collectRuns } from "./lib/heartbeat-runs.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -67,8 +70,8 @@ if (!API || !KEY || !COMPANY) {
 }
 
 const HOURS = Number(args.hours ?? 24);
-const MAX_RUNS = Number(args["max-runs"] ?? 2000);
-const PAGE = 200;
+// Optional cap on kept runs (newest first). Unset means the whole window.
+const MAX_RUNS = args["max-runs"] === undefined ? Infinity : Number(args["max-runs"]);
 
 async function api(path) {
   const res = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${KEY}` } });
@@ -84,24 +87,34 @@ function isSecretRef(value) {
   );
 }
 
-const sinceMs = Date.now() - HOURS * 3600 * 1000;
+// Window end defaults to now; --until <ISO> re-runs an earlier window. The pin
+// side of the proxy is still the CURRENT pin, and the 1000-row-per-agent cap
+// makes older windows more likely to be reported as truncated.
+const untilMs = args.until === undefined ? Date.now() : Date.parse(args.until);
+if (!Number.isFinite(untilMs)) {
+  console.error(`routing-fidelity: --until must be an ISO timestamp, got ${args.until}`);
+  process.exit(2);
+}
+const sinceMs = untilMs - HOURS * 3600 * 1000;
 
-// Newest-first pages; stop once a page's oldest row predates the window.
-const rows = [];
-for (let offset = 0; rows.length < MAX_RUNS; offset += PAGE) {
-  const page = await api(`/api/companies/${COMPANY}/heartbeat-runs?limit=${PAGE}&offset=${offset}`);
-  if (!Array.isArray(page) || page.length === 0) break;
-  for (const r of page) {
-    const created = Date.parse(r?.createdAt ?? "");
-    if (Number.isFinite(created) && created < sinceMs) {
-      offset = Number.MAX_SAFE_INTEGER; // stop outer loop after this page
-      break;
-    }
-    rows.push(r);
-    if (rows.length >= MAX_RUNS) break;
-  }
-  if (offset === Number.MAX_SAFE_INTEGER) break;
-  if (page.length < PAGE) break;
+const {
+  rows,
+  distinctRuns,
+  agentsScanned,
+  duplicateRowsDropped,
+  undatedRows,
+  truncatedAgents,
+  cappedAtMaxRuns,
+} = await collectRuns({ api, companyId: COMPANY, sinceMs, untilMs, maxRuns: MAX_RUNS });
+
+for (const a of truncatedAgents) {
+  console.warn(
+    `routing-fidelity: WARNING ${a.name ?? a.agentId} returned a full page of ${a.rows} runs reaching back only to ${a.oldestFetched}; ` +
+      `its older in-window runs are not counted`,
+  );
+}
+if (cappedAtMaxRuns) {
+  console.warn(`routing-fidelity: WARNING --max-runs ${MAX_RUNS} dropped the oldest in-window runs`);
 }
 
 const issueIds = [...new Set(rows.map((r) => r?.contextSnapshot?.issueId).filter(Boolean))];
@@ -160,9 +173,16 @@ const report = computeFidelity(
 const pct = (x) => `${(x * 100).toFixed(1)}%`;
 const output = {
   windowHours: HOURS,
+  windowUntil: new Date(untilMs).toISOString(),
   generatedAt: new Date().toISOString(),
   windowOldest,
   windowNewest,
+  distinctRuns,
+  agentsScanned,
+  duplicateRowsDropped,
+  undatedRows,
+  truncatedAgents,
+  cappedAtMaxRuns,
   distinctIssues: issueIds.length,
   rawExactMatches: rawMatches,
   rawExactDenominator: rawDenominator,
@@ -178,7 +198,7 @@ if (args.markdown) {
     ``,
     `| Metric | Value | Target |`,
     `|---|---|---|`,
-    `| Runs in window | ${report.totalRuns} (${windowOldest} → ${windowNewest}, ${issueIds.length} issues) | — |`,
+    `| Runs in window | ${distinctRuns} distinct, ${report.totalRuns} issue-bound (${windowOldest} → ${windowNewest}, ${issueIds.length} issues, ${agentsScanned} agents) | — |`,
     `| Routed share | ${report.routedRuns}/${report.totalRuns} (${pct(report.routedShare)}) | ≥ 99% |`,
     `| No-model runs | ${report.noModelRuns} | counted separately |`,
     `| Fidelity (normalized) | ${report.fidelityMatches}/${report.fidelityDenominator} (${pct(report.fidelity)}) | ≥ 99% |`,
@@ -188,6 +208,13 @@ if (args.markdown) {
     `| Escaped runs (configuration_incomplete) | ${report.escapedRuns} | 0/day |`,
     `| Pins with secret_ref env | ${report.staleSecretPins}/${report.pinsTotal} | 0 |`,
     ...(report.escapedIssueIds.length ? [``, `Escaped issues: ${report.escapedIssueIds.join(", ")}`] : []),
+    ...(truncatedAgents.length
+      ? [
+          ``,
+          `Truncated (the API returns at most 1000 runs per agent and these pages stop short of the window start; their older runs are not counted):`,
+          ...truncatedAgents.map((a) => `- ${a.name ?? a.agentId}: ${a.rows} runs, oldest fetched ${a.oldestFetched}`),
+        ]
+      : []),
     ``,
   ].join("\n");
   const { writeFileSync } = await import("node:fs");
