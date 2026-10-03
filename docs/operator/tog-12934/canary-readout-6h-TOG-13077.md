@@ -52,7 +52,30 @@ response", 05:04Z). No failure mentions replay or affinity.
   notices/parks + end_turn queries (not yet run).
 - Tool calls/run fall: needs operator query.
 
-## Still operator-owned (not measurable from here)
+## Correction (operator 10:30Z + CTO verification) — control was on Sonnet 06:10:28–07:41:55Z
+
+The "no Sonnet in sample" claim above was a sampling artifact (latest-2-runs
+per agent missed the burn window); the operator's full-window audit stands.
+The guard moved all 9 control agents to `claude-sonnet-5-5` for ~91 min, so the
+409-run control total mixes models. Adopted comparison frame going forward:
+clean windows **A = 04:05–06:10:28Z** and **B = 07:42–10:00Z**
+(see card document `operator-burn-window-confound-20261003`).
+
+Operator clean-window numbers: A+B canary 330 runs / 1 model failure /
+11 notice-issues (3.3/100); control 275 / 0 / 22 (8.0/100).
+Replay telemetry 03:54–10:28Z: 8,817 canary requests with envelopes, item hit
+rate 97.0% (340,104 kept / 10,452 foreign / 0 untagged), 99.6% of requests kept
+≥1 envelope, **0 "not issued" rejections, 0 safety-net retries**. Foreign drops
+cluster at 04Z/09Z/10Z (pool rotation, not fault).
+
+CTO check on the single B-window canary "model failure" (Founding run
+`918f1639`, 08:15Z, `adapter_failed` with empty error): run events show assigned
+model `muse-spark-1.3-contributor(xhigh)` — NOT a canary-model run — and no
+400/replay signature (the only hits are incidental words in wake-context issue
+bodies). Under the Muse-only rule it is excluded from both arms, leaving
+**0 Muse model failures in both arms across A+B**. Early signal to watch at
+24 h: notice-issue rate 3.3 vs 8.0 per 100 runs, same A/B segmentation.
+Caveat (operator): arms assigned by role, not random; counts per issue, small.
 
 - `muse_replay_hit_rate.py` over `logs/main.log` (6 h window) + retry rate.
 - Notices/parks per run, text-only end_turn rate, tool calls/run, merged PRs
