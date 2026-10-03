@@ -1,6 +1,7 @@
 export type {
   CapacityEvidence,
   CapacityHealth,
+  CapacityReasonCode,
   CapacitySnapshot,
   CapacityWindow,
 } from "../../packages/lane-capacity/src/types.js";

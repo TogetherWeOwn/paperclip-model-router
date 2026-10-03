@@ -299,10 +299,19 @@ export function normalizeCapacityPayload(input: {
     }
   });
 
+  // The legacy vendor path cannot make contract §4's distinction: a vendor
+  // status body has no `telemetry` field, so an outage and a genuinely
+  // unconstrained deployment are the same zero-record payload. It therefore
+  // reports the conservative reading — no records means unavailable — and a
+  // producer that needs the healthy-empty case answered honestly must serve the
+  // contract shape, which `contract.ts` reads structurally.
+  const empty = evidence.length === 0;
   return {
     fetchedAt: input.fetchedAt,
     source: input.source.id,
     evidence,
-    error: evidence.length === 0 ? "capacity payload carried no recognizable telemetry records" : null,
+    telemetry: empty ? "unavailable" : "available",
+    reasonCode: empty ? "capacity-no-recognizable-records" : null,
+    error: empty ? "capacity payload carried no recognizable telemetry records" : null,
   };
 }
