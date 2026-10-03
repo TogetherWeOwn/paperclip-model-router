@@ -1,0 +1,458 @@
+# Corrected deployment artifact for TOG-13279 (follow-up to TOG-13273).
+# Source: router_mix() in /opt/tog6886-remediate/detect/oncall-detect.py (rbx1),
+# BEFORE captured in document `operator-detector-source-handoff-20261003-1115`
+# on TOG-12270 (source SHA256 95213016affba26dbbe746a54536de4d023768dbc6e62e91e6aaf8419cf3276c).
+# Target semantics: document `retune-spec` on TOG-12270 (CEO decision D2 on TOG-12259).
+#
+# WHAT CHANGED vs the TOG-13273 artifact (frozen at 83734c5):
+# - REMOVED the invented ledger fields laneHasRoom/paceGate/peakCapped. The
+#   live laneLedger publishes no such fields (host preflight STOP
+#   `operator-detector-preflight-stop-20261003-1200`): the zai verdict carries
+#   state/reason/score/accounts/observedAt/serviceable/serviceableAccountCount
+#   plus pace/rate metadata, and the per-account allowance windows live in the
+#   sibling `observation` object. `laneHasRoom` is a COMPUTED function, not a
+#   stored field, so this artifact recomputes its verdict from the real schema.
+# - Denial is recomputed leg-by-leg from the deployed resolved sources:
+#     (a) weekly pace gate, ported from `zaiWeeklyPaceOk` (pacing.ts);
+#     (b) named 5h-window utilization >= 0.5, ported from the
+#         `laneNamedWindowUtilization >= 0.5` leg of `laneHasRoom` (pacing.ts);
+#     (c) peak per-account pin cap, ported from the pin-cap leg of
+#         `laneHasRoom` fed by `activePinsWeightByLane` (worker.ts), which reads
+#         the `issues` table and resolves pins through the stored `models`
+#         roster (this is why the plugin_config `models` read is KEPT: it is the
+#         pin-to-lane/weight resolver, not a vestige of the removed
+#         fallbackOnly failure mode);
+#     (d) heartbeat-runs 5h zai share >= 0.5 telemetry cutoff (retune-spec).
+#   Provenance for every mapping is cited at each constant/function below.
+# - `serviceable`/`state` are NEVER denial evidence (retune-spec: serviceable
+#   alone is NOT laneHasRoom). pace `behind` stays INFO on every outcome.
+# - Malformed-ledger hardening (TOG-13279 item 1): every ledger/config/row
+#   access goes through `_as_dict` coercion, so truthy non-dict entries (ledger
+#   schema drift) degrade to "no evidence" instead of raising AttributeError
+#   past the try/except and skipping `emit`.
+# - Explicit room evidence VETOES the telemetry proxy (TOG-13279 item 3): a
+#   usable observation showing room on every computable leg FAILs the check
+#   even when the 5h heartbeat share is high.
+# - Success-INFO delivery is a separate reviewed block,
+#   `TOG-13279-emit-integration.py` (delegating wrapper around the BEFORE
+#   emit: same signature, same push, only ADDS stdout logging). Apply both.
+#
+# Deploy (host operator under TOG-12270, with BEFORE copy + rollback):
+#   1. Verify the host file contains the BEFORE router_mix() shown in the
+#      handoff document (SHA above). If it differs, STOP and return this
+#      artifact.
+#   2. Replace the region starting at the `LANE_OF = [` line through the final
+#      `emit(...)` line of the old router_mix() body with this whole file's
+#      TOG-13279 block below (BEGIN through END, markers included).
+#   3. Apply `TOG-13279-emit-integration.py` per its own header, then reload.
+#   4. After reload, record the resulting full host-file SHA256 on TOG-12270
+#      (it cannot be precomputed here: the full host file was never exported,
+#      only the excerpt region above; BEFORE hash unchanged).
+#   5. Acceptance stays on TOG-12270: 2 green windows incl. Mon 2026-10-05
+#      06:00-10:00Z. No early PASS claim.
+# No secrets in this file. No router defaults/config/model edits: all pacing
+# parameters are READ from the deployed plugin_config (stored value wins,
+# plugin schema default fills only when the key is absent); a wrong-typed
+# stored value abstains its leg instead of guessing.
+
+# ===== TOG-13279 router_mix retune (BEGIN) =====
+LANE_OF = [("devin/", "cliproxy-devin"), ("claude-", "cliproxy-claude"), ("gpt-", "cliproxy-codex"), ("codex", "cliproxy-codex"),
+           ("glm-", "cliproxy-zai"), ("muse-", "cliproxy-meta"), ("grok-", "cliproxy-xai"), ("kimi-", "cliproxy-kimi")]
+
+ZAI_MODEL = "glm-5.3"            # exact usageJson.model counted in the numerator (exact match only; retune-spec)
+ROUTER_PLUGIN_ID = "191a4e31-e618-4e76-921a-7511bcc1c12f"
+LOOKBACK_MINUTES = 60            # numerator window (unchanged from BEFORE)
+SHARE_LOOKBACK_HOURS = 5         # telemetry window for the 5h share cutoff (retune-spec)
+FIVE_HOUR_SHARE_CUTOFF = 0.5     # zai 5h share >= 0.5 evidences an exhausted pace budget (retune-spec)
+PEAK_WEEKDAYS = (0, 1, 2, 3, 4)  # Mon-Fri (datetime.weekday(); mirrors zaiPeakNow, pacing.ts)
+PEAK_START_HOUR_UTC = 6          # 06:00 UTC inclusive (Z.ai peak 14:00-18:00 Asia/Shanghai; pacing.ts)
+PEAK_END_HOUR_UTC = 10           # 10:00 UTC exclusive
+# Plugin schema defaults, used ONLY when the deployed plugin_config omits the
+# key (resolve.ts applies the same fill; schema.ts/constants.ts provenance):
+#   pacing.fiveHourWindowName default "five-hour" (schema.ts, DEFAULT_FIVE_HOUR_WINDOW_NAME)
+#   pacing.laneCapPerAccount default {"cliproxy-opencode-go": 2, "cliproxy-zai": 3} (constants.ts)
+#   pacing.zai.laneId default "cliproxy-zai" (LANE_ID_ZAI, constants.ts)
+#   pacing.zai.weeklyWindowName default "weekly" (DEFAULT_ZAI_WEEKLY_WINDOW_NAME)
+#   pacing.zai.weeklyDefaultMargin default 0.15 (DEFAULT_ZAI_WEEKLY_MARGIN)
+DEF_FIVE_HOUR_WINDOW = "five-hour"
+DEF_LANE_CAP = {"cliproxy-opencode-go": 2, "cliproxy-zai": 3}
+DEF_ZAI_LANE = "cliproxy-zai"
+DEF_ZAI_WEEKLY_WINDOW = "weekly"
+DEF_ZAI_WEEKLY_MARGIN = 0.15
+WEEK_MS = 7 * 24 * 60 * 60 * 1000
+FLASH_BLENDED_CAP = 1.0          # blended list price under $1/MTok counts half a slot (blendedListPrice, pacing.ts)
+OMNIROUTE_PREFIX = "cliproxy/"   # legacy pin wrapper stripped only onto an exact configured id (model-id.ts)
+ACTION_SUFFIX = " -> no allowlisted fix: file card for the Automation Engineer (router) with advise rejections"
+
+
+def _as_dict(value):
+    """Coerce a ledger/config/row value to a dict; non-dicts degrade to {} (schema drift hardening)."""
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value):
+    """Coerce a config value to a list; dicts degrade to their values, other types to [] (no guessing)."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return list(value.values())
+    return []
+
+
+def _as_number(value):
+    """Finite int/float, else None. Bools are not numbers here."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            f = float(value)
+        except (OverflowError, ValueError):
+            return None
+        if f != f or f in (float("inf"), float("-inf")):
+            return None
+        return f
+    return None
+
+
+def _parse_ms(moment):
+    """ISO-8601 moment to epoch ms; unparseable (incl. the 0000/reset sentinel) degrades to None."""
+    import datetime as _dt
+    if not isinstance(moment, str) or not moment.strip():
+        return None
+    text = moment.strip()
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = _dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+    try:
+        return int(parsed.timestamp() * 1000)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _zai_peak_now(now_utc):
+    """True inside the Mon-Fri 06:00-10:00Z peak allowance window (mirrors zaiPeakNow, pacing.ts)."""
+    return now_utc.weekday() in PEAK_WEEKDAYS and PEAK_START_HOUR_UTC <= now_utc.hour < PEAK_END_HOUR_UTC
+
+
+def _classify_lane(model_name):
+    """Map a usageJson.model value to its lane (LANE_OF order; unchanged from BEFORE)."""
+    return next((lane for prefix, lane in LANE_OF if model_name.startswith(prefix)), "other")
+
+
+def _observation_of(ledger, lane):
+    """The LanePaceObservation behind a lane's verdict (pacing.ts LaneLedgerEntry.observation).
+
+    Carried separately because verdict.score only reports the GOVERNING window;
+    the weekly/5h allowances are readable only here. Returns {} when absent or
+    malformed (leg abstention, never an exception).
+    """
+    return _as_dict(_as_dict(ledger.get(lane)).get("observation"))
+
+
+def _named_window(observation, window_name):
+    """Find a named allowance window on the FIRST reported account (ports zaiWeeklyPaceOk's records[0] read)."""
+    accounts = _as_list(observation.get("accounts"))
+    first = _as_dict(accounts[0]) if accounts else {}
+    for window in _as_list(first.get("windows")):
+        window = _as_dict(window)
+        if window.get("name") == window_name:
+            return window
+    return {}
+
+
+def _healthy_accounts(observation):
+    """Accounts with health == healthy (ports laneHealthyAccountCount's filter; pacing.ts)."""
+    return [a for a in (_as_dict(a) for a in _as_list(observation.get("accounts"))) if a.get("health") == "healthy"]
+
+
+def _max_named_utilization(observation, window_name):
+    """Max utilization of a NAMED window across healthy accounts (ports laneNamedWindowUtilization; pacing.ts).
+
+    Fail-neutral to 0: no observation, or nothing healthy, reads as "no
+    measured pressure" -- never excludes on ignorance.
+    """
+    utils = []
+    for account in _healthy_accounts(observation):
+        for window in _as_list(account.get("windows")):
+            window = _as_dict(window)
+            if window.get("name") == window_name:
+                util = _as_number(window.get("utilization"))
+                if util is not None:
+                    utils.append(util)
+    return max(utils) if utils else 0
+
+
+def _weekly_gate_closed(*, observation, window_name, margin, now_ms):
+    """Port of zaiWeeklyPaceOk (pacing.ts): admit NEW zai only while weekly utilization <= elapsed + margin.
+
+    Returns (closed: bool, usable: bool). Missing account/window/nulls degrade
+    to (False, False): no evidence either way, matching the TS early-true
+    returns. Cards already pinned keep running; this gates only the
+    pass-with-0 allowance, so unknown reads as "no denial evidence".
+    """
+    window = _named_window(observation, window_name)
+    utilization = _as_number(window.get("utilization"))
+    resets_ms = _parse_ms(window.get("resetsAt"))
+    if utilization is None or resets_ms is None:
+        return False, False
+    remaining = max(0, min(1, (resets_ms - now_ms) / WEEK_MS))
+    elapsed = 1 - remaining
+    return (utilization > elapsed + margin), True
+
+
+def _resolve_model_id(raw_model_id, models):
+    """Port of resolveConfiguredModelId (model-id.ts): exact configured id, else
+    strip ONE legacy `cliproxy/` wrapper only onto an exact configured id. Never guess by suffix."""
+    if not isinstance(raw_model_id, str) or not raw_model_id:
+        return None
+    ids = {m.get("id") for m in models if isinstance(m.get("id"), str)}
+    if raw_model_id in ids:
+        return raw_model_id
+    if raw_model_id.startswith(OMNIROUTE_PREFIX):
+        direct = raw_model_id[len(OMNIROUTE_PREFIX):]
+        if direct in ids:
+            return direct
+    return None
+
+
+def _blended_list_price(model):
+    """Port of blendedListPrice (pacing.ts): (3*in + out)/4. Non-numeric costs degrade to None (pin abstains)."""
+    cost_in = _as_number(model.get("costPerMTokIn"))
+    cost_out = _as_number(model.get("costPerMTokOut"))
+    if cost_in is None or cost_out is None:
+        return None
+    return (3 * cost_in + cost_out) / 4
+
+
+def _zai_pins_weight(pins_rows, models, zai_lane):
+    """Port of activePinsWeightByLane (worker.ts) restricted to the zai lane: todo/in_progress pinned weight.
+
+    A flash model (blended list price under $1/MTok) counts half a slot.
+    Returns (weight: float, usable: bool). Unresolvable pins are skipped;
+    an unusable models roster abstains the whole leg.
+    """
+    by_id = {}
+    for model in models:
+        model = _as_dict(model)
+        if isinstance(model.get("id"), str):
+            by_id[model["id"]] = model
+    if not by_id:
+        return 0.0, False
+    weight = 0.0
+    for row in _as_list(pins_rows):
+        row = _as_dict(row)
+        raw = row.get("pinned_model")
+        model_id = _resolve_model_id(raw, list(by_id.values()))
+        if model_id is None:
+            continue
+        model = by_id[model_id]
+        if model.get("laneId") != zai_lane:
+            continue
+        blended = _blended_list_price(model)
+        if blended is None:
+            continue
+        weight += 0.5 if blended < FLASH_BLENDED_CAP else 1.0
+    return weight, True
+
+
+def _pacing_params(pacing_cfg):
+    """Read the deployed pacing section (resolve.ts/config keys); stored value wins, schema default fills ABSENT keys only.
+
+    Returns (five_hour_window, lane_cap, zai_lane, zai_weekly_window, zai_margin).
+    A wrong-TYPED stored value degrades to None (leg abstention, never a guess).
+    """
+    pacing = _as_dict(pacing_cfg)
+    five_hour = pacing.get("fiveHourWindowName", DEF_FIVE_HOUR_WINDOW)
+    five_hour = five_hour if isinstance(five_hour, str) and five_hour else None
+    raw_cap = pacing.get("laneCapPerAccount", None)
+    if raw_cap is None:
+        lane_cap = dict(DEF_LANE_CAP)
+    elif isinstance(raw_cap, dict):
+        lane_cap = {k: v for k, v in raw_cap.items() if _as_number(v) is not None}
+        lane_cap = {k: float(v) for k, v in lane_cap.items()}
+    else:
+        lane_cap = None
+    zai_cfg = _as_dict(pacing.get("zai"))
+    zai_lane = zai_cfg.get("laneId", DEF_ZAI_LANE)
+    zai_lane = zai_lane if isinstance(zai_lane, str) and zai_lane else None
+    zai_weekly = zai_cfg.get("weeklyWindowName", DEF_ZAI_WEEKLY_WINDOW)
+    zai_weekly = zai_weekly if isinstance(zai_weekly, str) and zai_weekly else None
+    raw_margin = zai_cfg.get("weeklyDefaultMargin", DEF_ZAI_WEEKLY_MARGIN)
+    zai_margin = _as_number(raw_margin)
+    return five_hour, lane_cap, zai_lane, zai_weekly, zai_margin
+
+
+def _override_margin(override_state, now_iso):
+    """Port of readZaiPaceOverride + activeZaiPaceOverride (worker.ts, pacing.ts).
+
+    Operator-declared temporary margin; an override past its `until` is treated
+    as if none existed. Malformed/absent state degrades to None.
+    """
+    record = _as_dict(override_state)
+    margin = _as_number(record.get("margin"))
+    until = record.get("until")
+    if margin is None or not isinstance(until, str):
+        return None
+    try:
+        # Mirrors the TS string comparison (activeZaiPaceOverride compares
+        # against toISOString Zulu form), so callers must pass Zulu now_iso.
+        active = until > now_iso
+    except TypeError:
+        return None
+    return margin if active else None
+
+
+def _zai_lane_denied(*, now_utc, now_ms, now_iso, ledger, pacing_cfg, override_state, models, pins_rows,
+                     zai_5h, total_5h):
+    """Decide whether the lane denies zai from deployed resolved state + telemetry.
+
+    Ports laneHasRoom for the zai lane (pacing.ts) plus the retune-spec 5h
+    telemetry cutoff. Positive-evidence only: unknown/absent markers abstain
+    their leg, so the check fails closed (pages a human) instead of silently
+    passing. `serviceable`/`state` are NOT consulted: serviceable alone is NOT
+    laneHasRoom (retune-spec), and hard-stop exclusion is a separate admission
+    gate with its own durable record (unserviceableSince, pacing.ts).
+    Returns (denied: bool, room: bool, reasons: [str]) where room=True means the
+    observation positively shows room on every computable leg (vetoes leg (d)).
+    """
+    reasons = []
+    five_hour, lane_cap, zai_lane, zai_weekly, zai_margin = _pacing_params(pacing_cfg)
+    if zai_lane is None:
+        return False, False, []
+    live_margin = _override_margin(override_state, now_iso)
+    margin = live_margin if live_margin is not None else zai_margin
+    observation = _observation_of(ledger, zai_lane)
+    obs_usable = bool(observation)
+    room_legs = 0
+    needed_legs = 0
+
+    if margin is not None and zai_weekly is not None and obs_usable:
+        needed_legs += 1
+        closed, usable = _weekly_gate_closed(observation=observation, window_name=zai_weekly,
+                                             margin=margin, now_ms=now_ms)
+        if usable:
+            if closed:
+                reasons.append("deployed weekly pace gate closed for %s" % zai_lane)
+            else:
+                room_legs += 1
+
+    if five_hour is not None and obs_usable:
+        needed_legs += 1
+        if _max_named_utilization(observation, five_hour) >= FIVE_HOUR_SHARE_CUTOFF:
+            reasons.append("deployed 5h window '%s' utilization >= %s for %s (pace budget exhausted)"
+                           % (five_hour, FIVE_HOUR_SHARE_CUTOFF, zai_lane))
+        else:
+            room_legs += 1
+
+    per = None
+    if lane_cap is not None:
+        per = lane_cap.get(zai_lane)
+    if per is not None and obs_usable:
+        needed_legs += 1
+        if _zai_peak_now(now_utc):
+            per = 1  # in-window per-account cap (laneHasRoom, pacing.ts)
+        healthy = max(1, len(_healthy_accounts(observation)))
+        pins_weight, pins_usable = _zai_pins_weight(pins_rows, _as_list(models), zai_lane)
+        if pins_usable:
+            if pins_weight >= per * healthy:
+                reasons.append("deployed peak pin cap reached for %s (%s active pins vs cap %g x %d accounts)"
+                               % (zai_lane, pins_weight, per, healthy))
+            else:
+                room_legs += 1
+
+    room = obs_usable and needed_legs > 0 and room_legs == needed_legs
+    if total_5h > 0 and (zai_5h / total_5h) >= FIVE_HOUR_SHARE_CUTOFF and not room:
+        reasons.append("zai 5h share %d/%d >= %s (pace budget exhausted)" % (zai_5h, total_5h, FIVE_HOUR_SHARE_CUTOFF))
+    return (len(reasons) > 0), room, reasons
+
+
+def _behind_info_lines(ledger, per_lane, total):
+    """pace=behind signals, kept as info on every outcome (success and failure). Non-dict entries degrade to {}."""
+    info = []
+    for lane, entry in _as_dict(ledger).items():
+        verdict = _as_dict(_as_dict(entry).get("verdict"))
+        if verdict.get("state") == "behind":
+            info.append("%s pace=behind (%d/%d runs in 60m)" % (lane, per_lane.get(lane, 0), total))
+    return info
+
+
+def router_mix(now_utc=None):
+    """Pinned-only zai numerator + peak allowance (TOG-13279, retune-spec).
+
+    Pass if heartbeat runs with usageJson.model exactly glm-5.3 in the trailing
+    60m number > 0. Pass with 0 only inside Mon-Fri 06:00-10:00Z while the
+    recomputed lane denial evidences zai has no room. Unpinned default traffic
+    (muse/opus) never fails this check. Stale/missing inputs fail closed.
+    """
+    import datetime as _dt
+    if now_utc is None:
+        now_utc = _dt.datetime.now(_dt.timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=_dt.timezone.utc)
+    now_ms = int(now_utc.timestamp() * 1000)
+    # Zulu form to mirror activeZaiPaceOverride's string comparison (toISOString).
+    now_iso = now_utc.isoformat().replace("+00:00", "Z")
+
+    try:
+        ledger = qj("select value_json::text from plugin_state where plugin_id='%s' and state_key='laneLedger' order by updated_at desc limit 1" % ROUTER_PLUGIN_ID)
+        pacing_cfg = qj("select config_json->'pacing' from plugin_config where plugin_id='%s'" % ROUTER_PLUGIN_ID)
+        models = qj("select config_json->'models' from plugin_config where plugin_id='%s'" % ROUTER_PLUGIN_ID)
+        override_state = qj("select value_json::text from plugin_state where plugin_id='%s' and state_key='zaiPaceOverride' order by updated_at desc limit 1" % ROUTER_PLUGIN_ID)
+        rows = q("""select usage_json->>'model', count(*) from heartbeat_runs
+      where created_at > now()-interval '60 minutes' and usage_json->>'model' is not null group by 1""")
+        share_rows = q("""select count(*) filter (where usage_json->>'model' = '%s'), count(*) from heartbeat_runs
+      where created_at > now()-interval '%d hours'""" % (ZAI_MODEL, SHARE_LOOKBACK_HOURS))
+        pins_rows = q("""select assignee_adapter_overrides->'adapterConfig'->>'model' as pinned_model from issues
+      where status in ('todo','in_progress') and assignee_adapter_overrides->'adapterConfig'->>'model' is not null""")
+        if not isinstance(ledger, dict) or not ledger:
+            raise ValueError("lane ledger missing or empty")
+        if rows is None:
+            raise ValueError("60m heartbeat mix missing")
+        if not share_rows or share_rows[0] is None or len(share_rows[0]) != 2:
+            raise ValueError("5h zai share telemetry missing")
+        if pins_rows is None:
+            raise ValueError("active pins telemetry missing")
+        mix = {r[0]: int(r[1]) for r in rows}
+        zai_5h, total_5h = int(share_rows[0][0]), int(share_rows[0][1])
+    except Exception as exc:
+        emit("platform_router-mix", False, "FAIL: detector data missing/stale (%s)%s" % (exc, ACTION_SUFFIX))
+        return
+
+    total = sum(mix.values())
+    numerator = mix.get(ZAI_MODEL, 0)  # exact match only: glm-5.3-flash and friends do NOT count
+    per_lane = {}
+    for model, count in mix.items():
+        lane = _classify_lane(model)
+        per_lane[lane] = per_lane.get(lane, 0) + count
+    info = _behind_info_lines(ledger, per_lane, total)
+    info_text = (" | INFO: " + "; ".join(info)) if info else ""
+
+    if numerator > 0:
+        emit("platform_router-mix", True,
+             "OK: pinned zai numerator %d/%d heartbeat runs in 60m (model %s)%s" % (numerator, total, ZAI_MODEL, info_text))
+        return
+
+    if _zai_peak_now(now_utc):
+        denied, room, reasons = _zai_lane_denied(now_utc=now_utc, now_ms=now_ms, now_iso=now_iso, ledger=ledger,
+                                                 pacing_cfg=pacing_cfg, override_state=override_state, models=models,
+                                                 pins_rows=pins_rows, zai_5h=zai_5h, total_5h=total_5h)
+        if denied:
+            emit("platform_router-mix", True,
+                 "OK: pinned zai numerator 0/%d in 60m within peak allowance (Mon-Fri 06:00-10:00Z); lane denies zai: %s%s"
+                 % (total, "; ".join(reasons), info_text))
+            return
+        if room:
+            emit("platform_router-mix", False,
+                 "FAIL: pinned zai numerator 0/%d in 60m in peak window but lane has room for zai%s%s" % (total, info_text, ACTION_SUFFIX))
+            return
+        emit("platform_router-mix", False,
+             "FAIL: pinned zai numerator 0/%d in 60m in peak window with no positive denial evidence%s%s" % (total, info_text, ACTION_SUFFIX))
+        return
+    emit("platform_router-mix", False,
+         "FAIL: pinned zai numerator 0/%d in 60m outside peak allowance (Mon-Fri 06:00-10:00Z)%s%s" % (total, info_text, ACTION_SUFFIX))
+# ===== TOG-13279 router_mix retune (END) =====
