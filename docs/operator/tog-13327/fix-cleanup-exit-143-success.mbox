@@ -1,0 +1,311 @@
+From 2dc0931211a05ce7713c5395803a9e477722d577 Mon Sep 17 00:00:00 2001
+From: "togetherweown[bot]"
+ <319968614+togetherweown[bot]@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 14:38:16 +0000
+Subject: [PATCH] fix(heartbeat): keep cleanup SIGTERM from failing successful
+ runs
+
+---
+ .../adapter-utils/src/server-utils.test.ts    |  43 ++++++
+ ...heartbeat-terminal-cleanup-outcome.test.ts | 139 ++++++++++++++++++
+ server/src/services/heartbeat.ts              |  16 +-
+ .../src/services/terminal-cleanup-outcome.ts  |  45 ++++++
+ 4 files changed, 241 insertions(+), 2 deletions(-)
+ create mode 100644 server/src/__tests__/heartbeat-terminal-cleanup-outcome.test.ts
+ create mode 100644 server/src/services/terminal-cleanup-outcome.ts
+
+diff --git a/packages/adapter-utils/src/server-utils.test.ts b/packages/adapter-utils/src/server-utils.test.ts
+index 54bace5..21202d4 100644
+--- a/packages/adapter-utils/src/server-utils.test.ts
++++ b/packages/adapter-utils/src/server-utils.test.ts
+@@ -836,6 +836,49 @@ describe("runChildProcess", () => {
+     },
+   );
+ 
++  it.skipIf(process.platform === "win32")(
++    "reports exit 143 with terminal-result evidence when the child exits 143 on cleanup SIGTERM",
++    async () => {
++      const result = await runChildProcess(
++        randomUUID(),
++        process.execPath,
++        [
++          "-e",
++          [
++            "process.stdout.write(`${JSON.stringify({ type: 'result', result: 'done' })}\\n`);",
++            "process.on('SIGTERM', () => process.exit(143));",
++            "setInterval(() => {}, 1000);",
++          ].join(" "),
++        ],
++        {
++          cwd: process.cwd(),
++          env: {},
++          timeoutSec: 0,
++          graceSec: 1,
++          onLog: async () => {},
++          terminalResultCleanup: {
++            graceMs: 100,
++            hasTerminalResult: ({ stdout }) =>
++              stdout.includes('"type":"result"'),
++          },
++        },
++      );
++
++      expect(result.timedOut).toBe(false);
++      expect(result.exitCode).toBe(143);
++      expect(result.terminalResultCleanup).toMatchObject({
++        kind: "terminal_result_cleanup",
++        stopped: true,
++        stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
++        reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
++        terminalResultSeen: true,
++        signal: "SIGTERM",
++        forceKilled: false,
++      });
++      expect(result.stdout).toContain('"type":"result"');
++    },
++  );
++
+   it.skipIf(process.platform === "win32")(
+     "does not clean up noisy runs that have no terminal output",
+     async () => {
+diff --git a/server/src/__tests__/heartbeat-terminal-cleanup-outcome.test.ts b/server/src/__tests__/heartbeat-terminal-cleanup-outcome.test.ts
+new file mode 100644
+index 0000000..dd53892
+--- /dev/null
++++ b/server/src/__tests__/heartbeat-terminal-cleanup-outcome.test.ts
+@@ -0,0 +1,139 @@
++import { describe, expect, it } from "vitest";
++import { isTerminalResultCleanupSuccess } from "../services/terminal-cleanup-outcome.js";
++
++const cleanupEvidence = (overrides: Record<string, unknown> = {}) => ({
++  kind: "terminal_result_cleanup",
++  stopped: true,
++  stopReason: "unmanaged_background_task_stopped",
++  reason: "unmanaged background task stopped; no durable live path",
++  terminalResultSeen: true,
++  signal: "SIGTERM",
++  forceKilled: false,
++  ...overrides,
++});
++
++// Shape of the live failures: result_json.subtype=success, is_error=false,
++// terminal_reason=completed, plus the terminal_result_cleanup evidence.
++const successResultJson = (overrides: Record<string, unknown> = {}) => ({
++  type: "result",
++  subtype: "success",
++  is_error: false,
++  unmanagedBackgroundTask: cleanupEvidence(),
++  ...overrides,
++});
++
++describe("isTerminalResultCleanupSuccess", () => {
++  it("forgives exit 143 after a terminal success result stopped by cleanup", () => {
++    expect(
++      isTerminalResultCleanupSuccess({
++        exitCode: 143,
++        signal: null,
++        errorMessage: null,
++        errorCode: null,
++        resultJson: successResultJson(),
++      }),
++    ).toBe(true);
++  });
++
++  it("forgives a reported SIGTERM after a terminal success result", () => {
++    expect(
++      isTerminalResultCleanupSuccess({
++        exitCode: null,
++        signal: "SIGTERM",
++        errorMessage: null,
++        errorCode: null,
++        resultJson: successResultJson(),
++      }),
++    ).toBe(true);
++  });
++
++  it("still fails a bare exit 143 with no cleanup evidence", () => {
++    expect(
++      isTerminalResultCleanupSuccess({
++        exitCode: 143,
++        signal: null,
++        errorMessage: null,
++        errorCode: null,
++        resultJson: { subtype: "success", is_error: false },
++      }),
++    ).toBe(false);
++  });
++
++  it("still fails when no terminal result was seen", () => {
++    expect(
++      isTerminalResultCleanupSuccess({
++        exitCode: 143,
++        signal: null,
++        errorMessage: null,
++        errorCode: null,
++        resultJson: successResultJson({
++          unmanagedBackgroundTask: cleanupEvidence({
++            terminalResultSeen: false,
++          }),
++        }),
++      }),
++    ).toBe(false);
++  });
++
++  it("still fails an is_error result even with cleanup evidence", () => {
++    expect(
++      isTerminalResultCleanupSuccess({
++        exitCode: 143,
++        signal: null,
++        errorMessage: "Claude exited with code 143",
++        errorCode: null,
++        resultJson: successResultJson({ is_error: true }),
++      }),
++    ).toBe(false);
++  });
++
++  it("still fails a refusal code carried with a null message", () => {
++    expect(
++      isTerminalResultCleanupSuccess({
++        exitCode: 143,
++        signal: null,
++        errorMessage: null,
++        errorCode: "claude_refusal",
++        resultJson: successResultJson(),
++      }),
++    ).toBe(false);
++  });
++
++  it("still fails a non-cleanup exit code with cleanup evidence", () => {
++    expect(
++      isTerminalResultCleanupSuccess({
++        exitCode: 1,
++        signal: null,
++        errorMessage: null,
++        errorCode: null,
++        resultJson: successResultJson(),
++      }),
++    ).toBe(false);
++  });
++
++  it("still fails a SIGKILL escalation with cleanup evidence", () => {
++    expect(
++      isTerminalResultCleanupSuccess({
++        exitCode: 137,
++        signal: "SIGKILL",
++        errorMessage: null,
++        errorCode: null,
++        resultJson: successResultJson({
++          unmanagedBackgroundTask: cleanupEvidence({ forceKilled: true }),
++        }),
++      }),
++    ).toBe(false);
++  });
++
++  it("does not claim an ordinary clean exit", () => {
++    expect(
++      isTerminalResultCleanupSuccess({
++        exitCode: 0,
++        signal: null,
++        errorMessage: null,
++        errorCode: null,
++        resultJson: { subtype: "success", is_error: false },
++      }),
++    ).toBe(false);
++  });
++});
+diff --git a/server/src/services/heartbeat.ts b/server/src/services/heartbeat.ts
+index a64c647..ca4d065 100644
+--- a/server/src/services/heartbeat.ts
++++ b/server/src/services/heartbeat.ts
+@@ -282,6 +282,7 @@ import {
+   MAX_EXCERPT_BYTES,
+ } from "../adapters/utils.js";
+ import { costService } from "./costs.js";
++import { isTerminalResultCleanupSuccess } from "./terminal-cleanup-outcome.js";
+ import {
+   authorizeChatConversationForBoundRun,
+   isExternalChatWaitAuthorizationContention,
+@@ -25058,6 +25059,17 @@ export function heartbeatService(
+           processRunCancellationSettlements.get(run.id) ??
+           failedProcessRunCancellations.get(run.id);
+         await processCancellation?.settled;
++        // The terminal-result cleanup SIGTERMs a lingering background task
++        // after the adapter already produced its terminal result; the CLI
++        // then exits 143. That cleanup-induced end of process is not a run
++        // failure when the adapter itself reports success.
++        const terminalCleanupSuccess = isTerminalResultCleanupSuccess({
++          exitCode: adapterResult.exitCode,
++          signal: adapterResult.signal,
++          errorMessage: adapterResult.errorMessage,
++          errorCode: adapterResult.errorCode,
++          resultJson: parseObject(adapterResult.resultJson),
++        });
+         let outcome: RunSessionOutcome;
+         const latestRun = await getRun(run.id);
+         if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
+@@ -25076,9 +25088,9 @@ export function heartbeatService(
+         } else if (adapterResult.timedOut) {
+           outcome = "timed_out";
+         } else if (
+-          (adapterResult.exitCode ?? 0) === 0 &&
++          ((adapterResult.exitCode ?? 0) === 0 || terminalCleanupSuccess) &&
+           !adapterResult.errorMessage &&
+-          !adapterResult.signal &&
++          (!adapterResult.signal || terminalCleanupSuccess) &&
+           !processCancellation?.failed
+         ) {
+           outcome = "succeeded";
+diff --git a/server/src/services/terminal-cleanup-outcome.ts b/server/src/services/terminal-cleanup-outcome.ts
+new file mode 100644
+index 0000000..9a324c2
+--- /dev/null
++++ b/server/src/services/terminal-cleanup-outcome.ts
+@@ -0,0 +1,45 @@
++import { parseObject } from "../adapters/utils.js";
++
++export interface TerminalResultCleanupOutcomeInput {
++  exitCode?: number | null;
++  signal?: string | null;
++  errorMessage?: string | null;
++  errorCode?: string | null;
++  resultJson?: Record<string, unknown> | null;
++}
++
++/**
++ * Decide whether a non-zero process end is cleanup noise from the
++ * terminal-result cleanup rather than a run failure.
++ *
++ * The cleanup SIGTERMs a lingering background task after the adapter already
++ * produced its terminal result; the CLI then exits 143 (128 + SIGTERM), or
++ * Node reports the SIGTERM directly. That end of process must not fail a run
++ * the adapter itself reports as successful.
++ *
++ * Forgiveness is deliberately narrow. All of the following must hold:
++ * - the adapter reports no failure of its own (a set `errorMessage` or
++ *   `errorCode` — including refusal codes, which carry an errorCode with a
++ *   null message — keeps failing);
++ * - the `unmanagedBackgroundTask` evidence shows a terminal result was
++ *   actually seen (`terminalResultSeen: true`);
++ * - the process end is attributable to the cleanup: exit 143 and/or a
++ *   SIGTERM signal, with no other exit code or signal present.
++ *
++ * Everything else keeps failing as before: no terminal result, `is_error`
++ * results (they always set an adapter errorMessage), force-kill escalations
++ * that end in SIGKILL/137, and any other exit code or signal.
++ */
++export function isTerminalResultCleanupSuccess(
++  input: TerminalResultCleanupOutcomeInput,
++): boolean {
++  if (input.errorMessage || input.errorCode) return false;
++  const evidence = parseObject(input.resultJson?.unmanagedBackgroundTask);
++  if (evidence.kind !== "terminal_result_cleanup") return false;
++  if (evidence.stopped !== true || evidence.terminalResultSeen !== true)
++    return false;
++  const exitCode = input.exitCode ?? 0;
++  if (exitCode !== 0 && exitCode !== 143) return false;
++  if (input.signal != null && input.signal !== "SIGTERM") return false;
++  return exitCode === 143 || input.signal === "SIGTERM";
++}
+-- 
+2.47.3
+
