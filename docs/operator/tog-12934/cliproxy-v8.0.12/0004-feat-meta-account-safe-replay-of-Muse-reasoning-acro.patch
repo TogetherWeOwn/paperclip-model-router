@@ -1,4 +1,4 @@
-From 39168d18db131db8a1654b1b8cebf7d2c0ead964 Mon Sep 17 00:00:00 2001
+From 190f6eb88335d8909b21f2e39a421f937523c0a8 Mon Sep 17 00:00:00 2001
 From: Paperclip Agent <agent@togetherweown.invalid>
 Date: Sat, 3 Oct 2026 01:56:00 +0000
 Subject: [PATCH 4/4] feat(meta): account-safe replay of Muse reasoning across
@@ -26,10 +26,10 @@ that rotates accounts every turn, including 24-turn conversations across 2-4 acc
 ---
  .../runtime/executor/meta_executor_execute.go | 123 ++-
  .../runtime/executor/meta_executor_stream.go  |  43 +-
- .../runtime/executor/meta_reasoning_replay.go | 208 ++++
+ .../runtime/executor/meta_reasoning_replay.go | 206 ++++
  .../executor/meta_reasoning_replay_test.go    | 912 ++++++++++++++++++
  .../executor/openai_responses_signature.go    |  74 +-
- 5 files changed, 1300 insertions(+), 60 deletions(-)
+ 5 files changed, 1298 insertions(+), 60 deletions(-)
  create mode 100644 internal/runtime/executor/meta_reasoning_replay.go
  create mode 100644 internal/runtime/executor/meta_reasoning_replay_test.go
 
@@ -328,10 +328,10 @@ index 8d5f5462..3710c95e 100644
  			case "response.output_item.done":
 diff --git a/internal/runtime/executor/meta_reasoning_replay.go b/internal/runtime/executor/meta_reasoning_replay.go
 new file mode 100644
-index 00000000..09f3730f
+index 00000000..0d48c615
 --- /dev/null
 +++ b/internal/runtime/executor/meta_reasoning_replay.go
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,206 @@
 +package executor
 +
 +import (
@@ -406,17 +406,15 @@ index 00000000..09f3730f
 +	return replay
 +}
 +
-+// metaReasoningAccountKey derives a stable, opaque key for the credential. It
-+// has to survive token re-minting and restarts, so it is derived from the
-+// credential's identity, never from the short-lived API key.
++// metaReasoningAccountKey derives a stable, pseudonymous key for the credential.
++// It has to survive token re-minting and restarts, so it is derived from the
++// credential's identity (auth.ID), never from the short-lived API key. A
++// credential without an ID gets no key, which leaves replay off for it.
 +func metaReasoningAccountKey(auth *cliproxyauth.Auth) string {
 +	if auth == nil {
 +		return ""
 +	}
 +	id := strings.TrimSpace(auth.ID)
-+	if id == "" {
-+		id = strings.TrimSpace(auth.Attributes["api_key"])
-+	}
 +	if id == "" {
 +		return ""
 +	}
@@ -542,7 +540,7 @@ index 00000000..09f3730f
 +}
 diff --git a/internal/runtime/executor/meta_reasoning_replay_test.go b/internal/runtime/executor/meta_reasoning_replay_test.go
 new file mode 100644
-index 00000000..0442135d
+index 00000000..e764ebb0
 --- /dev/null
 +++ b/internal/runtime/executor/meta_reasoning_replay_test.go
 @@ -0,0 +1,912 @@
@@ -1290,8 +1288,8 @@ index 00000000..0442135d
 +	if got := metaReasoningAccountKey(&cliproxyauth.Auth{}); got != "" {
 +		t.Fatalf("anonymous auth produced key %q", got)
 +	}
-+	if got := metaReasoningAccountKey(&cliproxyauth.Auth{Attributes: map[string]string{"api_key": "k"}}); got == "" {
-+		t.Fatal("an auth identified only by its API key must still get a key")
++	if got := metaReasoningAccountKey(&cliproxyauth.Auth{Attributes: map[string]string{"api_key": "k"}}); got != "" {
++		t.Fatalf("a key must never be derived from the API key, got %q", got)
 +	}
 +}
 +

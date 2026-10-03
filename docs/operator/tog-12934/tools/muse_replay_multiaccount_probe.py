@@ -82,7 +82,7 @@ def account_key(signature):
 def run(args):
     api_key = os.environ.get(args.api_key_env, "")
     if not api_key:
-        print(f"set {args.api_key_env}", file=sys.stderr)
+        print("API key variable is not set; export the one named by --api-key-env", file=sys.stderr)
         return 2
     messages = [{"role": "user", "content": "Start."}]
     accounts, failures = [], []

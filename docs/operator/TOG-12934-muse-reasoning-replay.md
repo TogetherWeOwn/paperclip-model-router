@@ -16,7 +16,7 @@ Meta binds each reasoning `encrypted_content` envelope to the account that issue
 | Switch | `upstream.meta.reasoning-replay.enabled` (default false) and optional `models` patterns (case-insensitive, `*` wildcards, matched against the requested name including an `oauth.model-alias`, and the upstream model). |
 | Rolled back | With the switch off, tagged envelopes from earlier turns are dropped like any other, so turning it off is safe at any time. |
 
-`<account-key>` is the first 8 bytes of `sha256("cliproxy/meta-reasoning-account/v1\0" + auth.ID)` in hex. It is derived from the credential's identity, not from the short-lived API key, so token re-minting does not change it. If Meta binds envelopes more finely than the account (for example to the minted key), the safety net absorbs the difference and the `Meta rejected` log line counts it.
+`<account-key>` is the first 8 bytes of `sha256("cliproxy/meta-reasoning-account/v1\0" + auth.ID)` in hex. It is derived from the credential's identity, not from the short-lived API key, so token re-minting does not change it. A credential without an ID gets no key and is never replayed. If Meta binds envelopes more finely than the account (for example to the minted key), the safety net absorbs the difference and the `Meta rejected` log line counts it.
 
 Other lanes are untouched: a tagged Muse signature is *foreign* to Claude, GPT, Gemini, Kimi, Grok and SWE exactly as the raw envelope was (pinned by `TestMetaTagIsForeignToEveryOtherLane`), and the Claude→Codex translator keeps a tagged signature only for `muse*` targets.
 
@@ -40,7 +40,7 @@ git am docs/.../0001-*.patch docs/.../0002-*.patch docs/.../0003-*.patch docs/..
 go build ./... && go test ./internal/signature ./internal/config ./internal/translator/codex/claude ./internal/runtime/executor -count=1
 ```
 
-15 files, +1703/−61, of which about 1150 lines are tests. Each commit builds and passes the affected packages on its own.
+15 files, +1735/−61, of which about 1150 lines are tests. Each commit builds and passes the affected packages on its own.
 
 ## What was verified
 
@@ -103,7 +103,7 @@ meta reasoning replay: model=<m> auth=<auth id> kept=<n> dropped_foreign=<n> dro
 
 - **Affinity was measured, not raised.** The session-affinity cache and `routing.session-affinity-ttl` are shared by every lane. Raising the TTL for the Meta pool alone needs a selector change, which would touch Claude and the other lanes' code path, so it is not in this series. A global TTL increase is a config-only option for the operator but changes all lanes, including Claude. Use `muse_replay_hit_rate.py` first: if `dropped_foreign` is high, find out whether bindings are expiring (idle gap longer than the TTL), the bound account is cooling down (quota 429 reselect, visible in the existing `session-affinity: cache hit but auth unavailable, reselected` lines), or CLIProxy restarted. Only the first is fixed by a longer TTL. A better lever may be provenance-aware selection (prefer the account named by the newest tag in the request), which survives restarts and TTL expiry; that is a core-selector change and is proposed as a separate follow-up, not built here.
 - **Streaming rejections inside a 200 body are not retried.** `response.created` has already reached the client by then, so a retry would replay it. The tog.2 failures were plain HTTP 400s, which the streaming path does retry.
-- **Opaque account hash reaches the client** inside the signature (16 hex characters, not reversible to the auth id, stable per account). It lets a client correlate which pool account served a turn.
+- **A pseudonymous account hash reaches the client** inside the signature (16 hex characters, the first 8 bytes of a salted SHA-256 of the auth id, stable per account). The salt is a public constant, so a client that already holds a guess of an auth id (typically an email or file name) can confirm it offline; it exposes no token or secret. It lets a client correlate which pool account served a turn. Acceptable while every client is one of our own agents; when this goes upstream, derive it with an HMAC keyed by an instance secret.
 - **Signatures grow** by 22 characters (`meta#`, 16 hex, `#`).
 - **`CountTokens`** applies the same filtering, so a count never includes envelopes the request would not send.
 
