@@ -1,0 +1,872 @@
+From e186c63fbe2aa7ff3731f19efed5ad6be025cd25 Mon Sep 17 00:00:00 2001
+From: "togetherweown[bot]" <togetherweown[bot]@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 10:02:20 +0000
+Subject: [PATCH] fix(plugins): port H1-H9 host wiring onto 1001 line
+
+Host-computed budgetSpentFraction stamp (H5/H6), runBudgetSpentFraction
+helper with NaN/Inf drop (H3), cancel-run-invocations reap (H9), and
+plugin-budget surface, ported from the tog-line port onto the live 1001
+base. Live carries none of the H1-H9 symbols; this adds only the missing
+deltas, nothing else.
+
+Co-Authored-By: Paperclip <noreply@paperclip.ing>
+---
+ packages/plugins/sdk/src/protocol.ts          |   2 +
+ packages/plugins/sdk/src/types.ts             |   2 +
+ packages/plugins/sdk/src/worker-rpc-host.ts   |   5 +
+ .../plugins/sdk/tests/worker-rpc-host.test.ts |  96 ++++++++
+ server/src/__tests__/budgets-service.test.ts  |  94 +++++++-
+ .../heartbeat-router-run-end-reap.test.ts     |  45 ++++
+ .../plugin-budget-spent-fraction.test.ts      | 223 ++++++++++++++++++
+ server/src/routes/openapi.ts                  |   1 +
+ server/src/routes/plugins.ts                  |  35 ++-
+ server/src/services/budgets.ts                |  62 +++++
+ server/src/services/heartbeat.ts              |  42 ++++
+ server/src/services/tool-gateway.ts           |  20 +-
+ 12 files changed, 621 insertions(+), 6 deletions(-)
+ create mode 100644 server/src/__tests__/heartbeat-router-run-end-reap.test.ts
+ create mode 100644 server/src/__tests__/plugin-budget-spent-fraction.test.ts
+
+diff --git a/packages/plugins/sdk/src/protocol.ts b/packages/plugins/sdk/src/protocol.ts
+index a599a8fc..b26a271a 100644
+--- a/packages/plugins/sdk/src/protocol.ts
++++ b/packages/plugins/sdk/src/protocol.ts
+@@ -429,6 +429,8 @@ export interface PluginPerformActionActorContext {
+   runId: string | null;
+   /** Company id authorized by the host bridge for this action, when applicable. */
+   companyId: string | null;
++  /** Host-computed fraction of the run's budget envelope spent (TOG-7967). Absent = not injected. */
++  budgetSpentFraction?: number;
+ }
+ 
+ export interface PluginPerformActionContext {
+diff --git a/packages/plugins/sdk/src/types.ts b/packages/plugins/sdk/src/types.ts
+index 56a561a2..7a92808a 100644
+--- a/packages/plugins/sdk/src/types.ts
++++ b/packages/plugins/sdk/src/types.ts
+@@ -270,6 +270,8 @@ export interface ToolRunContext {
+   companyId: string;
+   /** UUID of the project the run belongs to. */
+   projectId: string;
++  /** Host-computed fraction of the run's budget envelope spent (TOG-7967). Absent = not injected. */
++  budgetSpentFraction?: number;
+ }
+ 
+ /**
+diff --git a/packages/plugins/sdk/src/worker-rpc-host.ts b/packages/plugins/sdk/src/worker-rpc-host.ts
+index 5e56ef20..0f76ea07 100644
+--- a/packages/plugins/sdk/src/worker-rpc-host.ts
++++ b/packages/plugins/sdk/src/worker-rpc-host.ts
+@@ -1927,6 +1927,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
+     return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+   }
+ 
++  function finiteNumberOrUndefined(value: unknown): number | undefined {
++    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
++  }
++
+   function actorTypeOrSystem(value: unknown): PluginPerformActionActorContext["type"] {
+     return value === "user" || value === "agent" || value === "system" ? value : "system";
+   }
+@@ -1941,6 +1945,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
+       agentId: stringOrNull(rawActor?.agentId),
+       runId: stringOrNull(rawActor?.runId),
+       companyId: stringOrNull(rawActor?.companyId),
++      budgetSpentFraction: finiteNumberOrUndefined(rawActor?.budgetSpentFraction),
+     });
+     return Object.freeze({
+       actor,
+diff --git a/packages/plugins/sdk/tests/worker-rpc-host.test.ts b/packages/plugins/sdk/tests/worker-rpc-host.test.ts
+index 66529956..a890d333 100644
+--- a/packages/plugins/sdk/tests/worker-rpc-host.test.ts
++++ b/packages/plugins/sdk/tests/worker-rpc-host.test.ts
+@@ -155,6 +155,102 @@ describe("worker performAction context", () => {
+       workerToHost.destroy();
+     }
+   });
++
++  it("passes a host-stamped finite budgetSpentFraction through to the action handler (TOG-7967 H3)", async () => {
++    const hostToWorker = new PassThrough();
++    const workerToHost = new PassThrough();
++    const hostReadline = createInterface({ input: workerToHost });
++    const pending = new Map<string, (response: JsonRpcResponse) => void>();
++    let nextRequestId = 1;
++    const plugin = definePlugin({
++      async setup(ctx) {
++        ctx.actions.register("inspect", async (_params, context) => ({
++          actor: context.actor,
++        }));
++      },
++    });
++    const worker = startWorkerRpcHost({
++      plugin,
++      stdin: hostToWorker,
++      stdout: workerToHost,
++    });
++
++    function callWorker(method: string, params: unknown) {
++      const id = `host-${nextRequestId++}`;
++      const result = new Promise<unknown>((resolve, reject) => {
++        pending.set(id, (response) => {
++          if ("error" in response && response.error) {
++            reject(new Error(response.error.message));
++            return;
++          }
++          resolve((response as { result?: unknown }).result);
++        });
++      });
++      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
++      return result;
++    }
++
++    hostReadline.on("line", (line) => {
++      const message = parseMessage(line);
++      if (!isJsonRpcResponse(message)) return;
++      pending.get(String(message.id))?.(message);
++      pending.delete(String(message.id));
++    });
++
++    try {
++      await expect(callWorker("initialize", {
++        manifest: {
++          id: "paperclip.test-worker-bsf",
++          apiVersion: 1,
++          version: "1.0.0",
++          displayName: "Worker BSF Test",
++          description: "Test plugin",
++          author: "Paperclip",
++          categories: ["automation"],
++          capabilities: [],
++          entrypoints: {},
++        },
++        config: {},
++        databaseNamespace: null,
++      })).resolves.toMatchObject({ ok: true });
++
++      await expect(callWorker("performAction", {
++        key: "inspect",
++        params: {},
++        actorContext: {
++          type: "agent",
++          userId: null,
++          agentId: "agent-1",
++          runId: "run-1",
++          companyId: "company-1",
++          budgetSpentFraction: 0.25,
++        },
++      })).resolves.toEqual({
++        actor: expect.objectContaining({ budgetSpentFraction: 0.25 }),
++      });
++
++      for (const forged of [Number.NaN, Number.POSITIVE_INFINITY, "0.99"]) {
++        const result = await callWorker("performAction", {
++          key: "inspect",
++          params: {},
++          actorContext: {
++            type: "agent",
++            userId: null,
++            agentId: "agent-1",
++            runId: "run-1",
++            companyId: "company-1",
++            budgetSpentFraction: forged,
++          },
++        }) as { actor: { budgetSpentFraction?: unknown } };
++        expect(result.actor.budgetSpentFraction).toBeUndefined();
++      }
++    } finally {
++      worker.stop();
++      hostReadline.close();
++      hostToWorker.destroy();
++      workerToHost.destroy();
++    }
++  });
+ });
+ 
+ describe("worker invocation scope propagation", () => {
+diff --git a/server/src/__tests__/budgets-service.test.ts b/server/src/__tests__/budgets-service.test.ts
+index 8a676827..74a4fc40 100644
+--- a/server/src/__tests__/budgets-service.test.ts
++++ b/server/src/__tests__/budgets-service.test.ts
+@@ -10,7 +10,7 @@ import {
+   createDb,
+   projects,
+ } from "@paperclipai/db";
+-import { budgetService } from "../services/budgets.ts";
++import { budgetService, runBudgetSpentFraction } from "../services/budgets.ts";
+ import {
+   getEmbeddedPostgresTestSupport,
+   startEmbeddedPostgresTestDatabase,
+@@ -325,6 +325,98 @@ describe("budgetService", () => {
+   });
+ });
+ 
++describe("runBudgetSpentFraction (TOG-7967 D1)", () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++  });
++
++  function policy(overrides: Record<string, unknown> = {}) {
++    return {
++      id: "policy-1",
++      companyId: "company-1",
++      scopeType: "agent",
++      scopeId: "agent-1",
++      metric: "billed_cents",
++      windowKind: "calendar_month_utc",
++      amount: 100,
++      warnPercent: 80,
++      hardStopEnabled: true,
++      notifyEnabled: false,
++      isActive: true,
++      ...overrides,
++    };
++  }
++
++  it("returns observed/amount for the most-specific active envelope", async () => {
++    const dbStub = createDbStub([
++      [
++        policy({ scopeType: "company", scopeId: "company-1", amount: 1000 }),
++        policy({ scopeType: "agent", scopeId: "agent-1", amount: 100 }),
++      ],
++      [{ total: 25 }],
++    ]);
++
++    const fraction = await runBudgetSpentFraction(dbStub.db as any, {
++      companyId: "company-1",
++      agentId: "agent-1",
++      projectId: null,
++      runId: "run-1",
++    });
++
++    expect(fraction).toBe(0.25);
++  });
++
++  it("prefers calendar_month_utc within the same scope", async () => {
++    const dbStub = createDbStub([
++      [
++        policy({ scopeType: "company", scopeId: "company-1", windowKind: "lifetime", amount: 1000 }),
++        policy({ scopeType: "company", scopeId: "company-1", windowKind: "calendar_month_utc", amount: 200 }),
++      ],
++      [{ total: 100 }],
++    ]);
++
++    const fraction = await runBudgetSpentFraction(dbStub.db as any, {
++      companyId: "company-1",
++      agentId: null,
++      projectId: null,
++      runId: "run-1",
++    });
++
++    expect(fraction).toBe(0.5);
++  });
++
++  it("returns undefined when no qualifying policy exists", async () => {
++    const dbStub = createDbStub([[]]);
++
++    const fraction = await runBudgetSpentFraction(dbStub.db as any, {
++      companyId: "company-1",
++      agentId: "agent-1",
++      projectId: null,
++      runId: "run-1",
++    });
++
++    expect(fraction).toBeUndefined();
++  });
++
++  it("ignores zero-amount and inactive policies", async () => {
++    const dbStub = createDbStub([
++      [
++        policy({ scopeType: "agent", scopeId: "agent-1", amount: 0 }),
++        policy({ scopeType: "company", scopeId: "company-1", amount: 100, isActive: false }),
++      ],
++    ]);
++
++    const fraction = await runBudgetSpentFraction(dbStub.db as any, {
++      companyId: "company-1",
++      agentId: "agent-1",
++      projectId: null,
++      runId: "run-1",
++    });
++
++    expect(fraction).toBeUndefined();
++  });
++});
++
+ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+ 
+diff --git a/server/src/__tests__/heartbeat-router-run-end-reap.test.ts b/server/src/__tests__/heartbeat-router-run-end-reap.test.ts
+new file mode 100644
+index 00000000..eb66ad69
+--- /dev/null
++++ b/server/src/__tests__/heartbeat-router-run-end-reap.test.ts
+@@ -0,0 +1,45 @@
++import { readFileSync } from "node:fs";
++import { dirname, join } from "node:path";
++import { fileURLToPath } from "node:url";
++import { describe, expect, it } from "vitest";
++
++// TOG-7967 H9: the run-end reap block lives inline in heartbeatService's
++// executeRun teardown (a ~29k-line service with no seam at that site). This
++// source-contract test pins the block's mandatory properties: cancel call
++// with system actorContext + company scope, terminal-status gate, and
++// never-throws structure. A full executeRun run-through needs embedded
++// Postgres + provider fixtures (see test-baselines/lifecycle-heartbeat).
++const here = dirname(fileURLToPath(import.meta.url));
++const heartbeatSrc = readFileSync(join(here, "../services/heartbeat.ts"), "utf8");
++
++function reapBlock(): string {
++  const anchor = "router run-end reap";
++  const idx = heartbeatSrc.indexOf(anchor);
++  expect(idx).toBeGreaterThan(-1);
++  return heartbeatSrc.slice(Math.max(0, idx - 1500), idx + 2500);
++}
++
++describe("heartbeat router run-end reap (TOG-7967 H9)", () => {
++  it("calls cancel-run-invocations with a system actorContext and company scope", () => {
++    const block = reapBlock();
++    expect(block).toContain('"cancel-run-invocations"');
++    expect(block).toContain('type: "system"');
++    expect(block).toContain("companyId: run.companyId");
++    expect(block).toContain("togetherweown.paperclip-model-router");
++  });
++
++  it("only reaps on terminal status and never throws", () => {
++    const block = reapBlock();
++    expect(block).toContain("isHeartbeatRunTerminalStatus(latestRun.status)");
++    expect(block).toContain(".catch(() => null)");
++    expect(block).toContain("orphans linger to TTL");
++    // Inner call failure is swallowed with a warn, outer lookup failure too.
++    expect(block.match(/\.catch\(/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
++  });
++
++  it("imports the registry service for the router lookup", () => {
++    expect(heartbeatSrc).toContain(
++      'import { pluginRegistryService } from "./plugin-registry.js";',
++    );
++  });
++});
+diff --git a/server/src/__tests__/plugin-budget-spent-fraction.test.ts b/server/src/__tests__/plugin-budget-spent-fraction.test.ts
+new file mode 100644
+index 00000000..85bded8f
+--- /dev/null
++++ b/server/src/__tests__/plugin-budget-spent-fraction.test.ts
+@@ -0,0 +1,223 @@
++import express from "express";
++import request from "supertest";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++
++const mockRegistry = vi.hoisted(() => ({
++  getById: vi.fn(),
++  getByKey: vi.fn(),
++  upsertConfig: vi.fn(),
++  getCompanySettings: vi.fn(),
++  upsertCompanySettings: vi.fn(),
++}));
++
++const mockLifecycle = vi.hoisted(() => ({
++  load: vi.fn(),
++  upgrade: vi.fn(),
++  unload: vi.fn(),
++  enable: vi.fn(),
++  disable: vi.fn(),
++}));
++
++const mockRunBudgetSpentFraction = vi.hoisted(() => vi.fn());
++
++vi.mock("../services/plugin-registry.js", () => ({
++  pluginRegistryService: () => mockRegistry,
++}));
++
++vi.mock("../services/plugin-lifecycle.js", () => ({
++  pluginLifecycleManager: () => mockLifecycle,
++}));
++
++vi.mock("../services/activity-log.js", () => ({
++  logActivity: vi.fn(),
++}));
++
++vi.mock("../services/secrets.js", () => ({
++  secretService: () => ({ getById: vi.fn() }),
++}));
++
++vi.mock("../services/live-events.js", () => ({
++  publishGlobalLiveEvent: vi.fn(),
++}));
++
++vi.mock("../services/budgets.js", () => ({
++  runBudgetSpentFraction: mockRunBudgetSpentFraction,
++}));
++
++async function createApp(
++  actor: Record<string, unknown>,
++  routeOverrides: {
++    db?: unknown;
++    toolDeps?: unknown;
++    bridgeDeps?: unknown;
++  } = {},
++) {
++  const [{ pluginRoutes }, { errorHandler }] = await Promise.all([
++    import("../routes/plugins.js"),
++    import("../middleware/index.js"),
++  ]);
++
++  const app = express();
++  app.use(express.json());
++  app.use((req, _res, next) => {
++    req.actor = actor as typeof req.actor;
++    next();
++  });
++  app.use("/api", pluginRoutes(
++    (routeOverrides.db ?? {}) as never,
++    {} as never,
++    undefined,
++    undefined,
++    routeOverrides.toolDeps as never,
++    routeOverrides.bridgeDeps as never,
++  ));
++  app.use(errorHandler);
++
++  return app;
++}
++
++const companyA = "22222222-2222-4222-8222-222222222222";
++const agentA = "44444444-4444-4444-8444-444444444444";
++const runA = "55555555-5555-4555-8555-555555555555";
++const projectA = "66666666-6666-4666-8666-666666666666";
++const pluginId = "11111111-1111-4111-8111-111111111111";
++
++function agentActor(overrides: Record<string, unknown> = {}) {
++  return {
++    type: "agent",
++    agentId: agentA,
++    companyId: companyA,
++    runId: runA,
++    source: "agent_jwt",
++    ...overrides,
++  };
++}
++
++// db stub for validateToolRunContextScope: 3 selects (agent, run, project).
++function validationDb() {
++  const rows = [
++    [{ companyId: companyA }],
++    [{ companyId: companyA, agentId: agentA }],
++    [{ companyId: companyA }],
++  ];
++  return {
++    select: vi.fn(() => ({
++      from: vi.fn(() => ({
++        where: vi.fn(() => ({
++          limit: vi.fn(() => Promise.resolve(rows.shift() ?? [])),
++        })),
++      })),
++    })),
++  };
++}
++
++describe("budgetSpentFraction host overwrite (TOG-7967 H6/H8)", () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++  });
++
++  it("overwrites a forged budgetSpentFraction on the direct tool-dispatch branch (H6 B3)", async () => {
++    mockRunBudgetSpentFraction.mockResolvedValue(0.1);
++    const executeTool = vi.fn(async () => ({ ok: true }));
++    const app = await createApp(agentActor(), {
++      db: validationDb(),
++      toolDeps: {
++        toolDispatcher: { getTool: () => ({}), executeTool },
++      },
++    });
++
++    const res = await request(app)
++      .post("/api/plugins/tools/execute")
++      .send({
++        tool: "acme.test:probe",
++        parameters: {},
++        runContext: {
++          agentId: agentA,
++          runId: runA,
++          companyId: companyA,
++          projectId: projectA,
++          budgetSpentFraction: 0.99,
++        },
++      });
++
++    expect(res.status).toBe(200);
++    expect(executeTool).toHaveBeenCalledTimes(1);
++    expect(executeTool.mock.calls[0][2]).toMatchObject({ budgetSpentFraction: 0.1 });
++    expect(executeTool.mock.calls[0][2].budgetSpentFraction).not.toBe(0.99);
++  });
++
++  it("passes undefined through when no policy envelope exists (H6 B3)", async () => {
++    mockRunBudgetSpentFraction.mockResolvedValue(undefined);
++    const executeTool = vi.fn(async () => ({ ok: true }));
++    const app = await createApp(agentActor(), {
++      db: validationDb(),
++      toolDeps: {
++        toolDispatcher: { getTool: () => ({}), executeTool },
++      },
++    });
++
++    const res = await request(app)
++      .post("/api/plugins/tools/execute")
++      .send({
++        tool: "acme.test:probe",
++        parameters: {},
++        runContext: {
++          agentId: agentA,
++          runId: runA,
++          companyId: companyA,
++          projectId: projectA,
++        },
++      });
++
++    expect(res.status).toBe(200);
++    expect(executeTool.mock.calls[0][2].budgetSpentFraction).toBeUndefined();
++  });
++
++  it("stamps the host-computed fraction on the action path (H8)", async () => {
++    mockRunBudgetSpentFraction.mockResolvedValue(0.42);
++    mockRegistry.getById.mockResolvedValue({
++      id: pluginId,
++      pluginKey: "paperclip.example",
++      version: "1.0.0",
++      status: "ready",
++    });
++    const call = vi.fn(async () => ({ ok: true }));
++    // Agent actor carries agentId+runId, so the H8 stamp condition resolves.
++    const app = await createApp(agentActor(), {
++      db: {},
++      bridgeDeps: { workerManager: { call } as never },
++    });
++
++    const res = await request(app)
++      .post(`/api/plugins/${pluginId}/bridge/action`)
++      .send({ key: "invoke", companyId: companyA });
++
++    expect(res.status).toBe(200);
++    expect(call).toHaveBeenCalledTimes(1);
++    const params = call.mock.calls[0][2] as { actorContext: Record<string, unknown> };
++    expect(params.actorContext).toMatchObject({ budgetSpentFraction: 0.42 });
++  });
++
++  it("omits the stamp on the action path when the fraction is undefined (H8)", async () => {
++    mockRunBudgetSpentFraction.mockResolvedValue(undefined);
++    mockRegistry.getById.mockResolvedValue({
++      id: pluginId,
++      pluginKey: "paperclip.example",
++      version: "1.0.0",
++      status: "ready",
++    });
++    const call = vi.fn(async () => ({ ok: true }));
++    const app = await createApp(agentActor(), {
++      db: {},
++      bridgeDeps: { workerManager: { call } as never },
++    });
++
++    const res = await request(app)
++      .post(`/api/plugins/${pluginId}/bridge/action`)
++      .send({ key: "invoke", companyId: companyA });
++
++    expect(res.status).toBe(200);
++    const params = call.mock.calls[0][2] as { actorContext: Record<string, unknown> };
++    expect("budgetSpentFraction" in params.actorContext).toBe(false);
++  });
++});
+diff --git a/server/src/routes/openapi.ts b/server/src/routes/openapi.ts
+index 256cc4fc..7c5b1ece 100644
+--- a/server/src/routes/openapi.ts
++++ b/server/src/routes/openapi.ts
+@@ -8498,6 +8498,7 @@ registry.registerPath({
+           runId: z.string(),
+           companyId: z.string(),
+           projectId: z.string(),
++          budgetSpentFraction: z.number().optional(),
+         }),
+       }),
+     ),
+diff --git a/server/src/routes/plugins.ts b/server/src/routes/plugins.ts
+index 971283dd..063222b7 100644
+--- a/server/src/routes/plugins.ts
++++ b/server/src/routes/plugins.ts
+@@ -54,6 +54,7 @@ import {
+   REPO_ROOT,
+ } from "../services/plugin-loader.js";
+ import { logActivity } from "../services/activity-log.js";
++import { runBudgetSpentFraction } from "../services/budgets.js";
+ import { publishGlobalLiveEvent } from "../services/live-events.js";
+ import { issueService } from "../services/issues.js";
+ import type { PluginJobScheduler } from "../services/plugin-job-scheduler.js";
+@@ -766,8 +767,20 @@ export function pluginRoutes(
+     }
+   }
+ 
+-  function performActionActorContext(req: Request, companyId: string | undefined): PluginPerformActionActorContext {
++  async function performActionActorContext(req: Request, companyId: string | undefined): Promise<PluginPerformActionActorContext> {
+     const scopedCompanyId = companyId ?? null;
++    // TOG-7967 H8: host-computed stamp. The action path carries no project;
++    // agent→company fallback still resolves a company/agent envelope.
++    // Undefined ≡ absent downstream (H3 shim drops non-finite regardless).
++    const bsf = (req.actor.agentId && req.actor.runId && scopedCompanyId)
++      ? await runBudgetSpentFraction(db, {
++          companyId: scopedCompanyId,
++          agentId: req.actor.agentId,
++          projectId: null,
++          runId: req.actor.runId,
++        }).catch(() => undefined)
++      : undefined;
++    const stamp = bsf === undefined ? {} : { budgetSpentFraction: bsf };
+     if (req.actor.type === "agent") {
+       return {
+         type: "agent",
+@@ -775,6 +788,7 @@ export function pluginRoutes(
+         agentId: req.actor.agentId ?? null,
+         runId: req.actor.runId ?? null,
+         companyId: scopedCompanyId,
++        ...stamp,
+       };
+     }
+     if (req.actor.type === "board") {
+@@ -784,6 +798,7 @@ export function pluginRoutes(
+         agentId: null,
+         runId: req.actor.runId ?? null,
+         companyId: scopedCompanyId,
++        ...stamp,
+       };
+     }
+     return {
+@@ -792,6 +807,7 @@ export function pluginRoutes(
+       agentId: null,
+       runId: req.actor.runId ?? null,
+       companyId: scopedCompanyId,
++      ...stamp,
+     };
+   }
+ 
+@@ -1087,10 +1103,21 @@ export function pluginRoutes(
+     }
+ 
+     try {
++      // TOG-7967 H6 (B3): direct-dispatch branch bypasses the tool-gateway
++      // overwrite. runContext is caller JSON — spread-overwrite with the
++      // host-computed value; undefined ≡ absent downstream.
+       const result = await toolDeps.toolDispatcher.executeTool(
+         tool,
+         parameters ?? {},
+-        runContext,
++        {
++          ...runContext,
++          budgetSpentFraction: await runBudgetSpentFraction(db, {
++            companyId: runContext.companyId,
++            agentId: runContext.agentId,
++            projectId: runContext.projectId ?? null,
++            runId: runContext.runId,
++          }).catch(() => undefined),
++        },
+       );
+       res.json(result);
+     } catch (err) {
+@@ -1536,7 +1563,7 @@ export function pluginRoutes(
+         {
+           key: body.key,
+           params: actionParamsWithAuthorizedCompanyScope(body.params, companyId),
+-          actorContext: performActionActorContext(req, companyId),
++          actorContext: await performActionActorContext(req, companyId),
+           renderEnvironment: body.renderEnvironment ?? null,
+         },
+       );
+@@ -1720,7 +1747,7 @@ export function pluginRoutes(
+         {
+           key,
+           params: actionParamsWithAuthorizedCompanyScope(body?.params, companyId),
+-          actorContext: performActionActorContext(req, companyId),
++          actorContext: await performActionActorContext(req, companyId),
+           renderEnvironment: body?.renderEnvironment ?? null,
+         },
+       );
+diff --git a/server/src/services/budgets.ts b/server/src/services/budgets.ts
+index e281dcb5..893b010d 100644
+--- a/server/src/services/budgets.ts
++++ b/server/src/services/budgets.ts
+@@ -165,6 +165,68 @@ async function computeObservedAmount(
+   return Number(row?.total ?? 0);
+ }
+ 
++/**
++ * Host-computed fraction of the run's budget envelope spent (TOG-7967, D1).
++ *
++ * Denominator = the most-specific active `billed_cents` budget-policy envelope
++ * covering the run (agent-scope → project → company, `calendar_month_utc`
++ * preferred); fraction = `observed / amount` with `observed` from the existing
++ * `computeObservedAmount` scope+window logic. No qualifying policy with
++ * `amount > 0` → `undefined` (plugin treats absent/non-finite as "host did not
++ * inject"). `runId` is accepted for call-site uniformity and reserved for a
++ * future per-run debit; the host currently owns no per-run budget envelope.
++ */
++export async function runBudgetSpentFraction(
++  db: Db,
++  input: {
++    companyId: string;
++    agentId: string | null;
++    projectId: string | null;
++    runId: string;
++  },
++): Promise<number | undefined> {
++  void input.runId;
++  const rows = await db
++    .select()
++    .from(budgetPolicies)
++    .where(
++      and(
++        eq(budgetPolicies.companyId, input.companyId),
++        eq(budgetPolicies.isActive, true),
++        eq(budgetPolicies.metric, "billed_cents"),
++      ),
++    );
++
++  const candidates = rows.filter((row) => {
++    // Belt-and-braces with the query's isActive/metric predicates above.
++    if (!row.isActive || row.metric !== "billed_cents") return false;
++    if (row.amount <= 0) return false;
++    if (row.scopeType === "agent") return input.agentId !== null && row.scopeId === input.agentId;
++    if (row.scopeType === "project") return input.projectId !== null && row.scopeId === input.projectId;
++    if (row.scopeType === "company") return row.scopeId === input.companyId;
++    return false;
++  });
++
++  const scopeRank = (scopeType: string): number => {
++    if (scopeType === "agent") return 0;
++    if (scopeType === "project") return 1;
++    return 2;
++  };
++  candidates.sort((a, b) => {
++    const scopeDelta = scopeRank(a.scopeType) - scopeRank(b.scopeType);
++    if (scopeDelta !== 0) return scopeDelta;
++    const aMonthly = a.windowKind === "calendar_month_utc" ? 0 : 1;
++    const bMonthly = b.windowKind === "calendar_month_utc" ? 0 : 1;
++    return aMonthly - bMonthly;
++  });
++
++  const winner = candidates[0];
++  if (!winner) return undefined;
++  const observed = await computeObservedAmount(db, winner);
++  const fraction = observed / winner.amount;
++  return Number.isFinite(fraction) ? fraction : undefined;
++}
++
+ function buildApprovalPayload(input: {
+   policy: PolicyRow;
+   scopeName: string;
+diff --git a/server/src/services/heartbeat.ts b/server/src/services/heartbeat.ts
+index 255608cd..c98f3300 100644
+--- a/server/src/services/heartbeat.ts
++++ b/server/src/services/heartbeat.ts
+@@ -612,6 +612,7 @@ import {
+   type EffectiveRunConfigSecretManifestEntry,
+ } from "./effective-run-config-fingerprints.js";
+ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
++import { pluginRegistryService } from "./plugin-registry.js";
+ import { serverVersion } from "../version.js";
+ 
+ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
+@@ -25939,6 +25940,47 @@ export function heartbeatService(
+             nativeLifecycleTelemetry: nativeLifecycleTelemetryForRun,
+           });
+           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
++          // TOG-7967 H9 (receipt 2): run-end reap of router async invocations.
++          // Never throws: lookup and call failures are logged, orphans linger
++          // to TTL. Company scope is mandatory (worker throws without it).
++          try {
++            const manager = options.pluginWorkerManager;
++            if (manager && latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
++              const routerRow = await pluginRegistryService(db)
++                .getByKey("togetherweown.paperclip-model-router")
++                .catch(() => null);
++              if (routerRow) {
++                await manager
++                  .call(
++                    routerRow.id,
++                    "performAction",
++                    {
++                      key: "cancel-run-invocations",
++                      params: { runId: run.id },
++                      actorContext: {
++                        type: "system",
++                        userId: null,
++                        agentId: null,
++                        runId: run.id,
++                        companyId: run.companyId,
++                      },
++                    },
++                    10_000,
++                  )
++                  .catch((reapErr) => {
++                    logger.warn(
++                      { err: reapErr, runId: run.id },
++                      "router run-end reap failed; orphans linger to TTL",
++                    );
++                  });
++              }
++            }
++          } catch (reapLookupErr) {
++            logger.warn(
++              { err: reapLookupErr, runId: run.id },
++              "router run-end reap lookup failed; orphans linger to TTL",
++            );
++          }
+         }
+         if (
+           runScratch &&
+diff --git a/server/src/services/tool-gateway.ts b/server/src/services/tool-gateway.ts
+index facbd312..cee7be9d 100644
+--- a/server/src/services/tool-gateway.ts
++++ b/server/src/services/tool-gateway.ts
+@@ -88,6 +88,7 @@ import type {
+   PluginToolDispatcher,
+ } from "./plugin-tool-dispatcher.js";
+ import { logActivity, type LogActivityInput } from "./activity-log.js";
++import { runBudgetSpentFraction } from "./budgets.js";
+ import { secretService } from "./secrets.js";
+ import { railwayCommandBudgetMs, createRailwayClient, isRailwayConnection, isRailwayEndpoint, isRailwayToolBlocked, normalizeRailwayToolName, RAILWAY_API_URL, RAILWAY_TOOL_PREFIX, RailwayError } from "./railway.js";
+ import { RAILWAY_SSH_SECRET_PATH, runRailwaySshCommand } from "./railway-ssh.js";
+@@ -10361,6 +10362,13 @@ export function createToolGatewayService(
+                     runId: session.runId!,
+                     companyId: session.companyId,
+                     projectId: session.projectId ?? "",
++                    // TOG-7967 H5: host-authored stamp; undefined ≡ absent downstream.
++                    budgetSpentFraction: await runBudgetSpentFraction(db, {
++                      companyId: session.companyId,
++                      agentId: session.agentId!,
++                      projectId: session.projectId ?? null,
++                      runId: session.runId!,
++                    }).catch(() => undefined),
+                   },
+                 ),
+                 executionTimeoutMs,
+@@ -10755,10 +10763,20 @@ export function createToolGatewayService(
+ 
+       const startedAt = Date.now();
+       try {
++        // TOG-7967 H6 (B2): input.runContext is caller JSON — forgeable.
++        // Spread-overwrite with the host-computed value; undefined ≡ absent.
+         const result = await pluginToolDispatcher.executeTool(
+           input.tool,
+           requestedParameters,
+-          input.runContext,
++          {
++            ...input.runContext,
++            budgetSpentFraction: await runBudgetSpentFraction(db, {
++              companyId: input.runContext.companyId,
++              agentId: input.runContext.agentId,
++              projectId: input.runContext.projectId ?? null,
++              runId: input.runContext.runId,
++            }).catch(() => undefined),
++          },
+         );
+         const resultValidation = validateToolContent({
+           value: result,
+-- 
+2.47.3
+
