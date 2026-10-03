@@ -1603,6 +1603,47 @@ export function createPlugin() {
         return cancelRunInvocationsFor(actionCtx.companyId, runId);
       });
 
+      // TOG-13372 (exit for TOG-13354 H9): reap on the first-class upstream
+      // `agent.run.finished` event instead of the fork's host-side
+      // `cancel-run-invocations` call in heartbeat.ts. The run id arrives as
+      // the event's primary entity; the payload fallbacks cover hosts that
+      // carry it there instead. `failed`/`cancelled` are deliberately left to
+      // the interim host hunk per CTO verdict (c) — this subscription covers
+      // `finished` only. Never throws: an event-handler throw faults delivery
+      // of later events, so failures are logged and reported as failed ids.
+      ctx.events.on("agent.run.finished", async (event) => {
+        const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+          ? (event.payload as Record<string, unknown>)
+          : {};
+        const runId = typeof event.entityId === "string" && event.entityId.length > 0
+          ? event.entityId
+          : typeof payload.runId === "string" && payload.runId.length > 0
+            ? payload.runId
+            : typeof payload.id === "string" && payload.id.length > 0
+              ? payload.id
+              : "";
+        if (!runId || !event.companyId) {
+          ctx.logger.warn("Ignoring agent.run.finished without a run id or company", {
+            eventId: event.eventId,
+          });
+          return;
+        }
+        try {
+          const outcome = await cancelRunInvocationsFor(event.companyId, runId);
+          if (outcome.failed.length > 0) {
+            ctx.logger.warn("Run-end event reap left unsettled invocations", {
+              runId,
+              failed: outcome.failed,
+            });
+          }
+        } catch (cause) {
+          ctx.logger.error("Run-end event reap failed", {
+            runId,
+            error: cause instanceof Error ? cause.message : String(cause),
+          });
+        }
+      });
+
       ctx.jobs.register(JOB_KEYS.reconcileAsyncInvocations, reconcileAsyncInvocations);
 
       // TOG-7160 (port of TOG-930): the catalogue sweep. Invocation evidence

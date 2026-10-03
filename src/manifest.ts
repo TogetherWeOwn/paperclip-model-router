@@ -84,6 +84,9 @@ const manifest: PaperclipPluginManifestV1 = {
     "jobs.schedule",
     "activity.log.write",
     "companies.read",
+    // TOG-13372: subscribe to `agent.run.finished` so the router reaps its
+    // own run invocations with no host change (exit for TOG-13354 H9 hunk).
+    "events.subscribe",
   ],
   entrypoints: { worker: "./dist/worker.js" },
   jobs: [
