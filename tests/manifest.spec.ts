@@ -52,6 +52,9 @@ describe("manifest", () => {
       "database.namespace.migrate",
       "database.namespace.read",
       "database.namespace.write",
+      // TOG-13372: the agent.run.finished subscription that reaps the router's
+      // own run invocations (exit for the TOG-13354 H9 host hunk).
+      "events.subscribe",
       "http.outbound",
       "jobs.schedule",
       "metrics.write",
