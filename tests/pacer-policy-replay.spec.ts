@@ -34,7 +34,7 @@ interface SyntheticState {
 }
 
 const fixture = JSON.parse(
-  readFileSync(join(here, "fixtures", "pacer-policy-replay.json"), "utf8"),
+  readFileSync(join(here, "pacer-policy-replay.fixture.json"), "utf8"),
 ) as { version: number; states: SyntheticState[] };
 
 function toEvidence(entry: SyntheticEvidence): CapacityEvidence {

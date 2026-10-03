@@ -1,6 +1,6 @@
 # Pacer policy replay report
 
-Fixture: tests/fixtures/pacer-policy-replay.json (version 1, 13 synthetic states).
+Fixture: tests/pacer-policy-replay.fixture.json (version 1, 13 synthetic states).
 Replay: node scripts/pacer-policy-replay.mjs. Offline; no live capacity poll, no pacing write.
 Result: 13/13 states decide as the policy table says.
 
