@@ -46,7 +46,8 @@
     "check:ci": "node scripts/ci-health.mjs --require \"typecheck, test, build, package, version\" --require \"secret scan\"",
     "preflight:tog178": "node scripts/tog178-catalogue-revalidate.mjs",
     "check:telemetry": "node scripts/telemetry-conformance.mjs --selftest",
-    "check:pace-ordering-mutants": "node scripts/tog-2139-mutation-gate.mjs"
+    "check:pace-ordering-mutants": "node scripts/tog-2139-mutation-gate.mjs",
+    "replay:pacer-policy": "node scripts/pacer-policy-replay.mjs"
   },
   "dependencies": {
     "@paperclipai/plugin-sdk": "2026.817.0"
