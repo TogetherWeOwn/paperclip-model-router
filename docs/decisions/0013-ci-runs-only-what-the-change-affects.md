@@ -60,3 +60,5 @@ reading a listed doc, take it off the list in the same PR.
   reports on every PR.
 - Rollback: revert the PR. The `verify` job is unchanged apart from its `needs`
   and `if`.
+
+<!-- probe: docs-only change, expect verify skipped and ci-ok green -->
