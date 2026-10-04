@@ -14,6 +14,12 @@ export interface RouterConfig {
   budget: BudgetConfig;
   capacityRouting: CapacityRoutingConfig;
   rule0: Rule0Config;
+  /**
+   * TOG-7897: visible decision-history window. Physical pruning also
+   * preserves the current UTC accounting month for spend-cap enforcement.
+   * `query-decisions` only returns rows inside the history window.
+   */
+  decisionLog: DecisionLogConfig;
 }
 
 export interface RoutingConfig {
@@ -108,6 +114,15 @@ export interface CapacityRoutingConfig {
  * `unknown`, never denied, exactly like missing telemetry today.
  */
 export type SourcePaceDefinition = import("../capacity/types.js").LanePaceDefinition;
+
+/**
+ * TOG-7897: `retentionDays` bounds visible history. Pruning and legacy import
+ * preserve the earlier of this cutoff and the current UTC month start;
+ * `query-decisions` never returns rows outside the history window.
+ */
+export interface DecisionLogConfig {
+  retentionDays: number;
+}
 
 export interface Rule0Pattern {
   pattern: string;

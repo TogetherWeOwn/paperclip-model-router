@@ -79,6 +79,7 @@ describe("manifest", () => {
     expect(Object.keys(schema.properties).sort()).toEqual([
       "budget",
       "capacityRouting",
+      "decisionLog",
       "models",
       "routing",
       "rule0",

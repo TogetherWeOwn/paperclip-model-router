@@ -12,7 +12,7 @@ The normative contract is [`docs/contracts/compatible-upstream-v1.md`](docs/cont
 ## Native surfaces
 
 - agent tool: `togetherweown.paperclip-model-router:model_router_invoke`
-- actions: `invoke`, `refresh-capacity`
+- actions: `invoke`, `refresh-capacity`, `query-decisions`
 - `POST /api/plugins/togetherweown.paperclip-model-router/api/invoke?companyId=<uuid>`
 - `POST /api/plugins/togetherweown.paperclip-model-router/api/issues/:issueId/invoke`
 
@@ -73,6 +73,7 @@ Every surface calls the same internal implementation. Company identity comes fro
     "avoidUtilization": 0.8,
     "sources": []
   },
+  "decisionLog": { "retentionDays": 90 },
   "rule0": { "enabled": true, "deterministicPatterns": [] }
 }
 ```
@@ -130,6 +131,48 @@ Promotion to `enforce` is an operator decision, never an automatic gate. Before 
 require TOG-901/916 evidence, TOG-251 measurements, fresh evidence for every affected model,
 a clean representative shadow window, and an outage rehearsal proving fail-closed behavior.
 Disable `capacityRouting` to restore v1 selection exactly.
+
+### `decisionLog` — routing-history retention and read path (TOG-7897)
+
+Every invocation appends a company-scoped audit row to durable storage. One
+optional setting governs history visibility:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `retentionDays` | integer 1–3650 | `90` | The company's visible routing-history window, in days. Physical deletion also preserves the current UTC accounting month. |
+
+Omitting `decisionLog` or supplying `decisionLog: {}` defaults to 90 days.
+Malformed explicit values are rejected, including in stored configuration.
+
+**Physical-retention exception:** `decision_records` also feeds monthly spend-cap
+enforcement. Deletion therefore uses the **earlier** of the configured history
+cutoff and the current UTC month start, unconditionally — even if caps are
+currently disabled. Current-month accounting rows outside a short history window
+remain stored but are not returned by `query-decisions`. After the month rolls
+over, those rows can be deleted once they are also outside the history window.
+Legacy import applies the same floor and reconciles before the monthly ledger read.
+
+Each write prunes that company's own rows using this cutoff. Startup enumerates
+persisted company IDs from `decision_records` and applies their individual policies;
+there is no whole-table default DELETE or writer-state-index dependency. If policy
+cannot be read or resolved, pruning is skipped and legacy reconciliation is deferred
+without marking it complete. A later write or worker restart retries after recovery.
+A successfully read absent policy, unlike an unavailable policy, uses the default.
+
+Run the company-scoped `query-decisions` action to inspect recent routing
+history:
+
+```sh
+npx paperclipai plugin action "$PLUGIN" query-decisions \
+  --payload-json "$(jq -nc --arg companyId "$COMPANY_ID" '{companyId:$companyId,params:{limit:50}}')"
+```
+
+The company id comes from the host-authorized action context, never from
+params, so a caller only ever sees its own company's rows. The window start
+is derived from that company's `retentionDays`, and the row limit is clamped
+to 1–200 newest-first. Returned records carry the same fields as the stored
+row (selection, model, outcome, latency, token usage, capacity facts) and
+never prompts, credentials, or request content.
 
 ## Invocation
 
