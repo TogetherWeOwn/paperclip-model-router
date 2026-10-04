@@ -63,6 +63,7 @@ export interface NormalizedResponse {
 export type InferenceErrorCode =
   | "invalid-request"
   | "secret-unavailable"
+  | "internal-error"
   | "upstream-url-rejected"
   /**
    * TOG-7881 (G2): the stored company config itself fails closed at load
