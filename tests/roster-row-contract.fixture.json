@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "description": "Frozen roster row-contract fixtures for TOG-14187. Offline only: the allowlist and lanes below are frozen copies, never the live catalogue, and no case writes the roster. Each case lists the exact violation codes the guard must report; clean cases expect none.",
+  "allowlist": [
+    "claude-sonnet-5",
+    "muse-spark-1.3-contributor-free",
+    "gpt-5.6-sol",
+    "glm-5.3-flash"
+  ],
+  "lanes": ["cliproxy-claude", "cliproxy-codex", "cliproxy-opencode-go"],
+  "cases": [
+    {
+      "id": "clean",
+      "title": "every enabled row is lane-bound to a known lane",
+      "rows": [
+        { "id": "claude-sonnet-5", "tier": "strong", "enabled": true, "laneId": "cliproxy-claude" },
+        { "id": "gpt-5.6-sol", "tier": "standard", "enabled": true, "laneId": "cliproxy-codex" },
+        { "id": "glm-5.3-flash", "tier": "small", "enabled": true, "laneId": "cliproxy-opencode-go" }
+      ],
+      "expectViolationCodes": []
+    },
+    {
+      "id": "unpinned-row",
+      "title": "enabled row with no lane binding is an unpinned default",
+      "rows": [
+        { "id": "claude-sonnet-5", "tier": "strong", "enabled": true, "laneId": "cliproxy-claude" },
+        { "id": "muse-spark-1.3-contributor-free", "tier": "standard", "enabled": true }
+      ],
+      "expectViolationCodes": ["unpinned-row"]
+    },
+    {
+      "id": "missing-key",
+      "title": "row without a tier fails the required-keys rule",
+      "rows": [
+        { "id": "claude-sonnet-5", "tier": "strong", "enabled": true, "laneId": "cliproxy-claude" },
+        { "id": "gpt-5.6-sol", "enabled": true, "laneId": "cliproxy-codex" }
+      ],
+      "expectViolationCodes": ["missing-key:tier"]
+    },
+    {
+      "id": "unknown-model",
+      "title": "lane-bound row for a model outside the allowlist",
+      "rows": [
+        { "id": "gpt-7-ultra", "tier": "frontier", "enabled": true, "laneId": "cliproxy-codex" }
+      ],
+      "expectViolationCodes": ["not-allowlisted"]
+    },
+    {
+      "id": "unknown-lane",
+      "title": "row bound to a lane that does not exist",
+      "rows": [
+        { "id": "claude-sonnet-5", "tier": "strong", "enabled": true, "laneId": "cliproxy-nope" }
+      ],
+      "expectViolationCodes": ["unknown-lane"]
+    },
+    {
+      "id": "legacy-id",
+      "title": "row retaining the legacy cliproxy/ wrapper",
+      "rows": [
+        { "id": "cliproxy/claude-sonnet-5", "tier": "strong", "enabled": true, "laneId": "cliproxy-claude" }
+      ],
+      "expectViolationCodes": ["legacy-id"]
+    },
+    {
+      "id": "disabled-unlaned",
+      "title": "disabled row without a lane cannot serve, so it is not a default",
+      "rows": [
+        { "id": "claude-sonnet-5", "tier": "strong", "enabled": true, "laneId": "cliproxy-claude" },
+        { "id": "glm-5.3-flash", "tier": "small", "enabled": false }
+      ],
+      "expectViolationCodes": []
+    }
+  ]
+}
