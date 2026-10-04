@@ -1,18 +1,5 @@
-From a03887da2aba20da63ac1b7859b2da4fe499fc98 Mon Sep 17 00:00:00 2001
-From: Upstream Draft <draft@example.invalid>
-Date: Sun, 4 Oct 2026 02:35:08 +0000
-Subject: [PATCH] fix(heartbeat): merge issue override env per key
-
----
- .../execution-workspace-policy.test.ts        | 125 +++++++++++
- ...heartbeat-issue-override-env-merge.test.ts | 200 ++++++++++++++++++
- .../services/execution-workspace-policy.ts    |  71 +++++++
- server/src/services/heartbeat.ts              |   7 +-
- 4 files changed, 401 insertions(+), 2 deletions(-)
- create mode 100644 server/src/__tests__/heartbeat-issue-override-env-merge.test.ts
-
 diff --git a/server/src/__tests__/execution-workspace-policy.test.ts b/server/src/__tests__/execution-workspace-policy.test.ts
-index e5cf70cf0..b2d2b71e1 100644
+index e5cf70c..d9565b7 100644
 --- a/server/src/__tests__/execution-workspace-policy.test.ts
 +++ b/server/src/__tests__/execution-workspace-policy.test.ts
 @@ -13,6 +13,7 @@ import {
@@ -23,7 +10,7 @@ index e5cf70cf0..b2d2b71e1 100644
    resolveEffectiveWorkspaceStrategyType,
    resolveExecutionWorkspaceEnvironmentId,
    resolvePinnedIssueWorkspaceStrategyType,
-@@ -756,4 +757,128 @@ describe("operator default isolated execution workspaces", () => {
+@@ -756,4 +757,215 @@ describe("operator default isolated execution workspaces", () => {
        }),
      ).toBe(false);
    });
@@ -151,13 +138,100 @@ index e5cf70cf0..b2d2b71e1 100644
 +      /unavailable secret for API_TOKEN/,
 +    );
 +  });
++
++  it("rejects an override when the base carries several spellings, in either base order", () => {
++    const override = { env: { API_TOKEN: "replacement" } };
++    const firstOrder = {
++      env: {
++        API_TOKEN: "base",
++        api_token: { type: "secret_ref", secretId: "old" },
++      },
++    };
++    const secondOrder = {
++      env: {
++        api_token: { type: "secret_ref", secretId: "old" },
++        API_TOKEN: "base",
++      },
++    };
++    // The first spelling matches exactly, but the second inherited alias
++    // would survive the merge and shadow the replacement. Both base orders
++    // reject with the same deterministic error.
++    for (const base of [firstOrder, secondOrder]) {
++      expect(() => mergeIssueAdapterConfigOverrides(base, override)).toThrow(
++        /conflicts with agent env keys "API_TOKEN", "api_token"/,
++      );
++    }
++  });
++
++  it("rejects an exact override when the base carries another spelling", () => {
++    const base = { env: { API_TOKEN: "one", api_token: "two" } };
++    // Overriding the second spelling exactly still leaves the first alias
++    // behind, so the contract rejects instead of replacing half the group.
++    expect(() => mergeIssueAdapterConfigOverrides(base, { env: { api_token: "x" } })).toThrow(
++      /conflicts with agent env keys "API_TOKEN", "api_token"/,
++    );
++  });
++
++  it("rejects before resolution when another spelling holds an unavailable reference", () => {
++    const resolveEnvForTest = (env: unknown): Record<string, string> => {
++      const record =
++        typeof env === "object" && env !== null && !Array.isArray(env)
++          ? (env as Record<string, unknown>)
++          : null;
++      if (!record) return {};
++      const out: Record<string, string> = {};
++      for (const [key, binding] of Object.entries(record)) {
++        if (typeof binding === "object" && binding !== null && "secretId" in binding) {
++          throw new Error(`unavailable secret for ${key}`);
++        }
++        out[key] = String(binding);
++      }
++      return out;
++    };
++    const base = {
++      env: {
++        API_TOKEN: "base",
++        api_token: { type: "secret_ref", secretId: "unavailable" },
++      },
++    };
++    const override = { env: { API_TOKEN: "replacement" } };
++    // The merge rejects the ambiguous group before any binding is resolved.
++    expect(() => mergeIssueAdapterConfigOverrides(base, override)).toThrow(
++      /conflicts with agent env keys "API_TOKEN", "api_token"/,
++    );
++    // Without the guard, the retained lowercase reference reaches resolution
++    // and fails the run there instead of at the merge boundary.
++    const unguarded = { ...(base.env as Record<string, unknown>), ...(override.env as Record<string, unknown>) };
++    expect(() => resolveEnvForTest(unguarded)).toThrow(
++      /unavailable secret for api_token/,
++    );
++  });
++
++  it("never lets an inherited alias win the Windows fold over a replacement", () => {
++    // Test-local mirror of case-insensitive targets: later entries win the
++    // fold, so an inherited lowercase alias overwrites the replacement.
++    const foldForWindowsForTest = (env: Record<string, unknown>): Record<string, unknown> => {
++      const out: Record<string, unknown> = {};
++      for (const [key, value] of Object.entries(env)) out[key.toUpperCase()] = value;
++      return out;
++    };
++    const base = { env: { API_TOKEN: "base", api_token: "shadow" } };
++    const override = { env: { API_TOKEN: "replacement" } };
++    const unguarded = { ...(base.env as Record<string, unknown>), ...(override.env as Record<string, unknown>) };
++    expect(foldForWindowsForTest(unguarded)).toEqual({ API_TOKEN: "shadow" });
++    // The guard rejects the ambiguous group, so the losing fold is
++    // unreachable through the merge.
++    expect(() => mergeIssueAdapterConfigOverrides(base, override)).toThrow(
++      /conflicts with agent env keys "API_TOKEN", "api_token"/,
++    );
++  });
  });
 diff --git a/server/src/__tests__/heartbeat-issue-override-env-merge.test.ts b/server/src/__tests__/heartbeat-issue-override-env-merge.test.ts
 new file mode 100644
-index 000000000..c9d827340
+index 0000000..4b8bd72
 --- /dev/null
 +++ b/server/src/__tests__/heartbeat-issue-override-env-merge.test.ts
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,276 @@
 +import { randomUUID } from "node:crypto";
 +import os from "node:os";
 +import path from "node:path";
@@ -182,6 +256,29 @@ index 000000000..c9d827340
 +  );
 +}
 +
++const TEST_ENV_KEYS = ["PAPERCLIP_HOME", "PAPERCLIP_API_URL"] as const;
++
++function snapshotEnv(
++  env: Record<string, string | undefined>,
++  keys: readonly string[],
++): Map<string, string | undefined> {
++  return new Map(keys.map((key) => [key, env[key]]));
++}
++
++function restoreEnvSnapshot(
++  env: Record<string, string | undefined>,
++  snapshot: Map<string, string | undefined>,
++  written: ReadonlySet<string>,
++): void {
++  // Restore only the keys this fixture actually wrote, so a setup failure
++  // can never delete an original value that was never captured or written.
++  for (const key of written) {
++    const original = snapshot.get(key);
++    if (original === undefined) delete env[key];
++    else env[key] = original;
++  }
++}
++
 +async function waitForRunToFinish(
 +  heartbeat: ReturnType<typeof heartbeatService>,
 +  runId: string,
@@ -199,23 +296,28 @@ index 000000000..c9d827340
 +describeEmbeddedPostgres("heartbeat issue override env merge", () => {
 +  let db!: ReturnType<typeof createDb>;
 +  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-+  let oldPaperclipHome: string | undefined;
-+  let oldPaperclipApiUrl: string | undefined;
++  // Captured before any fallible setup so a startup failure restores (and
++  // never deletes) the original process settings.
++  const savedEnv = snapshotEnv(process.env, TEST_ENV_KEYS);
++  const writtenEnvKeys = new Set<string>();
++  const setTestEnv = (key: string, value: string): void => {
++    writtenEnvKeys.add(key);
++    process.env[key] = value;
++  };
 +  let paperclipHome: string | null = null;
 +  const capturedRuns: Array<{ config: Record<string, unknown>; ctxIssueId: unknown }> = [];
 +
 +  beforeAll(async () => {
-+    tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-issue-override-env-merge-");
-+    db = createDb(tempDb.connectionString);
-+    oldPaperclipHome = process.env.PAPERCLIP_HOME;
-+    paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-issue-env-merge-home-"));
-+    process.env.PAPERCLIP_HOME = paperclipHome;
-+    // The server normalizes PAPERCLIP_API_URL into its own env at boot
-+    // (server/src/index.ts); heartbeat gateway delivery requires it, so pin
-+    // a deterministic value for tests that never boot the full server.
-+    oldPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
-+    process.env.PAPERCLIP_API_URL = "http://127.0.0.1:3100/api";
-+    registerServerAdapter({
++    try {
++      tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-issue-override-env-merge-");
++      db = createDb(tempDb.connectionString);
++      paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-issue-env-merge-home-"));
++      setTestEnv("PAPERCLIP_HOME", paperclipHome);
++      // The server normalizes PAPERCLIP_API_URL into its own env at boot
++      // (server/src/index.ts); heartbeat gateway delivery requires it, so pin
++      // a deterministic value for tests that never boot the full server.
++      setTestEnv("PAPERCLIP_API_URL", "http://127.0.0.1:3100/api");
++      registerServerAdapter({
 +      type: TEST_ADAPTER_TYPE,
 +      execute: async (ctx) => {
 +        capturedRuns.push({
@@ -236,7 +338,11 @@ index 000000000..c9d827340
 +        checks: [],
 +        testedAt: new Date().toISOString(),
 +      }),
-+    });
++      });
++    } catch (error) {
++      restoreEnvSnapshot(process.env, savedEnv, writtenEnvKeys);
++      throw error;
++    }
 +  }, 20_000);
 +
 +  afterEach(async () => {
@@ -258,10 +364,7 @@ index 000000000..c9d827340
 +
 +  afterAll(async () => {
 +    unregisterServerAdapter(TEST_ADAPTER_TYPE);
-+    if (oldPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
-+    else process.env.PAPERCLIP_HOME = oldPaperclipHome;
-+    if (oldPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
-+    else process.env.PAPERCLIP_API_URL = oldPaperclipApiUrl;
++    restoreEnvSnapshot(process.env, savedEnv, writtenEnvKeys);
 +    if (paperclipHome) {
 +      await fs.rm(paperclipHome, { recursive: true, force: true });
 +    }
@@ -357,12 +460,59 @@ index 000000000..c9d827340
 +    // layer and are not part of this contract.
 +    expect(Object.keys(env ?? {}).filter((key) => key.startsWith("HEARTBEAT"))).toEqual([]);
 +  });
++
++  it("fails the run before the adapter executes when the base carries several spellings", async () => {
++    const { agentId, issueId } = await seedAgentWithIssue({
++      agentEnv: {
++        API_TOKEN: "base",
++        api_token: { type: "secret_ref", secretId: "unavailable" },
++      },
++      overrideAdapterConfig: { env: { API_TOKEN: "replacement" } },
++    });
++
++    const heartbeat = heartbeatService(db);
++    const run = await heartbeat.invoke(agentId, "on_demand", { issueId, taskId: issueId }, "manual");
++    expect(run).not.toBeNull();
++    // The ambiguous alias group rejects at the merge boundary, so the run
++    // fails instead of resolving the shadowed binding or executing.
++    expect((await waitForRunToFinish(heartbeat, run!.id))?.status).toBe("failed");
++    expect(capturedRuns.find((candidate) => candidate.ctxIssueId === issueId)).toBeUndefined();
++  });
++
++  it("restores only env keys actually written when setup fails", () => {
++    // Runs against a fake env object so the diagnostic never touches the
++    // real process settings.
++    const fakeEnv: Record<string, string | undefined> = {
++      PAPERCLIP_HOME: "/orig/home",
++      PAPERCLIP_API_URL: "https://orig.example",
++    };
++    // A startup failure before any write leaves every original in place.
++    const beforeStartup = snapshotEnv(fakeEnv, TEST_ENV_KEYS);
++    restoreEnvSnapshot(fakeEnv, beforeStartup, new Set());
++    expect(fakeEnv).toEqual({
++      PAPERCLIP_HOME: "/orig/home",
++      PAPERCLIP_API_URL: "https://orig.example",
++    });
++    // A mkdtemp failure after the first write restores the written home
++    // while the never-written API URL keeps its original value.
++    fakeEnv.PAPERCLIP_HOME = "/tmp/partial-home";
++    restoreEnvSnapshot(fakeEnv, beforeStartup, new Set(["PAPERCLIP_HOME"]));
++    expect(fakeEnv.PAPERCLIP_HOME).toBe("/orig/home");
++    expect(fakeEnv.PAPERCLIP_API_URL).toBe("https://orig.example");
++    // A written key that was originally absent is removed again.
++    const emptyEnv: Record<string, string | undefined> = {};
++    const emptySnapshot = snapshotEnv(emptyEnv, TEST_ENV_KEYS);
++    emptyEnv.PAPERCLIP_HOME = "/tmp/other-home";
++    restoreEnvSnapshot(emptyEnv, emptySnapshot, new Set(["PAPERCLIP_HOME"]));
++    expect("PAPERCLIP_HOME" in emptyEnv).toBe(false);
++    expect("PAPERCLIP_API_URL" in emptyEnv).toBe(false);
++  });
 +});
 diff --git a/server/src/services/execution-workspace-policy.ts b/server/src/services/execution-workspace-policy.ts
-index dd36825a2..1719ab8b5 100644
+index dd36825..6835a2c 100644
 --- a/server/src/services/execution-workspace-policy.ts
 +++ b/server/src/services/execution-workspace-policy.ts
-@@ -446,3 +446,74 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
+@@ -446,3 +446,98 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
  
    return nextConfig;
  }
@@ -385,12 +535,20 @@ index dd36825a2..1719ab8b5 100644
 + *   non-object env to `{}`, so `env: null` removes every agent environment
 + *   key. There is no per-key removal: an `env` entry set to `null` is not a
 + *   valid binding and is rejected at secret resolution.
-+ * - An override key that differs only by letter case from a base key is
-+ *   rejected. Environment names are case-sensitive on Linux but
-+ *   case-insensitive on Windows targets, so `api_token` over `API_TOKEN`
-+ *   would keep a shadowed secret binding that secret resolution must resolve
-+ *   before the launch layer folds the names. Rename the override key to the
-+ *   exact base spelling to replace it, or pick a non-conflicting name.
++ * - An override env key that shares a case-insensitive name with any base
++ *   env key is rejected unless the base carries exactly that one spelling.
++ *   Environment names are case-sensitive on Linux but case-insensitive on
++ *   Windows targets, so `api_token` over `API_TOKEN` would keep a shadowed
++ *   secret binding that secret resolution must resolve before the launch
++ *   layer folds the names. Rename the override key to the exact base
++ *   spelling to replace it, or pick a non-conflicting name. When the base
++ *   already carries several spellings of one name (for example both
++ *   `API_TOKEN` and `api_token`), every override of that name is rejected:
++ *   no single spelling can replace them all, and letting another inherited
++ *   alias survive would shadow the replacement through resolution (or
++ *   through Windows folding afterwards). This rejection runs on every
++ *   target, so a conflicting override also fails on Linux even though the
++ *   process variables would be distinct there.
 + */
 +export function mergeIssueAdapterConfigOverrides(
 +  base: Record<string, unknown>,
@@ -421,27 +579,43 @@ index dd36825a2..1719ab8b5 100644
 +): void {
 +  const baseKeys = Object.keys(baseEnv);
 +  if (baseKeys.length === 0) return;
-+  const canonicalBaseKey = new Map<string, string>();
++  // Every inherited spelling of each case-insensitive name. A base env may
++  // already carry several spellings of one name; remembering only the first
++  // one lets another inherited alias survive the merge and shadow the
++  // replacement through secret resolution (or through Windows folding).
++  // Sets keep this independent of base input order.
++  const baseSpellings = new Map<string, Set<string>>();
 +  for (const key of baseKeys) {
 +    const canonical = key.toUpperCase();
-+    if (!canonicalBaseKey.has(canonical)) canonicalBaseKey.set(canonical, key);
++    let spellings = baseSpellings.get(canonical);
++    if (!spellings) {
++      spellings = new Set<string>();
++      baseSpellings.set(canonical, spellings);
++    }
++    spellings.add(key);
 +  }
 +  for (const key of Object.keys(overrideEnv)) {
-+    const match = canonicalBaseKey.get(key.toUpperCase());
-+    if (match !== undefined && match !== key) {
-+      throw new Error(
-+        `Issue override env key "${key}" conflicts with agent env key "${match}": ` +
-+          `environment names are case-insensitive on some targets (Windows). ` +
-+          `Use the exact key "${match}" to replace it, or choose a non-conflicting name.`,
-+      );
-+    }
++    const spellings = baseSpellings.get(key.toUpperCase());
++    if (!spellings || (spellings.size === 1 && spellings.has(key))) continue;
++    // Deterministic message: sort the inherited spellings so base input
++    // order never changes the error.
++    const inherited = [...spellings].sort();
++    const quoted = inherited.map((spelling) => `"${spelling}"`).join(", ");
++    throw new Error(
++      `Issue override env key "${key}" conflicts with agent env key${inherited.length === 1 ? "" : "s"} ${quoted}: ` +
++        `environment names are case-insensitive on some targets (Windows). ` +
++        (inherited.length === 1
++          ? `Use the exact key ${quoted} to replace it, or choose a non-conflicting name.`
++          : `The agent env already carries several spellings of this name, so no single spelling can replace them all; ` +
++            `remove the inherited aliases instead of overriding this name.`),
++    );
 +  }
 +}
 diff --git a/server/src/services/heartbeat.ts b/server/src/services/heartbeat.ts
-index e41bd2acf..69dc59d54 100644
+index 4c7f3a2..7fcb682 100644
 --- a/server/src/services/heartbeat.ts
 +++ b/server/src/services/heartbeat.ts
-@@ -483,6 +483,7 @@ import {
+@@ -485,6 +485,7 @@ import {
    gateProjectExecutionWorkspacePolicy,
    issueExecutionWorkspaceModeForPersistedWorkspace,
    isUnrunnableWorktreeCombo,
@@ -449,7 +623,7 @@ index e41bd2acf..69dc59d54 100644
    parseIssueExecutionWorkspaceSettings,
    parseProjectExecutionWorkspacePolicy,
    resolveEffectiveWorkspaceStrategyType,
-@@ -21567,8 +21568,10 @@ export function heartbeatService(
+@@ -21615,8 +21616,10 @@ export function heartbeatService(
            issueAssigneeOverrides?.useProjectWorkspace ?? null,
        });
        const mergedConfig = {

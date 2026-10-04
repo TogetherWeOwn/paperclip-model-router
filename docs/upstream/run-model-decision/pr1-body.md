@@ -1,6 +1,6 @@
 Title: `fix(heartbeat): merge issue override env per key`
 Branch: `fix/merge-issue-override-env-per-key`
-Base: `master` at d9b64ee28
+Base: `master` at 994d6edc
 
 ## Thinking Path
 
@@ -32,7 +32,7 @@ The override `env` adds keys and replaces keys with the same name. Keys that the
 
 **Paperclip version or commit**
 
-`master` at d9b64ee28. The merge is the spread in `executeRun` in `server/src/services/heartbeat.ts`.
+`master` at 994d6edc. The merge is the spread in `executeRun` in `server/src/services/heartbeat.ts`.
 
 **Related**
 
@@ -45,26 +45,26 @@ The override `env` adds keys and replaces keys with the same name. Keys that the
 - Add `mergeIssueAdapterConfigOverrides` in `execution-workspace-policy.ts`. It merges `env` per key and spreads every other key.
 - Call it from `executeRun` instead of the plain spread. The isolated task directory rule still applies after the merge.
 - Preserve an explicit non-object `env` (including `null`) as a clearing operation instead of merging the base env back over it. Downstream resolution maps a non-object env to `{}`, so `env: null` removes every agent environment key, matching the previous spread behavior. There is no per-key removal: an `env` entry set to `null` is not a valid binding and is rejected at secret resolution.
-- Reject an override env key that differs only by letter case from a base key, before secret resolution. Environment names are case-sensitive on Linux but case-insensitive on Windows targets, so a case-variant alias would keep a shadowed secret binding that resolution must resolve before the launch layer folds the names. The error names both keys: use the exact base spelling to replace it, or pick a non-conflicting name.
-- Add unit tests for the helper and a heartbeat regression test that runs `executeRun` with an agent env and an issue override env and asserts the adapter receives both keys, plus a null-clearing case through runtime resolution.
+- Reject an override env key that shares a case-insensitive name with any base key, before secret resolution, unless the base carries exactly that one spelling. Environment names are case-sensitive on Linux but case-insensitive on Windows targets, so a case-variant alias would keep a shadowed secret binding that resolution must resolve before the launch layer folds the names. When the base already carries several spellings of one name, every override of that name is rejected, since no single spelling can replace them all. The error names the key and every inherited spelling. This rejection runs on every target, so a conflicting override also fails on Linux even though the process variables would be distinct there.
+- Add unit tests for the helper and heartbeat regression tests that run `executeRun` with an agent env and an issue override env: the adapter receives both keys, an explicit null override env clears every key through runtime resolution, and a multi-spelling base group fails the run before the adapter executes.
 - No documentation describes how issue overrides merge into the agent config, so no doc changes.
 
 ## Verification
 
-- `pnpm --filter @paperclipai/server exec vitest run src/__tests__/execution-workspace-policy.test.ts src/__tests__/heartbeat-issue-override-env-merge.test.ts` — 51 tests pass (49 helper + 2 heartbeat).
-- The helper tests cover: the override adds a key, the override replaces a key, a base secret reference survives an override that omits it, inputs are not mutated, an omitted override env keeps the base env, an explicit `env: null` is preserved as a clearing value, a non-object `env` is preserved, a case-variant alias (`api_token` over `API_TOKEN`) is rejected, exact matches still shadow case-sensitively, and the alias is rejected at the merge boundary before secret resolution (with a resolver double showing the shadowed binding would otherwise fail there with an unavailable-secret error).
-- The heartbeat tests run `executeRun` against embedded Postgres: agent env `{HEARTBEAT_MERGE_BASE}` plus issue override env `{HEARTBEAT_MERGE_OVERRIDE}` delivers both keys to the adapter, and an explicit null override env clears every agent/issue key through runtime secret resolution.
-- Mutation checks: I changed the helper to `next.env = overrideEnv` — 7 tests failed. I removed the alias guard — the 2 alias tests failed. I reverted the `executeRun` call site to the plain spread — the new heartbeat merge test failed while all 49 helper tests still passed (the integration gap this regression closes). I restored each mutant and the suites re-run green.
-- `pnpm --filter @paperclipai/server exec vitest run` on the five existing heartbeat suites (`heartbeat-project-env`, `heartbeat-native-runner-selection`, `heartbeat-retry-scheduling`, `heartbeat-dependency-scheduling`, `heartbeat-run-status-payload`) — 139 tests pass; combined with the two files above, 190/190 across 7 files.
-- `pnpm --filter @paperclipai/server exec tsc --noEmit` — no errors. (The full `paperclip-runner` package build stops at `build:binary` on missing `cargo` in this container; its TypeScript build completed and the server typecheck resolves cleanly.)
-- Clean-room check: fresh clone of `master` at d9b64ee28 plus `git am` of this patch applies with no conflicts; `git diff --check` is clean.
+- `pnpm --filter @paperclipai/server exec vitest run src/__tests__/execution-workspace-policy.test.ts src/__tests__/heartbeat-issue-override-env-merge.test.ts` — 57 tests pass (53 helper + 4 heartbeat; the heartbeat tests run on the isolated agent-testdb).
+- The helper tests cover: the override adds a key, the override replaces a key, a base secret reference survives an override that omits it, inputs are not mutated, an omitted override env keeps the base env, an explicit `env: null` is preserved as a clearing value, a non-object `env` is preserved, a case-variant alias (`api_token` over `API_TOKEN`) is rejected, exact matches still shadow case-sensitively, the alias is rejected at the merge boundary before secret resolution (with a resolver double showing the shadowed binding would otherwise fail there with an unavailable-secret error), a multi-spelling base group rejects in either base input order, an exact override over another spelling rejects, an unavailable reference in another spelling rejects before resolution, and a Windows-fold double shows the inherited alias would otherwise overwrite the replacement.
+- The heartbeat tests run `executeRun` against the isolated agent-testdb: agent env `{HEARTBEAT_MERGE_BASE}` plus issue override env `{HEARTBEAT_MERGE_OVERRIDE}` delivers both keys to the adapter; an explicit null override env clears every agent/issue key through runtime secret resolution; a multi-spelling base group fails the run before the adapter executes; and a fixture diagnostic proves setup-failure cleanup restores only the env keys actually written.
+- Mutation checks: I changed the merge to `next.env = overrideEnv` — 3 tests failed (50 pass). I removed the alias guard — exactly the 6 alias tests failed (47 pass). I reverted the `executeRun` call site to the plain spread — exactly the 2 executeRun-composition heartbeat tests failed while all 53 helper tests still passed (the integration gap these regressions close). I restored each mutant byte-identical and the suites re-run green.
+- `pnpm --filter @paperclipai/server exec vitest run` on the five existing heartbeat suites (`heartbeat-project-env`, `heartbeat-native-runner-selection`, `heartbeat-retry-scheduling`, `heartbeat-dependency-scheduling`, `heartbeat-run-status-payload`) — 139 tests pass; combined with the two files above, 196/196 across 7 files.
+- `pnpm --filter @paperclipai/server exec tsc --noEmit` — no errors in the touched files. Pre-existing errors remain in untouched files (missing `paperclip-runner` dist whose binary build needs `cargo`, plus implicit-`any` diagnostics). The full `paperclip-runner` package build stops at `build:binary` on missing `cargo` in this container.
+- Clean-room check: fresh checkout of `master` at 994d6edc plus `git am` of this patch applies with no conflicts and byte-identical postimages; `git diff --check` is clean.
 
 ## Risks
 
 - Low risk. A task override that sets no `env` behaves as before.
 - An override with `env: {}` used to remove all agent environment keys. It now keeps them. An override cannot remove a key by leaving it out.
 - An override with `env: null`, or an `env` that is not an object, still removes all agent environment keys, as before. This is now a tested contract rather than an accident of the spread.
-- An override env key that differs only by letter case from an agent env key (for example `api_token` over `API_TOKEN`) now fails the run with an explicit message instead of merging both spellings. Use the exact agent key spelling to replace it. Exact matches and non-conflicting keys behave as before on every target.
+- An override env key that shares a case-insensitive name with an agent env key (for example `api_token` over `API_TOKEN`) now fails the run with an explicit message instead of merging both spellings. Use the exact agent key spelling to replace it. When the agent env already carries several spellings of one name, every override of that name fails, since no single spelling can replace them all; remove the inherited aliases instead. This rejection runs on every target, so a conflicting override also fails on Linux even though the process variables would be distinct there. Exact matches over a single-spelled base and non-conflicting keys behave as before on every target.
 - Agent secret references now reach runs that use an `env` override. They are the same references the agent config already grants to that agent's runs.
 - This change adds no migration and no new setting.
 
@@ -72,6 +72,7 @@ The override `env` adds keys and replaces keys with the same name. Keys that the
 
 - Meta Muse Spark, version 1.3, wrote the original change. Reasoning effort was set to extra high (xhigh). The model has a 1M-token context, and the agent harness ran it with a 204k-token window. It worked in a coding agent with tool use, shell access and test execution.
 - Anthropic Claude Sonnet 5.5 (`claude-sonnet-5-5`, 200k-token context, extended thinking) ported the change to current `master` and verified it. It used the same kind of coding agent with tool use, shell access and test execution.
+- The follow-up repair on top of the ported change (null-clearing contract, alias rejection with the completed multi-spelling guard, `executeRun` regressions, fixture hardening) was written and verified by the project coding agent running under the harness-assigned model label `muse-canary(xhigh)` at extra-high reasoning effort, with tool use, shell access and test execution. That label is a routing alias, not a vendor/version identifier, so no vendor claim is made for this line.
 
 ## Checklist
 
