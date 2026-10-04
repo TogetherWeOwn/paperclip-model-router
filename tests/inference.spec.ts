@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
+import { gzipSync } from "node:zlib";
 
 import {
   createRequest,
@@ -509,6 +510,115 @@ describe("single-attempt transport", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe.each(["sdk", "direct"] as const)("compatible response contract through %s", (path) => {
+  const validBody = JSON.stringify({
+    object: "chat.completion",
+    choices: [{ index: 0, message: { role: "assistant", content: "fixture reply" }, finish_reason: "stop" }],
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function invokeFixture(body: string | ArrayBuffer, headers: Record<string, string>, maxResponseBytes?: number) {
+    const config = fixtureConfig("company-a").upstream;
+    if (maxResponseBytes !== undefined) config.maxResponseBytes = maxResponseBytes;
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => path === "sdk"
+      // The stock host buffers raw bytes and serializes them as UTF-8 text.
+      ? fetchThroughSdk({ status: 200, statusText: "OK", headers, body: typeof body === "string" ? body : Buffer.from(body).toString("utf8") })
+      : new Response(body, { status: 200, headers }));
+    if (path === "direct") vi.stubGlobal("fetch", fetch);
+    const result = await invokeCompatibleUpstream({
+      http: path === "direct" ? directFetchHttpClient : { fetch },
+      config, credential: "fixture-credential", request, modelId: "fixture-model",
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const init = fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(init?.headers).toMatchObject({ "Accept-Encoding": "identity" });
+    expect(result.response === null || result.error === null).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("fixture-credential");
+    return result;
+  }
+
+  it.each([undefined, "", "identity", "IDENTITY"])("accepts valid JSON with encoding %s", async (encoding) => {
+    const result = await invokeFixture(validBody, {
+      "content-type": "Application/JSON; charset=utf-8",
+      ...(encoding === undefined ? {} : { "content-encoding": encoding }),
+    });
+    expect(result.error).toBeNull();
+    expect(result.response).toMatchObject({
+      modelId: "fixture-model", content: [{ type: "text", text: "fixture reply" }], stopReason: "end-turn",
+    });
+  });
+
+  it.each([undefined, "text/html", "text/plain", "text/event-stream"])("refuses media %s even when the body is valid JSON", async (media) => {
+    const result = await invokeFixture(validBody, media === undefined ? {} : { "content-type": media });
+    expect(result.response).toBeNull();
+    expect(result.error).toMatchObject({
+      code: "invalid-upstream-response", retryable: false,
+      message: "The compatible upstream did not return JSON response media.",
+    });
+  });
+
+  it.each(["gzip", "br", "deflate", "gzip, br", "unknown"])("refuses encoding %s even when fetch already decoded the body", async (encoding) => {
+    const result = await invokeFixture(validBody, { "content-type": "application/json", "content-encoding": encoding });
+    expect(result.response).toBeNull();
+    expect(result.error).toMatchObject({
+      code: "invalid-upstream-response", retryable: false,
+      message: "The compatible upstream returned a non-identity response encoding.",
+    });
+  });
+
+  it("refuses compressed bytes and does not guess a decoder from the body", async () => {
+    const compressed = Uint8Array.from(gzipSync(validBody)).buffer;
+    const labelled = await invokeFixture(compressed, { "content-type": "application/json", "content-encoding": "gzip" });
+    expect(labelled.response).toBeNull();
+    expect(labelled.error).toMatchObject({
+      code: "invalid-upstream-response", retryable: false,
+      message: "The compatible upstream returned a non-identity response encoding.",
+    });
+    const mislabelled = await invokeFixture(compressed, { "content-type": "application/json" });
+    expect(mislabelled.response).toBeNull();
+    expect(mislabelled.error).toMatchObject({
+      code: "invalid-upstream-response", retryable: false,
+      message: "The compatible upstream returned invalid JSON.",
+    });
+  });
+
+  it("reports the media refusal first when both media and encoding are unsupported", async () => {
+    const result = await invokeFixture(validBody, { "content-type": "text/plain", "content-encoding": "gzip" });
+    expect(result.error?.message).toBe("The compatible upstream did not return JSON response media.");
+  });
+
+  it.each(["", "{", "<html>fixture-only</html>", "data: fixture-only\n\n"])("refuses invalid JSON body %j", async (body) => {
+    const result = await invokeFixture(body, { "content-type": "application/json" });
+    expect(result.response).toBeNull();
+    expect(result.error).toMatchObject({
+      code: "invalid-upstream-response", retryable: false,
+      message: "The compatible upstream returned invalid JSON.",
+    });
+    expect(JSON.stringify(result)).not.toContain("fixture-only");
+  });
+
+  it.each(["null", "[]", "{}", '{"object":"chat.completion","choices":[]}'])("refuses invalid success envelope %s", async (body) => {
+    const result = await invokeFixture(body, { "content-type": "application/json" });
+    expect(result.response).toBeNull();
+    expect(result.error).toMatchObject({
+      code: "invalid-upstream-response", retryable: false,
+      message: "The compatible upstream returned an invalid success envelope.",
+    });
+  });
+
+  it("enforces the decoded UTF-8 byte ceiling, including the exact boundary", async () => {
+    const body = validBody.replace("fixture reply", "雪".repeat(512));
+    const byteLength = new TextEncoder().encode(body).byteLength;
+    expect(byteLength).toBeGreaterThan(body.length);
+    const accepted = await invokeFixture(body, { "content-type": "application/json" }, byteLength);
+    expect(accepted.error).toBeNull();
+    const oversized = await invokeFixture(body, { "content-type": "application/json" }, byteLength - 1);
+    expect(oversized.response).toBeNull();
+    expect(oversized.error).toMatchObject({ code: "upstream-response-too-large", retryable: false });
   });
 });
 
