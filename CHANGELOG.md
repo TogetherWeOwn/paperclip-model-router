@@ -150,6 +150,37 @@ version is not present here.
   case-variant, dupe-vs-`fallbackModelId`, fallback stays exact, shipped
   fixtures stay green, schema backstop). Three mutation probes (throw
   removed / fold removed / validator catch removed) go 5 / 2 / 3 red.
+- **Decision-history read path + configurable retention (TOG-7897, gap
+  G16).** Decision rows had insert + 90-day prune but no read path, and
+  retention was a hardcoded constant.
+  - New company-scoped `query-decisions` action: returns the caller's own
+    recent decision records (selection, model, outcome, latency, token
+    usage, capacity facts), newest first, at most 200 rows per call, inside
+    that company's retention window. The company id comes from the
+    host-authorized action context and is bound as the query's `$1` — never
+    from params — so a caller can only ever see its own company's history;
+    every returned record is stamped with the caller's company id.
+  - New optional `decisionLog.retentionDays` company config (integer
+    1–3650, default 90): bounds visible history. Physical pruning and
+    legacy import preserve the earlier of the history cutoff and current
+    UTC month start, including cap-disabled companies, so a short window
+    cannot erase monthly spend-cap evidence. Legacy reconciliation precedes
+    the ledger read. Each write retries maintenance; startup enumerates
+    company IDs from persisted decision rows and applies per-company DELETEs,
+    with no global default sweep or lossy writer index. Unreadable policy
+    skips pruning and defers reconciliation without marking it complete.
+    Absent policy (including `decisionLog: {}`) defaults; malformed explicit
+    policy is rejected at validation and resolution. These corrections
+    address the PR #85 CHANGES findings (TOG-10716).
+  - `tests/tog-7897-decision-history.spec.ts`: company isolation, limit
+    clamping, retention override on write/sweep/import and validation.
+    `tests/tog-10716-retention-accounting.spec.ts`: mixed 7/365-day persisted
+    writers without an index, startup/config outages and recovery, repeated
+    $1.25/$1 over-cap halts, legacy accounting and UTC month rollover,
+    cap-disabled physical retention, and optional/malformed policy agreement.
+  - `scripts/validate-migrations-against-host.mjs` rehearses the new
+    SELECT and the per-company prune against real Postgres, and the host
+    query validator accepts the read SQL.
 - **Rule 0 patterns precompile once and fail closed at config load (TOG-7881,
   gap G2).** `matchRule0` (`src/engine/select.ts`) used to construct
   `new RegExp` per invocation inside a try/catch: invalid patterns were

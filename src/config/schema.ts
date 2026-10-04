@@ -347,6 +347,21 @@ export const ROUTER_CONFIG_SCHEMA = {
         },
       },
     },
+    decisionLog: {
+      type: "object",
+      title: "Decision history retention",
+      additionalProperties: false,
+      properties: {
+        retentionDays: {
+          type: "integer",
+          minimum: 1,
+          maximum: 3650,
+          default: 90,
+          description:
+            "TOG-7897: visible routing-history window in days. Physical pruning also preserves the entire current UTC accounting month, even with spend caps disabled.",
+        },
+      },
+    },
     rule0: {
       type: "object",
       additionalProperties: false,

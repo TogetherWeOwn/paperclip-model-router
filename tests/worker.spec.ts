@@ -180,8 +180,12 @@ describe("durable decision records", () => {
         { requestId: "outside", recordedAt: new Date(now.getTime() - 90 * 24 * 60 * 60 * 1_000 - 1) },
         { requestId: "inside", recordedAt: new Date(now.getTime() - 90 * 24 * 60 * 60 * 1_000 + 1) },
       ];
+      harness.ctx.db.query = async <T>(sql: string, params?: unknown[]): Promise<T[]> => {
+        harness.dbQueries.push({ sql, params });
+        return [{ company_id: COMPANY_A }] as T[];
+      };
       harness.ctx.db.execute = async (sql, params) => {
-        const cutoff = new Date(String(params?.[0])).getTime() - Number(params?.[1]) * 24 * 60 * 60 * 1_000;
+        const cutoff = new Date(String(params?.[1])).getTime();
         for (let index = retained.length - 1; index >= 0; index -= 1) {
           if (retained[index]!.recordedAt.getTime() < cutoff) retained.splice(index, 1);
         }
@@ -191,8 +195,8 @@ describe("durable decision records", () => {
       const { definition } = createPlugin();
       await definition.setup(harness.ctx);
 
-      expect(harness.dbExecutes[0]).toMatchObject({ params: [now.toISOString(), 90] });
-      expect(harness.dbExecutes[0]?.sql).toContain("$2 * interval '1 day'");
+      expect(harness.dbExecutes[0]).toMatchObject({ params: [COMPANY_A, new Date(now.getTime() - 90 * 86_400_000).toISOString()] });
+      expect(harness.dbExecutes[0]?.sql).toContain("company_id = $1 AND recorded_at < $2::timestamptz");
       expect(retained.map((record) => record.requestId)).toEqual(["inside"]);
     } finally {
       vi.useRealTimers();
@@ -1068,6 +1072,13 @@ describe("async invoke (submit + poll)", () => {
     let scopeIsDead = false;
     const originalSet = harness.ctx.state.set.bind(harness.ctx.state);
     const originalGet = harness.ctx.state.get.bind(harness.ctx.state);
+    const originalExecute = harness.ctx.db.execute.bind(harness.ctx.db);
+    // The host gates db.execute too. Earlier this fixture happened to stop
+    // at legacy state reads; reconciliation now runs before the ledger read.
+    harness.ctx.db.execute = async (sql, params) => {
+      if (scopeIsDead) throw new Error("fixture db.execute: expired invocation scope");
+      return originalExecute(sql, params);
+    };
     harness.ctx.state.set = async (key, value) => {
       if (scopeIsDead) {
         throw new Error(

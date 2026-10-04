@@ -4,10 +4,12 @@ import {
   DEFAULT_REQUEST_TIMEOUT_MS,
   FORBIDDEN_EXTRA_HEADERS,
 } from "./upstream-constraints.js";
+import { DECISION_LOG_RETENTION_DAYS } from "../constants.js";
 import type {
   BudgetConfig,
   CapacityRoutingConfig,
   CompatibleUpstreamConfig,
+  DecisionLogConfig,
   RouterConfig,
   RoutingConfig,
   Rule0Config,
@@ -60,6 +62,11 @@ export const DEFAULT_CAPACITY_ROUTING: CapacityRoutingConfig = {
 export const DEFAULT_RULE0: Rule0Config = {
   enabled: true,
   deterministicPatterns: [],
+};
+
+/** TOG-7897: retention default keeps the historical 90-day window. */
+export const DEFAULT_DECISION_LOG: DecisionLogConfig = {
+  retentionDays: DECISION_LOG_RETENTION_DAYS,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -253,6 +260,18 @@ function resolveCapacitySources(value: unknown): CapacityRoutingConfig["sources"
   });
 }
 
+/** Only absent policy defaults; malformed policy must not authorize deletion. */
+function resolveDecisionLog(value: unknown): DecisionLogConfig {
+  if (value === undefined) return { ...DEFAULT_DECISION_LOG };
+  if (!isRecord(value)) throw new Error("decisionLog must be an object");
+  if (value.retentionDays === undefined) return { ...DEFAULT_DECISION_LOG };
+  const retentionDays = value.retentionDays;
+  if (typeof retentionDays !== "number" || !Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650) {
+    throw new Error("decisionLog.retentionDays must be an integer from 1 through 3650");
+  }
+  return { retentionDays };
+}
+
 function resolveRule0(value: unknown): Rule0Config {
   if (!isRecord(value)) return { ...DEFAULT_RULE0, deterministicPatterns: [] };
   const patterns: Rule0Config["deterministicPatterns"] = [];
@@ -387,5 +406,6 @@ export function resolveConfig(raw: unknown): RouterConfig {
       sources: resolveCapacitySources(capacityRaw.sources),
     },
     rule0: resolveRule0(source.rule0),
+    decisionLog: resolveDecisionLog(source.decisionLog),
   };
 }
