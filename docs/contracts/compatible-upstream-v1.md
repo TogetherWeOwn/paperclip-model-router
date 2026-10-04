@@ -436,7 +436,8 @@ type InferenceErrorCode =
   | "upstream-server-error"
   | "upstream-overloaded"
   | "invalid-upstream-response"
-  | "invocation-cancelled";
+  | "invocation-cancelled"
+  | "internal-error";
 
 interface InferenceError {
   code: InferenceErrorCode;
@@ -468,6 +469,7 @@ Error rules:
 - A 2xx response with invalid JSON or invalid required fields -> `invalid-upstream-response`, non-retryable until the upstream is fixed.
 - A run-end reap aborting an async invocation in flight (TOG-7417) -> `invocation-cancelled`, non-retryable. Never produced by the transport itself; the transport reports an abort as `invocation-cancelled` only when its caller-supplied abort signal fired, and the reap settles the pending row to the same code. Retry logic MUST NOT replay a cancelled run: the host declared it finished.
 - A fail-closed `resolveConfig` throw on the stored company config (bad Rule 0 pattern per TOG-7881, duplicate model id, forbidden extraHeaders) -> `invalid-config`, non-retryable until the operator fixes the config. The message names the offending path and index; the refusal is persisted to the decision log. Never `upstream-url-rejected` (the upstream was never reached) and never `invalid-request` (the caller request is not at fault).
+- An unexpected router-side failure at the tool boundary (unreadable plugin state, a failing decision-record, metrics, stickiness or pending-state write, or any other fault the preparation and recording paths do not already classify) -> `internal-error`, retryable. The message is a fixed router-authored string: it MUST NOT copy exception text, a secret, a URL or an address, and the cause is logged for the operator only. A tool handler MUST resolve this as data on the envelope the caller already handles; it MUST NOT throw. `internal-error` can also be returned after the upstream call has finished, when a post-transport health or audit write fails. The generation is then discarded, and a retry issues a new upstream call. On the sync and submit surfaces the envelope is an `InferenceResult` with `outcome: "error"`, `decision: null` and `response: null`, carrying a router-minted `requestId`.
 - After stock `ctx.http.fetch` returns its buffered body, the adapter measures its UTF-8 byte length. Exceeding `maxResponseBytes` -> `upstream-response-too-large`, non-retryable for the same configuration. This is a caller-visible acceptance bound, not an early network-read bound: stock v1 may buffer up to its host ceiling before the plugin can reject it.
 
 `retryable` tells the caller whether a new operation may succeed. It never authorizes an automatic plugin replay or model change.
@@ -538,12 +540,22 @@ Poll returns one of:
 | { status: "completed" | "error"; requestId: string; decision: RoutingDecision;
     outcome: "completed" | "error"; response: NormalizedResponse | null; error: InferenceError | null;
     startedAt: string; expiresAt: string; runId: string | null; agentId: string | null }
+| { status: "error"; error: InferenceError }  // failed poll, not a terminal record
 | { status: "not-found" }
 ```
 
 - A terminal poll record carries the complete sync `InferenceResult`
   envelope plus only these async keys: `status`, `startedAt`, `expiresAt`,
   `runId`, `agentId`. `status` MUST mirror the wrapped `outcome`.
+- `{ status: "error"; error }` with no other keys reports a failed poll, not
+  a terminal outcome: the pending store could not be read (section 8,
+  `internal-error`). It carries no `requestId`, `decision`, `startedAt` or
+  `expiresAt`, and the invocation may still be pending or may already have
+  finished. A caller tells it apart from a terminal `"error"` record by
+  `error.code === "internal-error"` (a terminal record always carries
+  `requestId`) and MUST re-poll rather than treat the invocation as failed.
+  A missing or non-object tool parameter reads as a missing `requestId` and
+  resolves `not-found`; the poll tool never throws.
 - `startedAt`/`expiresAt` are ISO-8601 timestamps bounding pollability
   (section 10.3). `runId`/`agentId` record the submitting run and agent;
   rows written before run tracking existed read them as null.
@@ -725,7 +737,8 @@ TOG-532 is complete only when implementation has exact-wire tests covering, at m
 15. source and packed-artifact proof that inference networking uses only `ctx.http.fetch` except the single sanctioned async background client (section 10.2), with `Accept-Encoding: identity` and no other direct Node or third-party HTTP client;
 16. stock Paperclip plugin API v1 build, pack, install validation, and load without runtime host modification;
 17. repository-wide absence of every removed field and behavior in section 13, except historical ADRs or migration notes that clearly label them obsolete.
-18. async submit/poll fidelity to section 10: pending receipt and terminal envelopes carry exactly the stated keys; submit resolves early exits to `InferenceResult` with no pending row; polls after `expiresAt` return `not-found` without serving the expired value; late outcomes never resurrect an expired or reaped row; the reap settles still-pending rows to `invocation-cancelled` exactly once and never throws; neither continuation, reap, nor reconcile issues a second upstream request.
+18. async submit/poll fidelity to section 10: pending receipt and terminal envelopes carry exactly the stated keys; submit resolves early exits to `InferenceResult` with no pending row; polls after `expiresAt` return `not-found` without serving the expired value; late outcomes never resurrect an expired or reaped row; the reap settles still-pending rows to `invocation-cancelled` exactly once and never throws; neither continuation, reap, nor reconcile issues a second upstream request;
+19. no-throw tool boundary: every agent tool resolves data on every failure path; unexpected infrastructure faults return `internal-error` (section 8) with a fixed message that leaks no exception text, secret or URL, and an unreadable pending store returns the failed-poll envelope of section 10.1.
 
 TOG-533 independently verifies the same contract, including SSRF posture and the packaged artifact. A public release or live installation requires separate authorization and is not granted by this document.
 

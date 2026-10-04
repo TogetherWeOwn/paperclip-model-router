@@ -1229,12 +1229,14 @@ export function createPlugin() {
         if (prepared.kind === "terminal") return prepared.result;
         const { requestId, startedAt, actor, config, request, decision, credential, selectedEntry } = prepared.prepared;
 
-        // TOG-7417: one AbortController per in-flight call. Register before
-        // the continuation starts; the reap aborts this controller, which is
-        // what terminates the real upstream socket.
+        // TOG-7417: one AbortController per in-flight call. It is registered
+        // right after the pending row is written and before the continuation
+        // starts; the reap aborts this controller, which is what terminates the
+        // real upstream socket. Registering after the write means a failed
+        // write (which the tool boundary resolves as `internal-error` data)
+        // cannot leave an entry behind that no continuation will ever delete.
         const abortController = new AbortController();
         const controllerKey = pendingInvocationControllerKey(companyId, requestId);
-        pendingInvocationControllers.set(controllerKey, abortController);
 
         const startedAtIso = new Date(startedAt).toISOString();
         const expiresAt = new Date(startedAt + PENDING_INVOCATION_TTL_MS).toISOString();
@@ -1247,6 +1249,7 @@ export function createPlugin() {
           runId: actor.runId,
           agentId: actor.agentId,
         });
+        pendingInvocationControllers.set(controllerKey, abortController);
         // Best-effort: a submit whose index write fails still returns pending
         // (the pending row is the source of truth); the reap prunes stale
         // index entries against the record, so a failure heals on next reap.
