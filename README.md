@@ -109,7 +109,10 @@ and snapshots are reassembled in config order, so a single failing source keeps 
 error while the healthy lanes keep their evidence.
 Stored evidence contains only model ID, source ID, a sanitized lane label, health, posture,
 utilization, and reset facts. It contains no credential, raw body, URL, provider, account, or
-serving-identity claim.
+serving-identity claim. Read-only roster readouts (weekly burn-down projection in
+`packages/lane-capacity/src/burn-down.ts`, Muse-lane headroom-per-hour burn rate in
+`packages/lane-capacity/src/muse-burn-rate.ts`) derive from stored evidence without mutating
+config, telemetry, or admission.
 
 #### `unknownTelemetry` — absence of a signal is not a signal (TOG-1040)
 

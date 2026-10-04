@@ -24,6 +24,16 @@ export type {
   BurnDownVerdict,
   LaneBurnDown,
 } from "./burn-down.js";
+export {
+  museLaneBurnRate,
+  museLaneInputFromWeeklyWindow,
+  rankMuseLaneBurnRates,
+} from "./muse-burn-rate.js";
+export type {
+  MuseBurnRateReason,
+  MuseLaneBurnRate,
+  MuseLaneBurnRateInput,
+} from "./muse-burn-rate.js";
 export type {
   CapacityEvidence,
   CapacityHealth,
