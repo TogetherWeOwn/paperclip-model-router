@@ -42,6 +42,44 @@ version is not present here.
 
 ### Changed
 
+- **CI runs only what the change affects.** A native-git `changes` job
+  (`scripts/ci-changes.mjs`) skips the `typecheck, test, build, package,
+  version` job on a PR that touches only inert documentation (`AGENTS.md`,
+  `CONTRIBUTING.md`, `docs/decisions/**`, `docs/security/**`); a new `ci-ok`
+  aggregate is the single required result, and `npm run check:ci` requires it
+  in place of the skippable job. Push to `main`, a nightly schedule and manual
+  dispatch always run everything, as does any change to code, dependencies,
+  build config or `.github/**`. See `docs/decisions/0013`.
+- **`docs/OPERATIONS.md` rewritten post-public (TOG-7889, gap G19).** The
+  TOG-532 "not authorized for a public release or live installation" ban is
+  dropped, stale since the repo went public on hosted runners. The runbook
+  now separates checkout commands (run verbatim, output quoted) from
+  instance-admin commands (not run; each cites host source or the recorded
+  v0.5.0 deployment). Verified transcripts, 2026-10-02: `npm run verify` on a
+  clean `v0.8.0` checkout (38 files, 453 tests, strict host checks,
+  `REHEARSAL PASSED`; `main` reports 71 files, 822 tests); the full
+  three-company `rehearse` output including Evidence 8; `check:pin --for-card`
+  passing at the tag and refusing from `main`; and an unauthenticated `curl`
+  download, sha256 check and unpack of the v0.8.0 asset. Corrections:
+  - **Upgrade.** The ordinary upgrade re-reads the package from the plugin
+    row's `package_path`. So the row is repointed at a fresh directory
+    first; a symlink repoint serves the cached old manifest.
+  - **Rollback.** Rollback is that same procedure aimed at the old
+    directory. `plugin install "$OLD_DIR"` is refused with 409 on a live
+    key.
+  - **Config restore.** Config restore passes `{configJson}`, not the whole
+    saved record.
+  - **Capability-escalating path.** The path documents the soft-uninstall
+    requirement, and does not call it canonical.
+  - **Refresh SLO.** The SLO query counts only capacity-routed decisions,
+    which excludes pre-002 and capacity-off rows. It guards an empty window
+    with `NULLIF` and is marked unreleased; it was tested against a scratch
+    database.
+
+  `tests/docs-install-version.spec.ts` pins the install path, the TOG-532
+  removal, the `package_path` upgrade, the 409-safe rollback and the SLO
+  denominator. No code changes.
+
 - **Gitleaks operator-patch agreement is pinned by a regression spec
   (TOG-7899, gap G20).** The digest-verified gitleaks install +
   `scripts/gitleaks-selftest.sh` wiring landed in the live `secret-scan`

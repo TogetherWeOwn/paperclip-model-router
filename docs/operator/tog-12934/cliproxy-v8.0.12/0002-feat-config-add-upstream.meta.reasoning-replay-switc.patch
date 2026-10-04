@@ -1,0 +1,268 @@
+From 07923b24fc06f3f844bed03c4eb9f92eb1d4f4e5 Mon Sep 17 00:00:00 2001
+From: Paperclip Agent <agent@togetherweown.invalid>
+Date: Sat, 3 Oct 2026 01:56:00 +0000
+Subject: [PATCH 2/4] feat(config): add upstream.meta.reasoning-replay switch
+
+Default off. Optional model patterns scope it to a canary, matched against both the
+requested name (including oauth model aliases) and the upstream model.
+---
+ config.example.yaml                           |  19 ++++
+ internal/config/config.go                     |   3 +
+ internal/config/config_types.go               |  72 ++++++++++++
+ internal/config/config_v8.go                  |   2 +-
+ internal/config/meta_reasoning_replay_test.go | 103 ++++++++++++++++++
+ 5 files changed, 198 insertions(+), 1 deletion(-)
+ create mode 100644 internal/config/meta_reasoning_replay_test.go
+
+diff --git a/config.example.yaml b/config.example.yaml
+index dd93a012..6b74e712 100644
+--- a/config.example.yaml
++++ b/config.example.yaml
+@@ -417,6 +417,25 @@ upstream:
+     # The injected tool is also added to tool_choice.allowed_tools when applicable.
+     inject-x-search: false
+ 
++  meta:
++    # Replay a Muse model's own reasoning back to it on later tool turns, safely.
++    # Meta binds each reasoning envelope to the account that issued it and rejects a replay through
++    # any other account, and a client resends the whole history on every turn, so envelopes from
++    # several pool accounts end up mixed in one request. When enabled the proxy tags every
++    # envelope it returns (Anthropic thinking signature or Responses encrypted_content, streaming
++    # or not) with the issuing account, forwards an envelope only when the credential selected for
++    # the request is the one that issued it, and drops every other or untagged one - the behavior
++    # without this feature. If Meta still rejects a replayed envelope the request is retried once
++    # without any, so the 400 never reaches the client. Each request that carried envelopes logs
++    # "meta reasoning replay: kept=N dropped_foreign=N dropped_untagged=N" for measuring the hit rate.
++    # Turning it off again is safe: tagged envelopes from earlier turns are dropped like any other.
++    reasoning-replay:
++      enabled: false # default false: envelopes are neither tagged nor replayed
++      # Limit the feature to matching models for a canary ("*" wildcards, case-insensitive; both the
++      # requested name, including an oauth.model-alias, and the upstream model are tested).
++      # Empty or omitted means every Meta model once enabled.
++      # models: ["muse-canary*"]
++
+ # API-key upstreams are separate from access.api-keys (client authentication).
+ # Each provider contains named groups: one base-url, shared settings, and a keys list.
+ # Add another group for another endpoint; base-url belongs to the group, not a key.
+diff --git a/internal/config/config.go b/internal/config/config.go
+index ca3767a5..d933842c 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -136,6 +136,9 @@ type Config struct {
+ 	// XAI configures provider-wide xAI request behavior.
+ 	XAI XAIConfig `yaml:"xai" json:"xai"`
+ 
++	// Meta configures provider-wide Meta (Muse) request behavior.
++	Meta MetaConfig `yaml:"meta" json:"meta"`
++
+ 	// Codex configures provider-wide Codex request behavior.
+ 	Codex CodexConfig `yaml:"codex" json:"codex"`
+ 
+diff --git a/internal/config/config_types.go b/internal/config/config_types.go
+index c3584aa1..bd779aa6 100644
+--- a/internal/config/config_types.go
++++ b/internal/config/config_types.go
+@@ -148,6 +148,78 @@ type XAIConfig struct {
+ 	InjectXSearch bool `yaml:"inject-x-search" json:"inject-x-search"`
+ }
+ 
++// MetaConfig configures provider-wide Meta (Muse) request behavior.
++type MetaConfig struct {
++	// ReasoningReplay controls account-safe replay of Muse reasoning across tool turns.
++	ReasoningReplay MetaReasoningReplayConfig `yaml:"reasoning-replay" json:"reasoning-replay"`
++}
++
++// MetaReasoningReplayConfig replays a Muse model's own reasoning back to it on later
++// turns. Muse reasoning is an encrypted envelope that Meta binds to the account that
++// issued it, so the proxy tags every envelope it returns with that account and only
++// forwards an envelope when the credential selected for the next turn is the one that
++// issued it. Anything else is dropped, which is the behavior without this feature.
++// If Meta still rejects a replayed envelope the request is retried once without any.
++type MetaReasoningReplayConfig struct {
++	// Enabled turns the feature on. Default false: reasoning envelopes are neither
++	// tagged nor replayed, and a tagged envelope from an earlier run is dropped.
++	Enabled bool `yaml:"enabled" json:"enabled"`
++	// Models limits the feature to matching model names for a canary. Patterns are
++	// case-insensitive and support "*" wildcards; both the requested name (including
++	// any oauth-model-alias) and the upstream model are tested. Empty means every
++	// Meta model when Enabled is true.
++	Models []string `yaml:"models,omitempty" json:"models,omitempty"`
++}
++
++// AppliesToModel reports whether reasoning replay is on for any of the given model names.
++func (c MetaReasoningReplayConfig) AppliesToModel(modelNames ...string) bool {
++	if !c.Enabled {
++		return false
++	}
++	patterns := make([]string, 0, len(c.Models))
++	for _, pattern := range c.Models {
++		if pattern = strings.ToLower(strings.TrimSpace(pattern)); pattern != "" {
++			patterns = append(patterns, pattern)
++		}
++	}
++	if len(patterns) == 0 {
++		return true
++	}
++	for _, name := range modelNames {
++		name = strings.ToLower(strings.TrimSpace(name))
++		if name == "" {
++			continue
++		}
++		for _, pattern := range patterns {
++			if matchModelGlob(pattern, name) {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++// matchModelGlob matches value against a pattern whose only metacharacter is "*".
++func matchModelGlob(pattern, value string) bool {
++	parts := strings.Split(pattern, "*")
++	if len(parts) == 1 {
++		return pattern == value
++	}
++	if !strings.HasPrefix(value, parts[0]) {
++		return false
++	}
++	value = value[len(parts[0]):]
++	last := parts[len(parts)-1]
++	for _, part := range parts[1 : len(parts)-1] {
++		idx := strings.Index(value, part)
++		if idx < 0 {
++			return false
++		}
++		value = value[idx+len(part):]
++	}
++	return strings.HasSuffix(value, last)
++}
++
+ // DevinConfig configures provider-wide Devin request behavior.
+ type DevinConfig struct {
+ 	// SensitiveWords is a list of words to obfuscate with zero-width characters in system prompts and messages.
+diff --git a/internal/config/config_v8.go b/internal/config/config_v8.go
+index 92cec524..77fb5c9c 100644
+--- a/internal/config/config_v8.go
++++ b/internal/config/config_v8.go
+@@ -98,7 +98,7 @@ func buildV8Paths() []configPath {
+ 		{"antigravity-signature-cache-enabled", "oauth.providers.antigravity.signature-cache-enabled"},
+ 		{"antigravity-signature-bypass-strict", "oauth.providers.antigravity.signature-bypass-strict"},
+ 		{"quota-exceeded.antigravity-credits", "oauth.providers.antigravity.antigravity-credits"},
+-		{"xai", "upstream.xai"}, {"devin", "oauth.providers.devin"},
++		{"xai", "upstream.xai"}, {"meta", "upstream.meta"}, {"devin", "oauth.providers.devin"},
+ 		{"disable-image-generation", "multimedia.disable-image-generation"}, {"gpt-image-2-base-model", "multimedia.gpt-image-2-base-model"},
+ 		{"video-result-auth-cache-ttl", "multimedia.video-result-auth-cache-ttl"},
+ 		{"debug", "observability.logs.debug"}, {"logging-to-file", "observability.logs.logging-to-file"},
+diff --git a/internal/config/meta_reasoning_replay_test.go b/internal/config/meta_reasoning_replay_test.go
+new file mode 100644
+index 00000000..503acaea
+--- /dev/null
++++ b/internal/config/meta_reasoning_replay_test.go
+@@ -0,0 +1,103 @@
++package config
++
++import (
++	"os"
++	"path/filepath"
++	"reflect"
++	"testing"
++)
++
++func TestMetaReasoningReplayDefaultsOff(t *testing.T) {
++	cfg, err := ParseConfigBytes([]byte("port: 8317\n"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if cfg.Meta.ReasoningReplay.Enabled || len(cfg.Meta.ReasoningReplay.Models) != 0 {
++		t.Fatalf("meta reasoning replay must default to off, got %+v", cfg.Meta.ReasoningReplay)
++	}
++	if cfg.Meta.ReasoningReplay.AppliesToModel("muse-spark-1.3") {
++		t.Fatal("a default config applied reasoning replay to a model")
++	}
++}
++
++func TestMetaReasoningReplayConfigSurvivesLayoutMigration(t *testing.T) {
++	legacy := []byte("meta: {reasoning-replay: {enabled: true, models: ['muse-spark-1.3*', 'canary/*']}}\n")
++	canonical := []byte("upstream:\n  meta:\n    reasoning-replay:\n      enabled: true\n      models: ['muse-spark-1.3*', 'canary/*']\n")
++	want := MetaReasoningReplayConfig{Enabled: true, Models: []string{"muse-spark-1.3*", "canary/*"}}
++	for name, raw := range map[string][]byte{"legacy": legacy, "upstream": canonical} {
++		t.Run(name, func(t *testing.T) {
++			cfg, err := ParseConfigBytes(raw)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if !reflect.DeepEqual(cfg.Meta.ReasoningReplay, want) {
++				t.Fatalf("parsed %+v, want %+v", cfg.Meta.ReasoningReplay, want)
++			}
++			if got := cfg.CloneForRuntime().Meta.ReasoningReplay; !reflect.DeepEqual(got, want) {
++				t.Fatalf("clone changed the setting: %+v", got)
++			}
++			migrated, _, err := NormalizeConfigLayout(raw, true)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if err := ValidateV8Config(migrated); err != nil {
++				t.Fatal(err)
++			}
++			restored, err := ParseConfigBytes(migrated)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if !reflect.DeepEqual(restored.Meta.ReasoningReplay, want) {
++				t.Fatalf("migration changed the setting: %+v", restored.Meta.ReasoningReplay)
++			}
++			path := filepath.Join(t.TempDir(), "config.yaml")
++			if err := os.WriteFile(path, raw, 0600); err != nil {
++				t.Fatal(err)
++			}
++			if err := SaveConfigPreserveComments(path, cfg, true); err != nil {
++				t.Fatal(err)
++			}
++			saved, err := os.ReadFile(path)
++			if err != nil {
++				t.Fatal(err)
++			}
++			reloaded, err := ParseConfigBytes(saved)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if !reflect.DeepEqual(reloaded.Meta.ReasoningReplay, want) {
++				t.Fatalf("save/reload changed the setting: %+v\n%s", reloaded.Meta.ReasoningReplay, saved)
++			}
++		})
++	}
++}
++
++func TestMetaReasoningReplayAppliesToModel(t *testing.T) {
++	for _, tc := range []struct {
++		name   string
++		cfg    MetaReasoningReplayConfig
++		models []string
++		want   bool
++	}{
++		{"disabled ignores patterns", MetaReasoningReplayConfig{Models: []string{"*"}}, []string{"muse-spark-1.3"}, false},
++		{"enabled with no patterns covers every model", MetaReasoningReplayConfig{Enabled: true}, []string{"muse-spark-1.3"}, true},
++		{"blank patterns are no patterns", MetaReasoningReplayConfig{Enabled: true, Models: []string{" ", ""}}, []string{"muse-spark-1.3"}, true},
++		{"exact match is case-insensitive", MetaReasoningReplayConfig{Enabled: true, Models: []string{"Muse-Spark-1.3"}}, []string{"muse-spark-1.3"}, true},
++		{"exact pattern does not match a longer name", MetaReasoningReplayConfig{Enabled: true, Models: []string{"muse-spark-1.3"}}, []string{"muse-spark-1.3-contributor"}, false},
++		{"trailing wildcard", MetaReasoningReplayConfig{Enabled: true, Models: []string{"muse-spark-1.3*"}}, []string{"muse-spark-1.3-contributor"}, true},
++		{"leading wildcard", MetaReasoningReplayConfig{Enabled: true, Models: []string{"*-contributor"}}, []string{"muse-spark-1.2-contributor"}, true},
++		{"inner wildcard", MetaReasoningReplayConfig{Enabled: true, Models: []string{"muse-*-contributor"}}, []string{"muse-spark-1.3-contributor"}, true},
++		{"wildcard crosses a prefix separator", MetaReasoningReplayConfig{Enabled: true, Models: []string{"canary/*"}}, []string{"canary/muse-spark-1.3"}, true},
++		{"non-matching pattern", MetaReasoningReplayConfig{Enabled: true, Models: []string{"muse-spark-1.2*"}}, []string{"muse-spark-1.3"}, false},
++		{"alias matches even when the upstream name does not", MetaReasoningReplayConfig{Enabled: true, Models: []string{"muse-canary"}}, []string{"muse-canary", "muse-spark-1.3"}, true},
++		{"upstream name matches even when the alias does not", MetaReasoningReplayConfig{Enabled: true, Models: []string{"muse-spark-1.3"}}, []string{"agent-alias", "muse-spark-1.3"}, true},
++		{"no model names given", MetaReasoningReplayConfig{Enabled: true, Models: []string{"muse-*"}}, nil, false},
++		{"wildcard must be anchored at both ends", MetaReasoningReplayConfig{Enabled: true, Models: []string{"spark"}}, []string{"muse-spark-1.3"}, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			if got := tc.cfg.AppliesToModel(tc.models...); got != tc.want {
++				t.Fatalf("AppliesToModel(%v) = %v, want %v", tc.models, got, tc.want)
++			}
++		})
++	}
++}
+-- 
+2.47.3
+

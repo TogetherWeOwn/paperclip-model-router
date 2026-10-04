@@ -7,10 +7,12 @@
  * Each test below fails on the old sequential loop for a reason that names
  * the property it pins:
  *
- * - overlap/timing: 4 x 120ms sources complete in ~120ms, not ~480ms. The
- *   overlap assertion (last start < first end) is scheduling-deterministic;
- *   the wall-clock assertion (< the sequential floor) is the acceptance shape
- *   ("completes in ~1 source-time").
+ * - overlap: 4 sources are all in flight at once. The stubbed fetch is a
+ *   barrier that releases only when 4 fetches have arrived, so the assertion
+ *   depends on the fan-out and never on wall-clock timing: a stalled event
+ *   loop delays the arrivals but cannot make them miss each other. The old
+ *   sequential loop can never put a second fetch in flight, so the barrier
+ *   times out and `maxActive` stays at 1.
  * - isolation/order: a slow 503 and a fast 401 settle out of order, but the
  *   snapshots and the joined error string stay in config order, and the good
  *   lanes keep their evidence. Removing the per-source catch (or letting one
@@ -91,26 +93,22 @@ async function workerWith(
       return "resolved-secret";
     },
   };
-  const started: Array<{ url: string; at: number }> = [];
-  const ended: Array<{ url: string; at: number }> = [];
   let active = 0;
   let maxActive = 0;
   harness.ctx.http = {
     async fetch(url) {
       active += 1;
       maxActive = Math.max(maxActive, active);
-      started.push({ url: String(url), at: performance.now() });
       try {
         return await fetchImpl(String(url));
       } finally {
         active -= 1;
-        ended.push({ url: String(url), at: performance.now() });
       }
     },
   };
   const { definition } = createPlugin();
   await definition.setup(harness.ctx);
-  return { harness, secretCalls, started, ended, stats: () => ({ maxActive }) };
+  return { harness, secretCalls, stats: () => ({ maxActive }) };
 }
 
 type RefreshResult = {
@@ -120,33 +118,57 @@ type RefreshResult = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Releases every waiter once `parties` callers have arrived. The safety timer
+ * only exists so a barrier that can never fill (a sequential loop never has a
+ * second fetch in flight) breaks and lets the assertions fail, instead of
+ * hanging until the test timeout. It starts on the first arrival and is
+ * cleared when the barrier fills, so it never fires on the passing path.
+ */
+function createBarrier(parties: number, safetyMs: number) {
+  let arrived = 0;
+  let broken = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  return {
+    async arrive() {
+      arrived += 1;
+      if (arrived >= parties) {
+        clearTimeout(timer);
+        release();
+      } else if (timer === undefined) {
+        timer = setTimeout(() => { broken = true; release(); }, safetyMs);
+      }
+      await released;
+    },
+    get broken() { return broken; },
+  };
+}
+
 describe("TOG-7893: refreshCapacity fetches with bounded concurrency", () => {
-  it("refreshes 4 slow sources in ~1 source-time with all fetches overlapping", async () => {
-    const delayMs = 120;
-    const { harness, started, ended, stats } = await workerWith(configWithSources(4, false), async () => {
-      await sleep(delayMs);
+  it("refreshes 4 sources with all fetches in flight at once", async () => {
+    // Generous on purpose: it is only the failure path's cost (one wait, shared
+    // by every parked fetch), and the passing path never waits on it.
+    const barrier = createBarrier(4, 3000);
+    const { harness, stats } = await workerWith(configWithSources(4, false), async () => {
+      await barrier.arrive();
       return okResponse();
     });
 
-    const before = performance.now();
     const refreshed = await harness.performAction(
       ACTION_KEYS.refreshCapacity, {}, { companyId: COMPANY },
     ) as unknown as RefreshResult;
-    const elapsed = performance.now() - before;
 
     expect(refreshed.error).toBeNull();
     expect(refreshed.snapshots.map((snapshot) => snapshot.source))
       .toEqual(["lane-0", "lane-1", "lane-2", "lane-3"]);
     expect(refreshed.snapshots.every((snapshot) => snapshot.error === null && snapshot.evidence.length > 0)).toBe(true);
-    // Deterministic proof of overlap: the last fetch started before the first
-    // finished. Sequential fetching spaces starts ~delayMs apart.
-    expect(Math.max(...started.map((entry) => entry.at)))
-      .toBeLessThan(Math.min(...ended.map((entry) => entry.at)));
-    // Acceptance shape: strictly less than the sequential floor (4 x delayMs),
-    // which every sequential run must take or exceed.
-    expect(elapsed).toBeLessThan(4 * delayMs);
-    expect(stats().maxActive).toBeGreaterThan(1);
-  });
+    // The barrier fills only if all 4 fetches are in flight together; a
+    // sequential loop leaves it to the safety timer.
+    expect(barrier.broken).toBe(false);
+    expect(stats().maxActive).toBe(4);
+  }, 15_000);
 
   it("isolates failing sources and keeps snapshots and errors in config order", async () => {
     const { harness } = await workerWith(configWithSources(4, false), async (url) => {

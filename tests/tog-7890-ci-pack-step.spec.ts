@@ -210,11 +210,14 @@ describe("TOG-7890: every check survived the simplification", () => {
   it("check:ci still requires both checks by name", () => {
     // The card's acceptance criterion "npm run check:ci still classifies
     // correctly" rests on the two required names reaching the classifier;
-    // the classifier itself is pinned by tests/ci-health.spec.ts.
+    // the classifier itself is pinned by tests/ci-health.spec.ts. The merged job
+    // is no longer required by its own name: change gating skips it on a
+    // docs-only PR and ci-ok is the aggregate that stands for it (decision 0013).
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
       scripts: Record<string, string>;
     };
-    expect(pkg.scripts["check:ci"]).toContain("typecheck, test, build, package, version");
+    expect(pkg.scripts["check:ci"]).toContain("--require ci-ok");
+    expect(pkg.scripts["check:ci"]).not.toContain("typecheck, test, build, package, version");
     expect(pkg.scripts["check:ci"]).toContain("secret scan");
   });
 });

@@ -1,0 +1,399 @@
+{
+  "version": 2,
+  "description": "Frozen Codex/Claude lane-row validation vectors, pack 2. Offline only: every payload below is a frozen model-usage-telemetry wire body run through the pure contract consumer (no HTTP, no live catalogue, no roster write). Pack 2 pins the time/agreement surface: snapshot expiry, reset-countdown derivation and preference, and serviceable/state agreement. Each case lists the exact expected outcome; the spec asserts full equality so behavior drift in either direction fails loudly.",
+  "clocks": {
+    "observedAt": "2026-09-10T12:00:00.000Z",
+    "fetchedAt": "2026-09-10T12:01:05.000Z",
+    "note": "Fetched 65s after observed. Countdown cases exploit the gap: an observedAt-anchored derivation differs from a fetch-anchored one, so the exact expected value proves which clock the consumer uses."
+  },
+  "sources": {
+    "codex": {
+      "id": "cliproxy-codex",
+      "statusUrl": "https://deployment.example.invalid/telemetry/codex",
+      "modelIds": ["oc/gpt-5.6-codex"],
+      "healthFields": ["state"],
+      "requestTimeoutMs": 5000,
+      "maxResponseBytes": 262144,
+      "windows": []
+    },
+    "claude": {
+      "id": "cliproxy-claude",
+      "statusUrl": "https://deployment.example.invalid/telemetry/claude",
+      "modelIds": ["oc/claude-sonnet-5"],
+      "healthFields": ["state"],
+      "requestTimeoutMs": 5000,
+      "maxResponseBytes": 262144,
+      "windows": []
+    },
+    "both": {
+      "id": "cliproxy-both",
+      "statusUrl": "https://deployment.example.invalid/telemetry/both",
+      "modelIds": ["oc/gpt-5.6-codex", "oc/claude-sonnet-5"],
+      "healthFields": ["state"],
+      "requestTimeoutMs": 5000,
+      "maxResponseBytes": 262144,
+      "windows": []
+    }
+  },
+  "cases": [
+    {
+      "id": "expiry-stale-snapshot",
+      "title": "a snapshot older than its own stale budget reads unavailable with no rows",
+      "source": "both",
+      "fetchedAt": "2026-09-10T12:10:00.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "oc/gpt-5.6-codex": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.2,
+            "resetsAt": null,
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          },
+          "oc/claude-sonnet-5": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.4,
+            "resetsAt": null,
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "unavailable",
+        "reasonCode": "capacity-snapshot-stale",
+        "rows": []
+      }
+    },
+    {
+      "id": "expiry-past-reset-preserved",
+      "title": "a row whose reset already passed still reports with its expiry timestamp intact",
+      "source": "codex",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "oc/gpt-5.6-codex": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.43,
+            "resetsAt": "2026-09-10T12:00:30.000Z",
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": [
+          {
+            "modelId": "oc/gpt-5.6-codex",
+            "health": "healthy",
+            "posture": "available",
+            "utilization": 0.43,
+            "resetsAt": "2026-09-10T12:00:30.000Z",
+            "resetInSeconds": 30
+          }
+        ]
+      }
+    },
+    {
+      "id": "countdown-producer-wins",
+      "title": "the producer's own reset countdown is preferred over the resetsAt-derived one",
+      "source": "claude",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "oc/claude-sonnet-5": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.4,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": 3723,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": [
+          {
+            "modelId": "oc/claude-sonnet-5",
+            "health": "healthy",
+            "posture": "available",
+            "utilization": 0.4,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": 3723
+          }
+        ]
+      }
+    },
+    {
+      "id": "countdown-derived-from-observed",
+      "title": "without a producer countdown the reset is derived against observedAt, not fetch time",
+      "source": "claude",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "oc/claude-sonnet-5": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.4,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": [
+          {
+            "modelId": "oc/claude-sonnet-5",
+            "health": "healthy",
+            "posture": "available",
+            "utilization": 0.4,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": 600
+          }
+        ]
+      }
+    },
+    {
+      "id": "countdown-invalid-falls-back",
+      "title": "a negative producer countdown is rejected and the resetsAt derivation is used",
+      "source": "codex",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "oc/gpt-5.6-codex": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.43,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": -5,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": [
+          {
+            "modelId": "oc/gpt-5.6-codex",
+            "health": "healthy",
+            "posture": "available",
+            "utilization": 0.43,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": 600
+          }
+        ]
+      }
+    },
+    {
+      "id": "agreement-exhausted-serviceable-dropped",
+      "title": "a codex row claiming exhausted yet serviceable is dropped while the agreeing row survives",
+      "source": "both",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "oc/gpt-5.6-codex": {
+            "serviceable": true,
+            "state": "exhausted",
+            "utilization": 1,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          },
+          "oc/claude-sonnet-5": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.4,
+            "resetsAt": null,
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": [
+          {
+            "modelId": "oc/claude-sonnet-5",
+            "health": "healthy",
+            "posture": "available",
+            "utilization": 0.4,
+            "resetsAt": null,
+            "resetInSeconds": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "agreement-available-unserviceable-dropped",
+      "title": "a claude row claiming available yet unserviceable is dropped with no error",
+      "source": "claude",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "oc/claude-sonnet-5": {
+            "serviceable": false,
+            "state": "available",
+            "utilization": 0.1,
+            "resetsAt": null,
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": []
+      }
+    },
+    {
+      "id": "agreement-exhausted-unserviceable-kept",
+      "title": "an agreeing exhausted codex row is kept as unavailable, never silently routable",
+      "source": "codex",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "oc/gpt-5.6-codex": {
+            "serviceable": false,
+            "state": "exhausted",
+            "utilization": 1,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": [
+          {
+            "modelId": "oc/gpt-5.6-codex",
+            "health": "exhausted",
+            "posture": "unavailable",
+            "utilization": 1,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": 600
+          }
+        ]
+      }
+    },
+    {
+      "id": "agreement-both-lanes-clean",
+      "title": "agreeing codex and claude rows in one snapshot project to one row each",
+      "source": "both",
+      "fetchedAt": "2026-09-10T12:01:05.000Z",
+      "payload": {
+        "schemaVersion": 1,
+        "observedAt": "2026-09-10T12:00:00.000Z",
+        "staleAfterSeconds": 300,
+        "telemetry": "available",
+        "reasonCode": null,
+        "models": {
+          "oc/gpt-5.6-codex": {
+            "serviceable": false,
+            "state": "exhausted",
+            "utilization": 1,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          },
+          "oc/claude-sonnet-5": {
+            "serviceable": true,
+            "state": "available",
+            "utilization": 0.4,
+            "resetsAt": null,
+            "resetInSeconds": null,
+            "windows": [],
+            "observationQuality": "measured"
+          }
+        }
+      },
+      "expect": {
+        "telemetry": "available",
+        "reasonCode": null,
+        "rows": [
+          {
+            "modelId": "oc/gpt-5.6-codex",
+            "health": "exhausted",
+            "posture": "unavailable",
+            "utilization": 1,
+            "resetsAt": "2026-09-10T12:10:00.000Z",
+            "resetInSeconds": 600
+          },
+          {
+            "modelId": "oc/claude-sonnet-5",
+            "health": "healthy",
+            "posture": "available",
+            "utilization": 0.4,
+            "resetsAt": null,
+            "resetInSeconds": null
+          }
+        ]
+      }
+    }
+  ]
+}

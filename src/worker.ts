@@ -332,31 +332,81 @@ export function createPlugin() {
         stateKey: STATE_KEYS.issueStickiness,
       });
 
-      const readStickyModel = async (companyId: string, issueId: string | undefined) => {
+      // TOG-11795: a sticky entry records the agent whose selection
+      // established it, so an agent-to-agent reassignment never keeps serving
+      // the old agent's model. Legacy rows store a bare model-id string (no
+      // owner); they are honored once and upgraded to the owned shape on the
+      // next write. Anything else is junk and reads as absent (the write path
+      // prunes it, per TOG-7877).
+      interface StickyEntry {
+        modelId: string;
+        agentId: string | null;
+      }
+
+      const asStickyEntry = (value: unknown): StickyEntry | null => {
+        if (typeof value === "string") return { modelId: value, agentId: null };
+        if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+        const record = value as Record<string, unknown>;
+        if (typeof record.modelId !== "string") return null;
+        const agentId = record.agentId;
+        if (agentId !== null && agentId !== undefined && typeof agentId !== "string") return null;
+        return { modelId: record.modelId, agentId: typeof agentId === "string" ? agentId : null };
+      };
+
+      const readStickyModel = async (
+        companyId: string,
+        issueId: string | undefined,
+        agentId: string | null,
+      ) => {
         if (!issueId) return undefined;
         const map = asRecord(await ctx.state.get(stickyKey(companyId)));
-        return typeof map[issueId] === "string" ? (map[issueId] as string) : undefined;
+        const entry = asStickyEntry(map[issueId]);
+        if (!entry) return undefined;
+        // A foreign agent's entry is invisible: the caller re-decides from its
+        // own context instead of inheriting the previous agent's model. An
+        // unknown caller (null) cannot prove foreignness, so it honors the
+        // entry exactly like the pre-TOG-11795 reader did.
+        if (entry.agentId !== null && agentId !== null && entry.agentId !== agentId) return undefined;
+        return entry.modelId;
       };
 
       // TOG-7877 (G15): bounded insertion-ordered LRU. The written issue
       // moves to most-recent; entries past ISSUE_STICKINESS_MAX_ENTRIES are
       // dropped oldest-first. Also prunes junk from malformed rows (a legacy
-      // or hand-edited row may carry non-string values that would otherwise
-      // hold a slot forever). Reads never move recency, so the sticky hot
-      // path (same issue, same model) performs no state write.
+      // or hand-edited row may carry values that are neither a model-id
+      // string nor a sticky entry, which would otherwise hold a slot
+      // forever). Reads never move recency, so the sticky hot path (same
+      // issue, same model, same agent) performs no state write.
+      //
+      // TOG-11795: a fallback selection never sticks. The sticky incumbent is
+      // what keeps a fallback serving after its primary recovers (the next
+      // invoke would honor the fallback instead of re-deciding), so the write
+      // is skipped and any older non-fallback entry is left in place — that
+      // entry is exactly what lets the recovered primary get honored again
+      // with no repin pass. Skipping also covers the "first selection is a
+      // fallback" case: every later invoke re-decides until a non-fallback
+      // model selects.
       const writeStickyModel = async (
         companyId: string,
         issueId: string | undefined,
         modelId: string | null,
+        options?: { agentId?: string | null; fallbackUsed?: boolean },
       ): Promise<void> => {
         if (!issueId || !modelId) return;
+        if (options?.fallbackUsed) return;
+        const agentId = options?.agentId ?? null;
         const stored = asRecord(await ctx.state.get(stickyKey(companyId)));
-        if (stored[issueId] === modelId) return;
-        const map: Record<string, string> = {};
+        const existing = asStickyEntry(stored[issueId]);
+        if (existing && existing.modelId === modelId && existing.agentId === agentId) return;
+        const map: Record<string, string | StickyEntry> = {};
         for (const [key, value] of Object.entries(stored)) {
-          if (key !== issueId && typeof value === "string") map[key] = value;
+          if (key === issueId) continue;
+          const entry = asStickyEntry(value);
+          if (entry) map[key] = value as string | StickyEntry;
         }
-        map[issueId] = modelId;
+        // Agent-less writes stay a bare string: compact, and readable by a
+        // pre-TOG-11795 worker during a staged rollout.
+        map[issueId] = agentId === null ? modelId : { modelId, agentId };
         const excess = Object.keys(map).length - ISSUE_STICKINESS_MAX_ENTRIES;
         if (excess > 0) {
           for (const key of Object.keys(map).slice(0, excess)) delete map[key];
@@ -436,7 +486,7 @@ export function createPlugin() {
       const storedCapacity = async (
         companyId: string,
         config: RouterConfig,
-      ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; error: string | null; paceVerdicts: Record<string, LanePaceVerdict>; modelLaneByPace: Record<string, string>; snapshotAgeMs: number | null; snapshotStale: boolean }> => {
+      ): Promise<{ snapshots: CapacitySnapshot[]; evidence: CapacityEvidence[]; telemetry: "available" | "unavailable" | undefined; error: string | null; paceVerdicts: Record<string, LanePaceVerdict>; modelLaneByPace: Record<string, string>; snapshotAgeMs: number | null; snapshotStale: boolean }> => {
         const stored = asRecord(await ctx.state.get(capacityStateKey(companyId)));
         const refreshedAt = typeof stored.refreshedAt === "string" ? Date.parse(stored.refreshedAt) : Number.NaN;
         const paceRefreshedAt = typeof stored.paceRefreshedAt === "string" ? Date.parse(stored.paceRefreshedAt) : Number.NaN;
@@ -470,9 +520,20 @@ export function createPlugin() {
             }
           }
         }
+        const snapshots = Array.isArray(stored.snapshots) ? stored.snapshots as CapacitySnapshot[] : [];
+        // Reported producer health survives the round-trip through state, so a
+        // stored healthy-empty snapshot stays distinguishable from an outage
+        // (§4). `undefined` means the stored snapshots predate the field or came
+        // from the legacy path, and `selectModel` falls back to inference.
+        const reported = snapshots.length > 0 && snapshots.every((snapshot) => snapshot.telemetry === "available")
+          ? "available" as const
+          : snapshots.some((snapshot) => snapshot.telemetry === "unavailable")
+            ? "unavailable" as const
+            : undefined;
         return {
-          snapshots: Array.isArray(stored.snapshots) ? stored.snapshots as CapacitySnapshot[] : [],
+          snapshots,
           evidence: Array.isArray(stored.evidence) ? stored.evidence as CapacityEvidence[] : [],
+          telemetry: stale ? "unavailable" : reported,
           error: lastRefreshError ?? (stale ? "capacity-snapshot-stale" : null),
           paceVerdicts,
           modelLaneByPace,
@@ -507,7 +568,7 @@ export function createPlugin() {
             }));
           } catch {
             apiKeys.push(null);
-            skippedSnapshots.set(index, { fetchedAt: new Date().toISOString(), source: source.id, evidence: [], error: "capacity-secret-unavailable" });
+            skippedSnapshots.set(index, { fetchedAt: new Date().toISOString(), source: source.id, evidence: [], telemetry: "unavailable", reasonCode: "capacity-secret-unavailable", error: "capacity-secret-unavailable" });
           }
         }
         const fetched = await mapWithBound(
@@ -536,7 +597,7 @@ export function createPlugin() {
                 pacePolicy: config.capacityRouting.pacePolicy,
               });
             } catch {
-              return { fetchedAt: new Date().toISOString(), source: source.id, evidence: [], error: "capacity-request-failed" };
+              return { fetchedAt: new Date().toISOString(), source: source.id, evidence: [], telemetry: "unavailable" as const, reasonCode: "capacity-request-failed" as const, error: "capacity-request-failed" };
             }
           },
         );
@@ -550,13 +611,22 @@ export function createPlugin() {
           entry.health !== "unavailable" && entry.health !== "exhausted" &&
           (!entry.telemetryAvailable || entry.health === "unknown" || entry.posture === "unknown")
         );
-        const incompleteModelIds = config.capacityRouting.sources.flatMap((source) =>
-          source.modelIds.filter((modelId) => !evidence.some((entry) => entry.modelId === modelId))
-        );
+        // Contract §4. Every source reporting `telemetry: "available"` means the
+        // producers are healthy, whatever they did or did not say about
+        // individual models. A model they did not mention is the middle row —
+        // healthy, governing nothing — not an outage, and it is still refused
+        // per-model by the enforce gate in `selectModel`, which is where
+        // fail-closed belongs as a visible policy choice.
+        //
+        // This only widens the contract path. A legacy vendor payload fans every
+        // parsed record onto every id in `source.modelIds`, so a legacy source
+        // with any evidence at all covers all of its ids, and one with none
+        // already carries a snapshot error below.
+        const producersHealthy = snapshots.every((snapshot) => snapshot.telemetry === "available");
         const result = {
           snapshots,
           evidence,
-          error: snapshotErrors.join("; ") || (malformedEvidence || incompleteModelIds.length > 0 ? "capacity-refresh-incomplete" : null),
+          error: snapshotErrors.join("; ") || (malformedEvidence ? "capacity-refresh-incomplete" : null),
           // TOG-2139: keyed by SOURCE id for storage; `storedCapacity`
           // translates to lane ids through the config. A failed pace
           // evaluation is simply absent — never an error on the refresh.
@@ -582,7 +652,10 @@ export function createPlugin() {
         const key = capacityStateKey(companyId);
         const previous = asRecord(await ctx.state.get(key));
         const refreshedAt = new Date().toISOString();
-        if (!result.error && result.evidence.length > 0) {
+        // A healthy-empty refresh is stored, not discarded. Discarding it would
+        // leave the last constrained snapshot in place and read as stale, which
+        // is the §4 collapse one layer down from the normalizer.
+        if (!result.error && producersHealthy) {
           await ctx.state.set(key, {
             ...result,
             refreshedAt,
@@ -952,7 +1025,7 @@ export function createPlugin() {
 
         const capacity = config.capacityRouting.enabled
           ? await storedCapacity(companyId, config)
-          : { snapshots: [], evidence: [], error: null, paceVerdicts: {}, modelLaneByPace: {}, snapshotAgeMs: null as number | null, snapshotStale: false };
+          : { snapshots: [], evidence: [], telemetry: undefined, error: null, paceVerdicts: {}, modelLaneByPace: {}, snapshotAgeMs: null as number | null, snapshotStale: false };
         // TOG-7417: the host injects the authoritative spent fraction through
         // the tool/action context (a channel the caller cannot write to) and
         // it wins over the caller-claimed task.signals value, which any
@@ -992,13 +1065,14 @@ export function createPlugin() {
               ? { budgetLedger: { totalUsd: monthlyLedger.ledger.totalUsd, monthLabel: monthlyLedger.ledger.monthLabel } }
               : {}),
             capacityEvidence: capacity.evidence,
+            capacityTelemetry: capacity.telemetry,
             capacityError: capacity.error ?? undefined,
             capacitySnapshotAgeMs: capacity.snapshotAgeMs,
             capacitySnapshotStale: capacity.snapshotStale,
             paceVerdicts: config.capacityRouting.paceOrdering ? capacity.paceVerdicts : undefined,
             modelLaneByPace: config.capacityRouting.paceOrdering ? capacity.modelLaneByPace : undefined,
             stickyModelId: config.routing.stickyModelWithinIssue
-              ? await readStickyModel(companyId, request.task.issueId)
+              ? await readStickyModel(companyId, request.task.issueId, actor.agentId)
               : undefined,
             degradedModelIds: degradedModelIds(health),
           },
@@ -1046,7 +1120,10 @@ export function createPlugin() {
           }
         }
 
-        await writeStickyModel(companyId, request.task.issueId, decision.modelId);
+        await writeStickyModel(companyId, request.task.issueId, decision.modelId, {
+          agentId: actor.agentId,
+          fallbackUsed: decision.fallbackUsed,
+        });
         if (!config.upstream.credentialSecretRef) {
           result = {
             outcome: "error",
@@ -1603,6 +1680,47 @@ export function createPlugin() {
       ctx.actions.register(ACTION_KEYS.queryDecisions, async (params, actionCtx) => {
         if (!actionCtx.companyId) throw new Error("host-authorized company context is required");
         return queryDecisionsFor(actionCtx.companyId, params.limit);
+      });
+
+      // TOG-13372 (exit for TOG-13354 H9): reap on the first-class upstream
+      // `agent.run.finished` event instead of the fork's host-side
+      // `cancel-run-invocations` call in heartbeat.ts. The run id arrives as
+      // the event's primary entity; the payload fallbacks cover hosts that
+      // carry it there instead. `failed`/`cancelled` are deliberately left to
+      // the interim host hunk per CTO verdict (c) — this subscription covers
+      // `finished` only. Never throws: an event-handler throw faults delivery
+      // of later events, so failures are logged and reported as failed ids.
+      ctx.events.on("agent.run.finished", async (event) => {
+        const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+          ? (event.payload as Record<string, unknown>)
+          : {};
+        const runId = typeof event.entityId === "string" && event.entityId.length > 0
+          ? event.entityId
+          : typeof payload.runId === "string" && payload.runId.length > 0
+            ? payload.runId
+            : typeof payload.id === "string" && payload.id.length > 0
+              ? payload.id
+              : "";
+        if (!runId || !event.companyId) {
+          ctx.logger.warn("Ignoring agent.run.finished without a run id or company", {
+            eventId: event.eventId,
+          });
+          return;
+        }
+        try {
+          const outcome = await cancelRunInvocationsFor(event.companyId, runId);
+          if (outcome.failed.length > 0) {
+            ctx.logger.warn("Run-end event reap left unsettled invocations", {
+              runId,
+              failed: outcome.failed,
+            });
+          }
+        } catch (cause) {
+          ctx.logger.error("Run-end event reap failed", {
+            runId,
+            error: cause instanceof Error ? cause.message : String(cause),
+          });
+        }
       });
 
       ctx.jobs.register(JOB_KEYS.reconcileAsyncInvocations, reconcileAsyncInvocations);

@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "policy": "Admit/deny table for subscription-pace routing in enforce mode. Admit means the subject model is selected; deny means the decision refuses it (no eligible model) with a capacity rejection. Evaluated offline from these fixtures only: no live capacity poll, no pacing write. The predicate mirrors the usability gate in src/engine/select.ts (serviceability trip denies; explicit exhausted/unavailable health denies under any policy; absent or unknown telemetry denies only under fail-closed/exclude-lane; everything else admits).",
+  "subject": "subject",
+  "states": [
+    {
+      "id": "s01-healthy-behind-admits",
+      "title": "Healthy lane behind its pace line is admitted and selected",
+      "config": { "mode": "enforce", "unknownTelemetry": "fail-open", "paceOrdering": true },
+      "evidence": [{ "modelId": "subject", "health": "healthy", "utilization": 0.3, "telemetryAvailable": true }],
+      "pace": { "lane": "test-lane", "state": "behind", "reason": "ok", "deviation": -0.4 },
+      "expect": { "decision": "admit", "reasonContains": "\"modelId\":\"subject\"" }
+    },
+    {
+      "id": "s02-healthy-ahead-admits",
+      "title": "Healthy lane ahead of its pace line is still admitted",
+      "config": { "mode": "enforce", "unknownTelemetry": "fail-open", "paceOrdering": true },
+      "evidence": [{ "modelId": "subject", "health": "healthy", "utilization": 0.3, "telemetryAvailable": true }],
+      "pace": { "lane": "test-lane", "state": "ahead", "reason": "ok", "deviation": 0.35 },
+      "expect": { "decision": "admit", "reasonContains": "\"modelId\":\"subject\"" }
+    },
+    {
+      "id": "s03-exhausted-health-denies",
+      "title": "Explicit exhausted health denies under any policy",
+      "config": { "mode": "enforce", "unknownTelemetry": "fail-open", "paceOrdering": true },
+      "evidence": [{ "modelId": "subject", "health": "exhausted", "utilization": 0.95, "telemetryAvailable": true }],
+      "pace": null,
+      "expect": { "decision": "deny", "reasonContains": "\"stage\":\"capacity\"" }
+    },
+    {
+      "id": "s04-unavailable-health-denies",
+      "title": "Explicit unavailable health denies under any policy",
+      "config": { "mode": "enforce", "unknownTelemetry": "fail-open", "paceOrdering": true },
+      "evidence": [{ "modelId": "subject", "health": "unavailable", "utilization": 0.1, "telemetryAvailable": true }],
+      "pace": null,
+      "expect": { "decision": "deny", "reasonContains": "\"stage\":\"capacity\"" }
+    },
+    {
+      "id": "s05-unknown-telemetry-failopen-admits",
+      "title": "Unknown telemetry admits under fail-open (degraded, still served)",
+      "config": { "mode": "enforce", "unknownTelemetry": "fail-open", "paceOrdering": true },
+      "evidence": [{ "modelId": "subject", "health": "unknown", "utilization": null, "telemetryAvailable": false }],
+      "pace": null,
+      "expect": { "decision": "admit", "reasonContains": "\"modelId\":\"subject\"" }
+    },
+    {
+      "id": "s06-missing-evidence-failopen-admits",
+      "title": "Missing evidence admits under fail-open",
+      "config": { "mode": "enforce", "unknownTelemetry": "fail-open", "paceOrdering": true },
+      "evidence": [],
+      "pace": null,
+      "expect": { "decision": "admit", "reasonContains": "\"modelId\":\"subject\"" }
+    },
+    {
+      "id": "s07-missing-evidence-failclosed-denies",
+      "title": "Missing evidence denies under fail-closed",
+      "config": { "mode": "enforce", "unknownTelemetry": "fail-closed", "paceOrdering": true },
+      "evidence": [],
+      "pace": null,
+      "expect": { "decision": "deny", "reasonContains": "fail-closed" }
+    },
+    {
+      "id": "s08-serviceability-trip-denies",
+      "title": "Tripped serviceability window denies even with healthy capacity",
+      "config": { "mode": "enforce", "unknownTelemetry": "fail-open", "paceOrdering": true },
+      "evidence": [{ "modelId": "subject", "health": "healthy", "utilization": 0.3, "telemetryAvailable": true }],
+      "pace": { "lane": "test-lane", "state": "exhausted", "reason": "serviceability-window-exhausted", "deviation": null },
+      "expect": { "decision": "deny", "reasonContains": "serviceability-window-exhausted" }
+    },
+    {
+      "id": "s09-stale-pace-admits",
+      "title": "Stale pace verdict is fail-neutral: subject still admitted",
+      "config": { "mode": "enforce", "unknownTelemetry": "fail-open", "paceOrdering": true },
+      "evidence": [{ "modelId": "subject", "health": "healthy", "utilization": 0.3, "telemetryAvailable": true }],
+      "pace": { "lane": "test-lane", "state": "unknown", "reason": "snapshot-stale", "deviation": null },
+      "expect": { "decision": "admit", "reasonContains": "\"modelId\":\"subject\"" }
+    },
+    {
+      "id": "s10-avoid-posture-admits",
+      "title": "Hot but usable lane (avoid posture) is still admitted",
+      "config": { "mode": "enforce", "unknownTelemetry": "fail-open", "paceOrdering": true },
+      "evidence": [{ "modelId": "subject", "health": "healthy", "utilization": 0.85, "telemetryAvailable": true }],
+      "pace": null,
+      "expect": { "decision": "admit", "reasonContains": "\"modelId\":\"subject\"" }
+    },
+    {
+      "id": "s11-exhausted-pace-without-trip-admits",
+      "title": "Exhausted pace state without a serviceability trip does not deny",
+      "config": { "mode": "enforce", "unknownTelemetry": "fail-open", "paceOrdering": true },
+      "evidence": [{ "modelId": "subject", "health": "healthy", "utilization": 0.3, "telemetryAvailable": true }],
+      "pace": { "lane": "test-lane", "state": "exhausted", "reason": "all-accounts-unserviceable", "deviation": null },
+      "expect": { "decision": "admit", "reasonContains": "\"modelId\":\"subject\"" }
+    },
+    {
+      "id": "s12-missing-evidence-excludelane-denies",
+      "title": "Missing evidence denies under exclude-lane when nothing remains",
+      "config": { "mode": "enforce", "unknownTelemetry": "exclude-lane", "paceOrdering": true },
+      "evidence": [],
+      "pace": null,
+      "expect": { "decision": "deny", "reasonContains": "no-eligible-model" }
+    },
+    {
+      "id": "s13-shadow-never-denies",
+      "title": "Shadow mode never denies: exhausted evidence still serves the static winner",
+      "config": { "mode": "shadow", "unknownTelemetry": "fail-open", "paceOrdering": true },
+      "evidence": [{ "modelId": "subject", "health": "exhausted", "utilization": 0.95, "telemetryAvailable": true }],
+      "pace": null,
+      "expect": { "decision": "admit", "reasonContains": "\"modelId\":\"subject\"" }
+    }
+  ]
+}

@@ -41,12 +41,14 @@
     "verify:host": "node scripts/verify-against-host.mjs && node scripts/verify-stock-host-controls.mjs",
     "verify:migrations": "node scripts/validate-migrations-against-host.mjs",
     "rehearse": "node scripts/acceptance-rehearsal.mjs",
+    "replay:pacer-shadow-diff": "node scripts/pacer-shadow-diff.mjs",
     "check:pin": "node scripts/release-pin-check.mjs",
     "check:workflows": "node scripts/check-workflows.mjs",
-    "check:ci": "node scripts/ci-health.mjs --require \"typecheck, test, build, package, version\" --require \"secret scan\"",
+    "check:ci": "node scripts/ci-health.mjs --require ci-ok --require \"secret scan\"",
     "preflight:tog178": "node scripts/tog178-catalogue-revalidate.mjs",
     "check:telemetry": "node scripts/telemetry-conformance.mjs --selftest",
-    "check:pace-ordering-mutants": "node scripts/tog-2139-mutation-gate.mjs"
+    "check:pace-ordering-mutants": "node scripts/tog-2139-mutation-gate.mjs",
+    "replay:pacer-policy": "node scripts/pacer-policy-replay.mjs"
   },
   "dependencies": {
     "@paperclipai/plugin-sdk": "2026.817.0"

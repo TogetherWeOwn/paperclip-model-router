@@ -79,7 +79,7 @@
  *   node scripts/ci-health.mjs                     # HEAD, repo from git remote
  *   node scripts/ci-health.mjs --sha <sha>
  *   node scripts/ci-health.mjs --repo owner/name
- *   node scripts/ci-health.mjs --require "secret scan" --require "typecheck, test, build, package, version"
+ *   node scripts/ci-health.mjs --require "secret scan" --require ci-ok
  *   node scripts/ci-health.mjs --json              # machine-readable, same exit codes
  *
  * Token: $GITHUB_TOKEN or $GH_TOKEN, otherwise `git credential fill`, which

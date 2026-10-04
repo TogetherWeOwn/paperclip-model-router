@@ -1,0 +1,585 @@
+{
+ "version": 1,
+ "baseline": "capacityRouting.mode shadow + paceOrdering false (recorded serving policy: static cost order; shadow advisory only)",
+ "candidate": "capacityRouting.mode enforce + paceOrdering true (promotion candidate: pace-first ordering over the enforce-usable pool)",
+ "cases": [
+  {
+   "descriptor": {
+    "taskClass": "implementation"
+   },
+   "evidence": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode"
+   ],
+   "expect": {
+    "baseline": {
+     "lane": "cliproxy-kimi",
+     "modelId": "kimi-model",
+     "outcome": "selected"
+    },
+    "candidate": {
+     "lane": "cliproxy-claude",
+     "modelId": "claude-model",
+     "outcome": "selected"
+    }
+   },
+   "id": "d01-full-roster",
+   "note": "Baseline serves the cheapest model even though its lane reports exhausted; the candidate excludes it and serves the behind-pace lane.",
+   "paceLanes": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode-go"
+   ],
+   "reason": "pace ordering: claude-model lane behind (deviation -0.130)",
+   "title": "Full roster: cheapest model sits on the exhausted kimi lane"
+  },
+  {
+   "descriptor": {
+    "taskClass": "implementation"
+   },
+   "evidence": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode"
+   ],
+   "expect": {
+    "baseline": {
+     "lane": "cliproxy-codex",
+     "modelId": "codex-model",
+     "outcome": "selected"
+    },
+    "candidate": {
+     "lane": "cliproxy-claude",
+     "modelId": "claude-model",
+     "outcome": "selected"
+    }
+   },
+   "id": "d02-kimi-lane-down",
+   "note": "Roster variation: kimi lane down for maintenance. Cheapest survivor (codex, ahead) vs behind-pace claude.",
+   "onlyModels": [
+    "claude-model",
+    "codex-model",
+    "opencode-model"
+   ],
+   "paceLanes": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode-go"
+   ],
+   "reason": "pace ordering: claude-model lane behind (deviation -0.130)",
+   "title": "Kimi lane absent: ahead-lane cheapest vs behind-lane pick"
+  },
+  {
+   "descriptor": {
+    "taskClass": "implementation"
+   },
+   "evidence": [
+    "claude"
+   ],
+   "expect": {
+    "baseline": {
+     "lane": null,
+     "modelId": "codex-model",
+     "outcome": "selected"
+    },
+    "candidate": {
+     "lane": "cliproxy-claude",
+     "modelId": "claude-model",
+     "outcome": "selected"
+    }
+   },
+   "id": "d03-claude-evidence-only",
+   "note": "Only the claude lane reports evidence. Baseline still serves uncovered codex on cost; the candidate serves covered, behind-pace claude. Baseline lane is null (no evidence covers codex-model).",
+   "paceLanes": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode-go"
+   ],
+   "reason": "pace ordering: claude-model lane behind (deviation -0.130)",
+   "title": "Only claude reports evidence: uncovered cheapest vs covered behind",
+   "onlyModels": [
+    "claude-model",
+    "codex-model",
+    "opencode-model"
+   ]
+  },
+  {
+   "descriptor": {
+    "taskClass": "implementation"
+   },
+   "evidence": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode"
+   ],
+   "expect": {
+    "baseline": {
+     "lane": "cliproxy-claude",
+     "modelId": "claude-model",
+     "outcome": "selected"
+    },
+    "candidate": {
+     "lane": "cliproxy-claude",
+     "modelId": "claude-model",
+     "outcome": "selected"
+    }
+   },
+   "id": "d04-single-model",
+   "note": "Single-model roster: no alternative for either policy to prefer.",
+   "onlyModels": [
+    "claude-model"
+   ],
+   "paceLanes": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode-go"
+   ],
+   "reason": "",
+   "title": "Single-model roster: both policies serve claude"
+  },
+  {
+   "descriptor": {
+    "taskClass": "exacting"
+   },
+   "evidence": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode"
+   ],
+   "expect": {
+    "baseline": {
+     "lane": "cliproxy-opencode-go",
+     "modelId": "opencode-model",
+     "outcome": "selected"
+    },
+    "candidate": {
+     "lane": "cliproxy-opencode-go",
+     "modelId": "opencode-model",
+     "outcome": "selected"
+    }
+   },
+   "id": "d05-quality-floor",
+   "note": "Exacting class floor 85 admits only opencode-model (quality 90). Pace cannot promote across the floor in either policy.",
+   "paceLanes": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode-go"
+   ],
+   "reason": "",
+   "title": "Quality floor 85: only opencode-model qualifies"
+  },
+  {
+   "descriptor": {
+    "requiredCapabilities": [
+     "vision"
+    ],
+    "taskClass": "implementation"
+   },
+   "evidence": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode"
+   ],
+   "expect": {
+    "baseline": {
+     "lane": "cliproxy-codex",
+     "modelId": "codex-model",
+     "outcome": "selected"
+    },
+    "candidate": {
+     "lane": "cliproxy-codex",
+     "modelId": "codex-model",
+     "outcome": "selected"
+    }
+   },
+   "id": "d06-capability-gate",
+   "note": "Only codex-model carries vision. Pace cannot promote across the capability gate.",
+   "paceLanes": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode-go"
+   ],
+   "reason": "",
+   "title": "Vision required: only codex-model qualifies"
+  },
+  {
+   "budgetSpentFraction": 0.99,
+   "descriptor": {
+    "taskClass": "implementation"
+   },
+   "evidence": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode"
+   ],
+   "expect": {
+    "baseline": {
+     "lane": null,
+     "modelId": null,
+     "outcome": "no-eligible-model"
+    },
+    "candidate": {
+     "lane": null,
+     "modelId": null,
+     "outcome": "no-eligible-model"
+    }
+   },
+   "id": "d07-budget-halt",
+   "note": "Halt gate refuses non-pinned work under both policies. Null-lane diff reads unchanged.",
+   "paceLanes": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode-go"
+   ],
+   "reason": "",
+   "title": "Budget halt: both policies refuse"
+  },
+  {
+   "descriptor": {
+    "taskClass": "implementation"
+   },
+   "evidence": [
+    "claude",
+    "codex",
+    "opencode"
+   ],
+   "expect": {
+    "baseline": {
+     "lane": "cliproxy-codex",
+     "modelId": "codex-model",
+     "outcome": "selected"
+    },
+    "candidate": {
+     "lane": "cliproxy-codex",
+     "modelId": "codex-model",
+     "outcome": "selected"
+    }
+   },
+   "id": "d08-stale-pace-aligned",
+   "note": "Stale pace (no verdicts): candidate falls back to capacity utilization order, which agrees with cost order here (codex util 0.00 first).",
+   "onlyModels": [
+    "claude-model",
+    "codex-model",
+    "opencode-model"
+   ],
+   "paceLanes": [],
+   "reason": "",
+   "title": "Stale pace verdicts: capacity-utilization fallback agrees with cost"
+  },
+  {
+   "descriptor": {
+    "taskClass": "implementation"
+   },
+   "evidence": [
+    "claude",
+    "opencode"
+   ],
+   "expect": {
+    "baseline": {
+     "lane": null,
+     "modelId": "codex-model",
+     "outcome": "selected"
+    },
+    "candidate": {
+     "lane": "cliproxy-opencode-go",
+     "modelId": "opencode-model",
+     "outcome": "selected"
+    }
+   },
+   "id": "d09-stale-pace-splits",
+   "note": "Stale pace with claude+opencode evidence: candidate capacity-orders opencode (util 0.11) over claude (0.56) with uncovered codex last; baseline serves uncovered cheapest codex.",
+   "onlyModels": [
+    "claude-model",
+    "codex-model",
+    "opencode-model"
+   ],
+   "paceLanes": [],
+   "reason": "pace ordering: opencode-model lane unknown (capacity-utilization fallback)",
+   "title": "Stale pace: utilization fallback splits from cost order"
+  },
+  {
+   "descriptor": {
+    "pinReason": "case pin",
+    "pinnedModelId": "codex-model",
+    "taskClass": "implementation"
+   },
+   "evidence": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode"
+   ],
+   "expect": {
+    "baseline": {
+     "lane": "cliproxy-codex",
+     "modelId": "codex-model",
+     "outcome": "selected"
+    },
+    "candidate": {
+     "lane": "cliproxy-codex",
+     "modelId": "codex-model",
+     "outcome": "selected"
+    }
+   },
+   "id": "d10-pin-honored",
+   "note": "Healthy-lane pin is honored under both policies.",
+   "paceLanes": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode-go"
+   ],
+   "reason": "",
+   "title": "Pin on healthy codex lane: honored by both"
+  },
+  {
+   "descriptor": {
+    "pinReason": "case pin",
+    "pinnedModelId": "kimi-model",
+    "taskClass": "implementation"
+   },
+   "evidence": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode"
+   ],
+   "expect": {
+    "baseline": {
+     "lane": "cliproxy-kimi",
+     "modelId": "kimi-model",
+     "outcome": "selected"
+    },
+    "candidate": {
+     "lane": "cliproxy-claude",
+     "modelId": "claude-model",
+     "outcome": "selected"
+    }
+   },
+   "id": "d11-pin-on-exhausted",
+   "note": "Pin refusal is logged under both policies (weekly cap 0.7 vs util 1.00), but only enforce diverts: baseline still serves the refused pin, candidate serves behind-pace claude.",
+   "paceLanes": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode-go"
+   ],
+   "reason": "pin refused: kimi-model over weekly utilization cap 0.7 (utilization 1); pace ordering: claude-model lane behind (deviation -0.130)",
+   "title": "Pin on exhausted kimi lane: shadow serves it anyway, enforce diverts"
+  },
+  {
+   "descriptor": {
+    "taskClass": "implementation"
+   },
+   "evidence": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode"
+   ],
+   "expect": {
+    "baseline": {
+     "lane": "cliproxy-codex",
+     "modelId": "codex-model",
+     "outcome": "selected"
+    },
+    "candidate": {
+     "lane": "cliproxy-codex",
+     "modelId": "codex-model",
+     "outcome": "selected"
+    }
+   },
+   "id": "d12-sticky-incumbent",
+   "note": "Sticky incumbent on a usable lane survives under both policies (stickiness enabled for this case).",
+   "paceLanes": [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode-go"
+   ],
+   "reason": "",
+   "stickyModelId": "codex-model",
+   "stickyRouting": true,
+   "title": "Sticky codex incumbent: kept by both"
+  }
+ ],
+ "agree": 7,
+ "disagree": 5,
+ "evidence": {
+  "claude": {
+   "health": "healthy",
+   "laneLabel": "record-1",
+   "modelId": "claude-model",
+   "posture": "available",
+   "reason": "healthy; 56% utilized",
+   "remainingFraction": 0.44,
+   "resetInSeconds": 539152,
+   "resetsAt": "2026-09-11T19:00:00.383Z",
+   "source": "cliproxy-claude",
+   "telemetryAvailable": true,
+   "utilization": 0.56,
+   "windows": []
+  },
+  "codex": {
+   "health": "healthy",
+   "laneLabel": "record-1",
+   "modelId": "codex-model",
+   "posture": "available",
+   "reason": "healthy; 0% utilized",
+   "remainingFraction": 1,
+   "resetInSeconds": 3600,
+   "resetsAt": "2026-09-11T00:00:00Z",
+   "source": "cliproxy-codex",
+   "telemetryAvailable": true,
+   "utilization": 0,
+   "windows": []
+  },
+  "kimi": {
+   "health": "exhausted",
+   "laneLabel": "record-1",
+   "modelId": "kimi-model",
+   "posture": "unavailable",
+   "reason": "exhausted; 100% utilized",
+   "remainingFraction": 0,
+   "resetInSeconds": null,
+   "resetsAt": null,
+   "source": "cliproxy-kimi",
+   "telemetryAvailable": true,
+   "utilization": 1,
+   "windows": []
+  },
+  "opencode": {
+   "health": "healthy",
+   "laneLabel": "record-1",
+   "modelId": "opencode-model",
+   "posture": "available",
+   "reason": "healthy; 11% utilized",
+   "remainingFraction": 0.89,
+   "resetInSeconds": 125151,
+   "resetsAt": "2026-09-07T00:00:00Z",
+   "source": "cliproxy-opencode-go",
+   "telemetryAvailable": true,
+   "utilization": 0.11,
+   "windows": []
+  }
+ },
+ "inputs": {
+  "laneDocuments": {
+   "claude": "packages/lane-capacity/tests/data/tog2135/claude.json",
+   "codex": "packages/lane-capacity/tests/data/tog2135/codex.json",
+   "kimi": "packages/lane-capacity/tests/data/tog2135/kimi.json",
+   "opencode-go": "packages/lane-capacity/tests/data/tog2135/opencode-go.json",
+   "observedAt": "2026-09-10T14:53:41.507882Z"
+  },
+  "snapshot": "tests/data/tog1076-live-snapshot.json (recorded live capacity snapshot; per-source first-record values, modelId remapped to case models, all other fields verbatim)"
+ },
+ "modelLaneByPace": {
+  "claude-model": "cliproxy-claude",
+  "codex-model": "cliproxy-codex",
+  "kimi-model": "cliproxy-kimi",
+  "opencode-model": "cliproxy-opencode-go"
+ },
+ "models": [
+  {
+   "contextWindow": 200000,
+   "costPerMTokIn": 0.5,
+   "costPerMTokOut": 2,
+   "family": "other",
+   "id": "kimi-model",
+   "quality": 80,
+   "tier": "standard"
+  },
+  {
+   "capabilities": [
+    "vision"
+   ],
+   "contextWindow": 200000,
+   "costPerMTokIn": 1,
+   "costPerMTokOut": 4,
+   "family": "other",
+   "id": "codex-model",
+   "quality": 80,
+   "tier": "standard"
+  },
+  {
+   "contextWindow": 200000,
+   "costPerMTokIn": 2,
+   "costPerMTokOut": 8,
+   "family": "other",
+   "id": "claude-model",
+   "quality": 80,
+   "tier": "standard"
+  },
+  {
+   "contextWindow": 200000,
+   "costPerMTokIn": 3,
+   "costPerMTokOut": 12,
+   "family": "other",
+   "id": "opencode-model",
+   "quality": 90,
+   "tier": "standard"
+  }
+ ],
+ "paceVerdicts": {
+  "cliproxy-claude": {
+   "deviation": -0.13,
+   "elapsed": 0.803,
+   "laneId": "cliproxy-claude",
+   "reason": "ok",
+   "serviceable": true,
+   "state": "behind",
+   "utilization": 0.673
+  },
+  "cliproxy-codex": {
+   "deviation": 0.537,
+   "elapsed": 0.178,
+   "laneId": "cliproxy-codex",
+   "reason": "ok",
+   "serviceable": true,
+   "state": "ahead",
+   "utilization": 0.715
+  },
+  "cliproxy-kimi": {
+   "deviation": 0.118,
+   "elapsed": 0.232,
+   "laneId": "cliproxy-kimi",
+   "reason": "ok",
+   "serviceable": true,
+   "state": "ahead",
+   "utilization": 0.35
+  },
+  "cliproxy-opencode-go": {
+   "deviation": 0.279,
+   "elapsed": 0.321,
+   "laneId": "cliproxy-opencode-go",
+   "reason": "ok",
+   "serviceable": true,
+   "state": "ahead",
+   "utilization": 0.6
+  }
+ },
+ "taskClasses": [
+  {
+   "key": "implementation",
+   "qualityFloor": 60
+  },
+  {
+   "key": "exacting",
+   "qualityFloor": 85
+  }
+ ]
+}
