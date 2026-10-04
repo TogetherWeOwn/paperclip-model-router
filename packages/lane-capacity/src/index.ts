@@ -10,6 +10,20 @@ export type { ContractParse, ContractWindowName } from "./contract.js";
 export { normalizeCapacityPayload } from "./normalize.js";
 export { readCapacitySource } from "./read.js";
 export { evaluateLanePace, normalizeLaneDocument } from "./pace.js";
+export {
+  BURN_DOWN_TARGET_HIGH,
+  BURN_DOWN_TARGET_LOW,
+  laneBurnDown,
+  projectBurnDown,
+} from "./burn-down.js";
+export type {
+  AccountBurnDown,
+  BurnDownPolicy,
+  BurnDownProjection,
+  BurnDownReason,
+  BurnDownVerdict,
+  LaneBurnDown,
+} from "./burn-down.js";
 export type {
   CapacityEvidence,
   CapacityHealth,
