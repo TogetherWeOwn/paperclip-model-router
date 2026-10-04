@@ -1,3 +1,7 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -18,8 +22,9 @@ import {
 // read, no roster write, no pin, no enforce flip. Each case asserts the FULL
 // expected readout (cheapest id + lane + gap codes), so audit drift in
 // either direction — a rule dropped or a new gap firing on a frozen case —
-// fails loudly instead of slipping through. The no-live-path test proves
-// there is no call surface for a selection change to travel.
+// fails loudly instead of slipping through. The no-live-path tests read the
+// real module and the real src tree to prove there is no call surface for a
+// selection change to travel.
 
 const LANES = ["cliproxy-claude", "cliproxy-codex", "cliproxy-muse"] as const;
 
@@ -237,27 +242,66 @@ describe("cheapest-lane audit: per-tier cheapest + gap readout on frozen rows", 
     expect(got.map((entry) => entry.cheapestModelId)).toEqual(["real", "real"]);
   });
 
-  it("the audit imports no live plugin surface", () => {
-    // The audit runs pure over frozen rows. If this spec ever gains an import
-    // reaching the worker, the plugin SDK, live capacity fetch, secrets, or
-    // the transport, a live call path exists and this test must fail. Only
-    // import lines are inspected, so comments may name the forbidden surfaces
-    // without tripping the guard.
-    const source = CASES_SOURCE_MARKER;
-    expect(source).not.toMatch(/worker|plugin-sdk|capacity\/read|secrets|inference\/transport|spend-ledger|metrics|activity/i);
+  it("the audit module imports only the tier types and no live plugin surface", () => {
+    // Read the REAL module, not this spec. The audit runs pure over frozen
+    // rows: a worker, plugin-SDK, capacity-fetch, secrets or transport import
+    // would be a live call path for a selection change to travel. The
+    // specifier list is compared to an exact allowlist, so any new import,
+    // including a side-effect-only one, fails here.
+    const specifiers = importSpecifiers(readFileSync(AUDIT_MODULE_PATH, "utf8"));
+    expect(specifiers).toEqual(["./engine/types.js"]);
+  });
+
+  it("no other src file imports the audit module", () => {
+    // The runtime-importer half of the "no live path" claim: the audit has
+    // callers only in tests and the readout, never in plugin code.
+    const importers = listTsFiles(SRC_DIR)
+      .filter((file) => file !== AUDIT_MODULE_PATH)
+      .filter((file) => importSpecifiers(readFileSync(file, "utf8")).some((spec) => /(^|\/)roster-cheapest-lane(\.js)?$/.test(spec)));
+    expect(importers).toEqual([]);
+  });
+
+  it("the import scanner sees side-effect, re-export, dynamic and require imports", () => {
+    // Self-check for the scanner above: a guard that cannot see an import
+    // form cannot fail on it.
+    const source = [
+      'import "./a.js";',
+      'import { x } from "./b.js";',
+      'import type { Y } from "./c.js";',
+      'export * from "./d.js";',
+      'export { z } from "./e.js";',
+      'const f = await import("./f.js");',
+      'const g = require("./g.js");',
+      '// import "./commented-line.js";',
+      '/* import "./commented-block.js"; */',
+    ].join("\n");
+    expect(importSpecifiers(source)).toEqual(["./a.js", "./b.js", "./c.js", "./d.js", "./e.js", "./f.js", "./g.js"]);
   });
 });
 
-// Import-block snapshot for the no-live-path test above: kept as a literal so
-// the test inspects exactly what this file imports.
-const CASES_SOURCE_MARKER = [
-  "import { describe, expect, it } from \"vitest\";",
-  "import {",
-  "  auditCheapestLanePerTier,",
-  "  DEFAULT_AUDIT_TIERS,",
-  "  T2_TIER,",
-  "  T3_TIER,",
-  "  type CheapestLaneRow,",
-  "  type TierCheapestLane,",
-  "} from \"../src/roster-cheapest-lane.js\";",
-].join("\n");
+const AUDIT_MODULE_PATH = fileURLToPath(new URL("../src/roster-cheapest-lane.ts", import.meta.url));
+const SRC_DIR = fileURLToPath(new URL("../src", import.meta.url));
+
+/** Module specifiers a TypeScript source imports, in source order. Comments are ignored. */
+function importSpecifiers(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const found: { index: number; spec: string }[] = [];
+  const patterns = [
+    /\bimport\s+(?:type\s+)?(?:[\w*{}\s,$]+?\s+from\s+)?["']([^"']+)["']/g,
+    /\bexport\s+(?:type\s+)?(?:\*|\{[^}]*\})(?:\s+as\s+\w+)?\s+from\s+["']([^"']+)["']/g,
+    /\bimport\(\s*["']([^"']+)["']\s*\)/g,
+    /\brequire\(\s*["']([^"']+)["']\s*\)/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of code.matchAll(pattern)) found.push({ index: match.index ?? 0, spec: match[1]! });
+  }
+  return found.sort((a, b) => a.index - b.index).map((entry) => entry.spec);
+}
+
+function listTsFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) return listTsFiles(full);
+    return entry.isFile() && entry.name.endsWith(".ts") ? [full] : [];
+  });
+}

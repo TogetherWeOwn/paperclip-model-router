@@ -15,10 +15,13 @@
  *
  * Eligibility mirrors the selector's static ceiling (`src/engine/select.ts`):
  * an enabled row serves a tier request when its own tier is at or below the
- * ceiling. Cost order mirrors the selector's baseline comparator (expected
- * cost at the default 8k-in/2k-out mix, quality breaks ties, then id), so the
- * reported cheapest is the row the static policy would serve. Quality-floor,
- * capability, context-window, capacity, pace, pin, sticky, budget, and
+ * ceiling. A row whose tier is off the ladder is ineligible here, whereas the
+ * selector maps it to `standard` (`tierIndex`); a typed roster cannot produce
+ * one, so the divergence is deliberate and the stricter reading is the safe
+ * side for a coverage readout. Cost order mirrors the selector's baseline
+ * comparator (expected cost at the default 8k-in/2k-out mix, quality breaks
+ * ties, then id), so the reported cheapest is the row the static policy
+ * would serve. Quality-floor, capability, context-window, capacity, pace, pin, sticky, budget, and
  * fallback gates are deliberately out of scope: this is roster coverage, not
  * a routing rehearsal.
  *

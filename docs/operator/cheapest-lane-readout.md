@@ -13,10 +13,17 @@ opencode-go). Readout only: no pin, no roster edit, no enforce change.
 
 ## Result
 
-| Tier | Eligible | Lane-bound | Cheapest eligible row | Lane | Expected cost |
-|---|---|---|---|---|---|
-| T2 (strong) | 43 | 37 | deepseek-v4-flash | opencode-go | $0.00308 |
-| T3 (frontier) | 45 | 39 | deepseek-v4-flash | opencode-go | $0.00308 |
+| Tier | Eligible | Lane-bound | Cheapest eligible row | Row tier | Lane | Expected cost |
+|---|---|---|---|---|---|---|
+| T2 (strong) | 43 | 37 | cliproxy/deepseek-v4-flash | standard | opencode-go | $0.00308 |
+| T3 (frontier) | 45 | 39 | cliproxy/deepseek-v4-flash | standard | opencode-go | $0.00308 |
+
+The cheapest row in both tiers is a `standard`-tier row: the ceiling admits
+every enabled row at or below the tier, so "cheapest for T2/T3" means cheapest
+below the ceiling, not a row that sits at the tier. It has an exact-cost,
+equal-quality tie with `cliproxy/deepseek-v4-flash-vision-exp` (both $0.22 in /
+$0.66 out per MTok, quality 69); the id tie-break resolves it to the shorter
+id, and the vectors pin that against input row order.
 
 Gap list on the cheapest rows: none. Both tiers' cheapest eligible row is
 enabled and bound to a known lane.
@@ -47,6 +54,14 @@ routing-misfire channel.
 
 ## Reproduce
 
-The vectors in `tests/roster-cheapest-lane.spec.ts` pin the
-per-tier cheapest + gap readout on frozen rows; `src/roster-cheapest-lane.ts`
-is the pure audit both the spec and this readout run.
+`tests/roster-cheapest-lane-fixture.spec.ts` rebuilds this readout from the
+committed fixture: it projects capacity-source `modelIds` onto rows (first
+match, and it throws if a model sits in two sources), runs the audit, and pins
+the 43/37 and 45/39 counts, the cheapest id, lane and cost, the empty gap
+lists, the tie, and the 6 unlaned rows. If the fixture or the audit drifts,
+that spec fails and these numbers are stale.
+
+`tests/roster-cheapest-lane.spec.ts` holds the synthetic vectors, plus two
+checks that read the real source tree: the audit module imports only
+`./engine/types.js`, and no other `src` file imports it.
+`src/roster-cheapest-lane.ts` is the pure audit both specs and this readout run.
