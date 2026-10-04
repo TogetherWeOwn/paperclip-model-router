@@ -1,7 +1,10 @@
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { evaluateLanePace, normalizeLaneDocument } from "../packages/lane-capacity/src/pace.js";
+import type { CapacityEvidence, LanePaceDefinition } from "../src/capacity/types.js";
 import { ACTION_KEYS, JOB_KEYS, PENDING_INVOCATION_TTL_MS, ROUTE_KEYS, STATE_KEYS, TOOL_NAMES } from "../src/constants.js";
+import type { InferenceResult } from "../src/inference/types.js";
 import manifest from "../src/manifest.js";
 import { createPlugin } from "../src/worker.js";
 import { companyDecisionRecords, readFixture } from "./helpers.js";
@@ -771,6 +774,128 @@ describe("one select-invoke-normalize-record path", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(result)).not.toContain(SECRET_A);
     expect(JSON.stringify(result)).not.toContain("leaked");
+  });
+});
+
+describe("shadow pace select-invoke composition", () => {
+  const now = "2026-09-10T14:53:41.000Z";
+
+  async function invokeShadowPace(reverseInputs: boolean) {
+    const { harness, configs, httpCalls } = await sharedWorker();
+    const config = structuredClone(configs.get(COMPANY_A)!);
+    config.routing = { enabled: true, mode: "shadow", fallbackModelId: null, stickyModelWithinIssue: false, maxOutputTokens: 16384 };
+    // Match the selector-only shadow fixture: static cost order chooses the
+    // uncovered model, while pace favors the more expensive behind lane.
+    const models = [
+      { id: "behind-lane-model", family: "other", tier: "standard", quality: 80, costPerMTokIn: 2, costPerMTokOut: 8, contextWindow: 200000 },
+      { id: "ahead-lane-model", family: "other", tier: "standard", quality: 80, costPerMTokIn: 1, costPerMTokOut: 4, contextWindow: 200000 },
+      { id: "uncovered-model", family: "other", tier: "standard", quality: 80, costPerMTokIn: 0.5, costPerMTokOut: 2, contextWindow: 200000 },
+    ];
+    config.models = reverseInputs ? [...models].reverse() : models;
+    config.taskClasses = [{ key: "implementation", qualityFloor: 60 }];
+    config.tiering = { signalWeights: {}, thresholds: { small: 0, standard: 30, strong: 60, frontier: 85 }, defaultTier: "standard" };
+    const lanes = [
+      { id: "behind", modelId: "behind-lane-model", weeklyUtilization: 0.1, resetDays: 2 },
+      { id: "ahead", modelId: "ahead-lane-model", weeklyUtilization: 0.9, resetDays: 5 },
+    ];
+    const windows: LanePaceDefinition["windows"] = [{
+      name: "weekly", role: "allowance", utilizationFields: ["weekly_utilization"], resetFields: ["weekly_resets_at"], defaultWindowSeconds: 604800,
+    }];
+    config.capacityRouting = {
+      enabled: true, mode: "shadow", paceOrdering: true, unknownTelemetry: "fail-open", maxSnapshotAgeMs: 300_000,
+      // Keep policy/source order fixed; only unordered input data is reversed.
+      // Static ties still use cost, quality, then model ID, not insertion order.
+      sources: lanes.map((lane) => ({
+        id: lane.id, statusUrl: `https://capacity.example/${lane.id}`, modelIds: [lane.modelId], healthFields: ["health"],
+        windows, pace: { laneId: lane.id, healthFields: ["health"], windows },
+      })),
+    };
+    configs.set(COMPANY_A, config);
+    const verdicts = lanes.map((lane) => [lane.id, evaluateLanePace({
+      observation: normalizeLaneDocument({
+        document: {
+          observedAt: now, staleAfterSeconds: 300,
+          records: [{
+            health: "healthy", governing_window: "weekly", window_seconds: { weekly: 604800 },
+            weekly_utilization: lane.weeklyUtilization,
+            weekly_resets_at: new Date(Date.parse(now) + lane.resetDays * 86_400_000).toISOString(),
+          }],
+        },
+        definition: { laneId: lane.id, healthFields: ["health"], windows },
+      }),
+      asOf: now,
+    })] as const);
+    expect(verdicts.map(([id, verdict]) => [id, verdict.state])).toEqual([["behind", "behind"], ["ahead", "ahead"]]);
+    const evidence: CapacityEvidence[] = models.map((model, index) => ({
+      modelId: model.id, source: lanes[index]?.id ?? "uncovered", laneLabel: "record-1",
+      health: "healthy", posture: "available", utilization: [0.5, 0.2, 0.1][index]!,
+      remainingFraction: 1 - [0.5, 0.2, 0.1][index]!, resetsAt: null, resetInSeconds: null,
+      windows: [], telemetryAvailable: true, reason: "test",
+    }));
+    // Seed only the harness's in-memory state: no refresh or telemetry fetch.
+    await harness.ctx.state.set({ scopeKind: "company", scopeId: COMPANY_A, stateKey: STATE_KEYS.capacitySnapshot }, {
+      refreshedAt: now, paceRefreshedAt: now, lastRefreshError: null, snapshots: [],
+      evidence: reverseInputs ? [...evidence].reverse() : evidence,
+      paceVerdicts: Object.fromEntries(reverseInputs ? [...verdicts].reverse() : verdicts),
+    });
+    const directFetch = vi.fn(() => { throw new Error("unexpected direct fetch in offline shadow test"); });
+    vi.stubGlobal("fetch", directFetch);
+    const result = await harness.performAction(ACTION_KEYS.invoke, invocation, { companyId: COMPANY_A }) as InferenceResult;
+    expect(directFetch).not.toHaveBeenCalled();
+    return { result, httpCalls };
+  }
+
+  function assertStaticRequest(calls: Array<{ url: string; init?: RequestInit }>) {
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("https://company-a.example/api/v1/chat/completions");
+    expect(calls[0]?.init?.method).toBe("POST");
+    // Assert the real wire body, not response.modelId (normalized from the
+    // selection even if the upstream echoes a different model).
+    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({ model: "uncovered-model" });
+  }
+
+  it.each(["forward", "reversed"])("serves the static model and retains distinct pace advice with %s inputs", async (order) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
+    try {
+      const { result, httpCalls } = await invokeShadowPace(order === "reversed");
+      assertStaticRequest(httpCalls);
+      expect(result).toMatchObject({
+        outcome: "completed",
+        decision: {
+          modelId: "uncovered-model",
+          capacity: { mode: "shadow", telemetry: "available", shadowModelId: "behind-lane-model" },
+          candidates: expect.arrayContaining([
+            expect.objectContaining({ modelId: "behind-lane-model", paceState: "behind" }),
+            expect.objectContaining({ modelId: "ahead-lane-model", paceState: "ahead" }),
+          ]),
+        },
+        response: { modelId: "uncovered-model" },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("negative control: rejects an advisory-target wire body despite an intact static decision", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
+    try {
+      const { result, httpCalls } = await invokeShadowPace(false);
+      assertStaticRequest(httpCalls);
+      expect(result.decision?.modelId).toBe("uncovered-model");
+      const shadowModelId = result.decision?.capacity.shadowModelId;
+      expect(shadowModelId).toBe("behind-lane-model");
+      const mutantCalls = httpCalls.map((call) => ({
+        ...call,
+        init: { ...call.init, body: JSON.stringify({ ...JSON.parse(String(call.init?.body)), model: shadowModelId }) },
+      }));
+      // No second invocation: alter only the captured request target and run
+      // the same oracle that guards both real composition cases above.
+      expect(() => assertStaticRequest(mutantCalls)).toThrow("uncovered-model");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
