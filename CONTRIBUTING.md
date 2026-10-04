@@ -24,7 +24,8 @@ These follow the upstream paperclipai/paperclip contributor rules. The `pr-lint`
 
 This repo is squash-merge only: the squash commit on `main` takes the PR title, so the history on `main`
 is one conventional commit per PR. `pr-lint` is green on the exact head before review, with the other
-required checks (`ci.yml`, CodeQL, secret scan). Verify locally first:
+required checks (`ci-ok` from `ci.yml`, CodeQL, secret scan). `ci-ok` skips the heavy suite on a
+docs-only change and runs everything otherwise (`docs/decisions/0013`). Verify locally first:
 
 ```sh
 npm run typecheck
