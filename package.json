@@ -4,6 +4,7 @@
   "private": true,
   "description": "Paperclip plugin: select a model, invoke a company-compatible upstream once, and return a normalized audited result.",
   "license": "MIT",
+  "sideEffects": false,
   "type": "module",
   "engines": {
     "node": ">=22"
