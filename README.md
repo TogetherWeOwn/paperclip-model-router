@@ -205,6 +205,25 @@ The request cannot override the selected model, compatible protocol, base URL, c
 - response bodies are measured after the stock host returns its buffered response;
 - caller-visible timeout is bounded by company configuration and does not start a replacement request.
 
+### Response media and encoding failures
+
+Both invocation paths require JSON response media and absent, empty, or `identity`
+`Content-Encoding`. A refusal returns `invalid-upstream-response` with a fixed
+message distinguishing **JSON media** from **non-identity encoding**; when both
+headers violate the contract, media is reported first. No upstream header value
+or response body is copied into the error. Older builds combined these cases as
+“did not return an uncompressed JSON response”; that message alone cannot identify
+which header failed.
+
+Async uses native worker `fetch`, while sync uses the host-buffered SDK response.
+Native fetch can decode a compressed body while retaining its encoding header;
+this does **not** make the response acceptable. The router still requests
+`Accept-Encoding: identity` and refuses non-identity encoding rather than adding
+a decompression or content-sniffing fallback. An accepted media/encoding pair
+must also pass the configured UTF-8 byte limit, JSON parsing, and protocol-envelope
+validation. A successfully accepted empty model completion is distinct from an
+empty HTTP body, which is invalid JSON.
+
 ### Timeouts, and reasoning models
 
 One upstream attempt is made and there is no retry, so a timeout is a discarded

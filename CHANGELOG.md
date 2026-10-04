@@ -42,6 +42,13 @@ version is not present here.
 
 ### Changed
 
+- **Compatible-response refusal diagnostics.** Media and encoding failures now
+  have separate fixed, router-authored messages under the unchanged
+  `invalid-upstream-response` code. SDK-bridge and async-client fixtures preserve
+  rejection of compressed/mislabelled bodies, invalid JSON and envelopes, and
+  oversized UTF-8 responses. No acceptance rule, decompression fallback, retry,
+  response shape, or configuration changes.
+
 - **CI runs only what the change affects.** A native-git `changes` job
   (`scripts/ci-changes.mjs`) skips the `typecheck, test, build, package,
   version` job on a PR that touches only inert documentation (`AGENTS.md`,

@@ -226,8 +226,11 @@ export async function invokeCompatibleUpstream(input: {
     }
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
     const contentEncoding = response.headers.get("content-encoding")?.toLowerCase() ?? "identity";
-    if (!contentType.includes("application/json") || (contentEncoding !== "identity" && contentEncoding !== "")) {
-      return error("invalid-upstream-response", "The compatible upstream did not return an uncompressed JSON response.", false);
+    if (!contentType.includes("application/json")) {
+      return error("invalid-upstream-response", "The compatible upstream did not return JSON response media.", false);
+    }
+    if (contentEncoding !== "identity" && contentEncoding !== "") {
+      return error("invalid-upstream-response", "The compatible upstream returned a non-identity response encoding.", false);
     }
     const bounded = await readBoundedJson(response, input.config.maxResponseBytes);
     if (bounded.tooLarge) {
