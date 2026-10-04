@@ -42,6 +42,14 @@ version is not present here.
 
 ### Changed
 
+- **CI runs only what the change affects.** A native-git `changes` job
+  (`scripts/ci-changes.mjs`) skips the `typecheck, test, build, package,
+  version` job on a PR that touches only inert documentation (`AGENTS.md`,
+  `CONTRIBUTING.md`, `docs/decisions/**`, `docs/security/**`); a new `ci-ok`
+  aggregate is the single required result, and `npm run check:ci` requires it
+  in place of the skippable job. Push to `main`, a nightly schedule and manual
+  dispatch always run everything, as does any change to code, dependencies,
+  build config or `.github/**`. See `docs/decisions/0013`.
 - **`docs/OPERATIONS.md` rewritten post-public (TOG-7889, gap G19).** The
   TOG-532 "not authorized for a public release or live installation" ban is
   dropped, stale since the repo went public on hosted runners. The runbook

@@ -1,9 +1,9 @@
 diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
-index 847c5ad..cf0a52f 100644
+index 95282dc..95d513b 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
-@@ -13,9 +13,11 @@ concurrency:
-   group: ci-${{ github.ref }}
+@@ -20,9 +20,11 @@ concurrency:
+   group: ci-${{ github.event_name }}-${{ github.ref }}
    cancel-in-progress: true
  
 -# This repo is public: org self-hosted runners do not serve public repos (runner group
@@ -16,8 +16,8 @@ index 847c5ad..cf0a52f 100644
 +# nothing here guards persistent runners.
  
  jobs:
-   # TOG-2547: this used to be three separate jobs — "verify", "packaged-artifact"
-@@ -79,19 +81,16 @@ jobs:
+   # CI runs only what a change affects (docs/decisions/0013). `changes` answers one
+@@ -117,19 +119,16 @@ jobs:
        # to ERR_MODULE_NOT_FOUND at worker start — which is a terrible place to
        # find out. Reuses the `npm ci` and `npm run build` already done above
        # instead of re-running them in a fresh job.
@@ -44,7 +44,7 @@ index 847c5ad..cf0a52f 100644
            mkdir -p artifacts "$INSTALL_DIR"
            tarball="$(node -p "const p=require('./package.json'); p.name.replace('@','').replace('/','-') + '-' + p.version + '.tgz'")"
            npm pack --pack-destination ./artifacts
-@@ -109,12 +108,6 @@ jobs:
+@@ -147,12 +146,6 @@ jobs:
              console.log('packed artifact loads:', manifest.id, 'v' + manifest.version);
            "
  
