@@ -24,6 +24,22 @@ export type {
   BurnDownVerdict,
   LaneBurnDown,
 } from "./burn-down.js";
+export {
+  BURN_ALERT_THRESHOLDS,
+  detectBurnAlerts,
+  emitBurnAlertProposals,
+  thresholdsForLane,
+} from "./burn-alerts.js";
+export type {
+  BurnAlertLane,
+  BurnAlertLevel,
+  BurnAlertLogger,
+  BurnAlertPolicy,
+  BurnAlertProposal,
+  BurnAlertReason,
+  BurnAlertThresholds,
+  EmitBurnAlertProposalsOptions,
+} from "./burn-alerts.js";
 export type {
   CapacityEvidence,
   CapacityHealth,
