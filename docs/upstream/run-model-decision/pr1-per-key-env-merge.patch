@@ -1,3 +1,25 @@
+From 2e42325f244bfa556e4648f9889a80e40fd6c2e3 Mon Sep 17 00:00:00 2001
+From: Upstream Draft <draft@example.invalid>
+Date: Sun, 4 Oct 2026 04:55:48 +0000
+Subject: [PATCH] fix(heartbeat): merge issue override env per key
+
+An issue override that contains env replaces the complete env object of
+the agent config at run time. The agent loses every key that the override
+does not repeat. Merge env per key so a task-level override can set one
+environment key and keep the agent credentials.
+
+Preserve an explicit non-object env (including null) as a clearing
+operation. Reject an override env key that shares a case-insensitive
+name with any base key, before secret resolution, unless the base
+carries exactly that one spelling.
+---
+ .../execution-workspace-policy.test.ts        | 212 +++++++++++++
+ ...heartbeat-issue-override-env-merge.test.ts | 282 ++++++++++++++++++
+ .../services/execution-workspace-policy.ts    |  95 ++++++
+ server/src/services/heartbeat.ts              |   7 +-
+ 4 files changed, 594 insertions(+), 2 deletions(-)
+ create mode 100644 server/src/__tests__/heartbeat-issue-override-env-merge.test.ts
+
 diff --git a/server/src/__tests__/execution-workspace-policy.test.ts b/server/src/__tests__/execution-workspace-policy.test.ts
 index e5cf70c..d9565b7 100644
 --- a/server/src/__tests__/execution-workspace-policy.test.ts
@@ -228,10 +250,10 @@ index e5cf70c..d9565b7 100644
  });
 diff --git a/server/src/__tests__/heartbeat-issue-override-env-merge.test.ts b/server/src/__tests__/heartbeat-issue-override-env-merge.test.ts
 new file mode 100644
-index 0000000..4b8bd72
+index 0000000..2f8375c
 --- /dev/null
 +++ b/server/src/__tests__/heartbeat-issue-override-env-merge.test.ts
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,282 @@
 +import { randomUUID } from "node:crypto";
 +import os from "node:os";
 +import path from "node:path";
@@ -464,8 +486,8 @@ index 0000000..4b8bd72
 +  it("fails the run before the adapter executes when the base carries several spellings", async () => {
 +    const { agentId, issueId } = await seedAgentWithIssue({
 +      agentEnv: {
-+        API_TOKEN: "base",
-+        api_token: { type: "secret_ref", secretId: "unavailable" },
++        API_TOKEN: "base-value",
++        api_token: "shadow-value",
 +      },
 +      overrideAdapterConfig: { env: { API_TOKEN: "replacement" } },
 +    });
@@ -474,8 +496,14 @@ index 0000000..4b8bd72
 +    const run = await heartbeat.invoke(agentId, "on_demand", { issueId, taskId: issueId }, "manual");
 +    expect(run).not.toBeNull();
 +    // The ambiguous alias group rejects at the merge boundary, so the run
-+    // fails instead of resolving the shadowed binding or executing.
-+    expect((await waitForRunToFinish(heartbeat, run!.id))?.status).toBe("failed");
++    // fails with the alias-conflict cause instead of executing. Both bindings
++    // are valid plain values: without the guard the merge would succeed and
++    // reach the adapter, so a failure here is the guard working, not
++    // downstream binding validation failing for another reason.
++    const finished = await waitForRunToFinish(heartbeat, run!.id);
++    expect(finished?.status).toBe("failed");
++    const failureText = `${finished?.error ?? ""} ${JSON.stringify(finished?.resultJson ?? {})}`;
++    expect(failureText).toMatch(/conflicts with agent env keys?/);
 +    expect(capturedRuns.find((candidate) => candidate.ctxIssueId === issueId)).toBeUndefined();
 +  });
 +
