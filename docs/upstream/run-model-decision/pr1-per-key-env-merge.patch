@@ -1,19 +1,18 @@
-From d685b373100deca7631b4c770d7c2b39e7cd8006 Mon Sep 17 00:00:00 2001
+From a03887da2aba20da63ac1b7859b2da4fe499fc98 Mon Sep 17 00:00:00 2001
 From: Upstream Draft <draft@example.invalid>
-Date: Fri, 2 Oct 2026 20:57:38 +0000
+Date: Sun, 4 Oct 2026 02:35:08 +0000
 Subject: [PATCH] fix(heartbeat): merge issue override env per key
 
-A shallow spread of assigneeAdapterOverrides.adapterConfig replaces the whole
-env object, so an override that sets one env key drops every other key of the
-agent config, secret references included. Merge env per key instead.
 ---
- .../execution-workspace-policy.test.ts        | 43 +++++++++++++++++++
- .../services/execution-workspace-policy.ts    | 23 ++++++++++
- server/src/services/heartbeat.ts              |  7 ++-
- 3 files changed, 71 insertions(+), 2 deletions(-)
+ .../execution-workspace-policy.test.ts        | 125 +++++++++++
+ ...heartbeat-issue-override-env-merge.test.ts | 200 ++++++++++++++++++
+ .../services/execution-workspace-policy.ts    |  71 +++++++
+ server/src/services/heartbeat.ts              |   7 +-
+ 4 files changed, 401 insertions(+), 2 deletions(-)
+ create mode 100644 server/src/__tests__/heartbeat-issue-override-env-merge.test.ts
 
 diff --git a/server/src/__tests__/execution-workspace-policy.test.ts b/server/src/__tests__/execution-workspace-policy.test.ts
-index e5cf70cf0..5dd733816 100644
+index e5cf70cf0..b2d2b71e1 100644
 --- a/server/src/__tests__/execution-workspace-policy.test.ts
 +++ b/server/src/__tests__/execution-workspace-policy.test.ts
 @@ -13,6 +13,7 @@ import {
@@ -24,7 +23,7 @@ index e5cf70cf0..5dd733816 100644
    resolveEffectiveWorkspaceStrategyType,
    resolveExecutionWorkspaceEnvironmentId,
    resolvePinnedIssueWorkspaceStrategyType,
-@@ -756,4 +757,46 @@ describe("operator default isolated execution workspaces", () => {
+@@ -756,4 +757,128 @@ describe("operator default isolated execution workspaces", () => {
        }),
      ).toBe(false);
    });
@@ -70,12 +69,300 @@ index e5cf70cf0..5dd733816 100644
 +      model: "base",
 +    });
 +  });
++
++  it("preserves an explicit null env as a clearing operation", () => {
++    const merged = mergeIssueAdapterConfigOverrides(
++      {
++        model: "base",
++        env: { API_TOKEN: { type: "secret_ref", secretId: "sec-1" } },
++      },
++      { model: "override", env: null },
++    );
++    // The clearing value survives the merge instead of gaining every base key
++    // back. Downstream resolution maps a non-object env to `{}` with zero
++    // inherited bindings, matching the previous spread behavior.
++    expect("env" in merged).toBe(true);
++    expect(merged.env).toBeNull();
++    expect(merged.model).toBe("override");
++  });
++
++  it("preserves a non-object env instead of merging the base back over it", () => {
++    expect(
++      mergeIssueAdapterConfigOverrides({ env: { A: "1" } }, { env: "not-an-object" }).env,
++    ).toBe("not-an-object");
++    expect(
++      mergeIssueAdapterConfigOverrides({ env: { A: "1" } }, { env: ["A"] }).env,
++    ).toEqual(["A"]);
++  });
++
++  it("rejects an override key that differs only by case from a base key", () => {
++    expect(() =>
++      mergeIssueAdapterConfigOverrides(
++        { env: { API_TOKEN: { type: "secret_ref", secretId: "old" } } },
++        { env: { api_token: "replacement" } },
++      ),
++    ).toThrow(/conflicts with agent env key "API_TOKEN"/);
++  });
++
++  it("keeps exact-match shadowing and unrelated keys case-sensitive", () => {
++    const merged = mergeIssueAdapterConfigOverrides(
++      { env: { API_TOKEN: "base", OTHER: "x" } },
++      { env: { API_TOKEN: "override", UNRELATED: "y" } },
++    );
++    expect(merged.env).toEqual({
++      API_TOKEN: "override",
++      OTHER: "x",
++      UNRELATED: "y",
++    });
++  });
++
++  it("fails a case-variant alias at the merge boundary before secret resolution", () => {
++    // Mirrors the secret resolver: every merged entry is validated and an
++    // unavailable secret_ref fails the run. The launch layer would fold the
++    // alias pair on case-insensitive targets (Windows), so the shadowed
++    // binding must never reach resolution.
++    const resolveEnvForTest = (env: unknown): Record<string, string> => {
++      const record =
++        typeof env === "object" && env !== null && !Array.isArray(env)
++          ? (env as Record<string, unknown>)
++          : null;
++      if (!record) return {};
++      const out: Record<string, string> = {};
++      for (const [key, binding] of Object.entries(record)) {
++        if (typeof binding === "object" && binding !== null && "secretId" in binding) {
++          throw new Error(`unavailable secret for ${key}`);
++        }
++        out[key] = String(binding);
++      }
++      return out;
++    };
++    const base = {
++      env: { API_TOKEN: { type: "secret_ref", secretId: "unavailable" } },
++    };
++    const override = { env: { api_token: "replacement" } };
++    // The merge rejects the ambiguous alias before any binding is resolved.
++    expect(() => mergeIssueAdapterConfigOverrides(base, override)).toThrow(
++      /conflicts with agent env key "API_TOKEN"/,
++    );
++    // Without the guard, the shadowed binding would reach resolution and fail
++    // the run there with an unavailable-secret error instead of the alias error.
++    const unguarded = { ...(base.env as Record<string, unknown>), ...(override.env as Record<string, unknown>) };
++    expect(() => resolveEnvForTest(unguarded)).toThrow(
++      /unavailable secret for API_TOKEN/,
++    );
++  });
  });
+diff --git a/server/src/__tests__/heartbeat-issue-override-env-merge.test.ts b/server/src/__tests__/heartbeat-issue-override-env-merge.test.ts
+new file mode 100644
+index 000000000..c9d827340
+--- /dev/null
++++ b/server/src/__tests__/heartbeat-issue-override-env-merge.test.ts
+@@ -0,0 +1,200 @@
++import { randomUUID } from "node:crypto";
++import os from "node:os";
++import path from "node:path";
++import { promises as fs } from "node:fs";
++import { sql } from "drizzle-orm";
++import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
++import { agents, companies, createDb, issues } from "@paperclipai/db";
++import {
++  getEmbeddedPostgresTestSupport,
++  startEmbeddedPostgresTestDatabase,
++} from "./helpers/embedded-postgres.js";
++import { heartbeatService } from "../services/heartbeat.ts";
++import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
++
++const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
++const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
++const TEST_ADAPTER_TYPE = "issue_override_env_merge_capture";
++
++if (!embeddedPostgresSupport.supported) {
++  console.warn(
++    `Skipping embedded Postgres issue override env merge tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
++  );
++}
++
++async function waitForRunToFinish(
++  heartbeat: ReturnType<typeof heartbeatService>,
++  runId: string,
++  timeoutMs = 10_000,
++) {
++  const deadline = Date.now() + timeoutMs;
++  while (Date.now() < deadline) {
++    const run = await heartbeat.getRun(runId);
++    if (run && !["queued", "running"].includes(run.status)) return run;
++    await new Promise((resolve) => setTimeout(resolve, 50));
++  }
++  return await heartbeat.getRun(runId);
++}
++
++describeEmbeddedPostgres("heartbeat issue override env merge", () => {
++  let db!: ReturnType<typeof createDb>;
++  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
++  let oldPaperclipHome: string | undefined;
++  let oldPaperclipApiUrl: string | undefined;
++  let paperclipHome: string | null = null;
++  const capturedRuns: Array<{ config: Record<string, unknown>; ctxIssueId: unknown }> = [];
++
++  beforeAll(async () => {
++    tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-issue-override-env-merge-");
++    db = createDb(tempDb.connectionString);
++    oldPaperclipHome = process.env.PAPERCLIP_HOME;
++    paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-issue-env-merge-home-"));
++    process.env.PAPERCLIP_HOME = paperclipHome;
++    // The server normalizes PAPERCLIP_API_URL into its own env at boot
++    // (server/src/index.ts); heartbeat gateway delivery requires it, so pin
++    // a deterministic value for tests that never boot the full server.
++    oldPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
++    process.env.PAPERCLIP_API_URL = "http://127.0.0.1:3100/api";
++    registerServerAdapter({
++      type: TEST_ADAPTER_TYPE,
++      execute: async (ctx) => {
++        capturedRuns.push({
++          config: ctx.config as Record<string, unknown>,
++          ctxIssueId: (ctx.context as Record<string, unknown> | undefined)?.["issueId"] ?? null,
++        });
++        await ctx.onLog("stdout", "captured issue env merge\n");
++        return {
++          exitCode: 0,
++          signal: null,
++          timedOut: false,
++          label: "Captured issue env merge",
++        };
++      },
++      testEnvironment: async () => ({
++        adapterType: TEST_ADAPTER_TYPE,
++        status: "pass",
++        checks: [],
++        testedAt: new Date().toISOString(),
++      }),
++    });
++  }, 20_000);
++
++  afterEach(async () => {
++    capturedRuns.length = 0;
++    await heartbeatService(db).drainActiveRunExecutions();
++    await db.execute(sql.raw(`
++      TRUNCATE TABLE
++        "activity_log",
++        "heartbeat_run_events",
++        "heartbeat_runs",
++        "agent_wakeup_requests",
++        "agent_runtime_state",
++        "issues",
++        "agents",
++        "companies"
++      RESTART IDENTITY CASCADE
++    `));
++  });
++
++  afterAll(async () => {
++    unregisterServerAdapter(TEST_ADAPTER_TYPE);
++    if (oldPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
++    else process.env.PAPERCLIP_HOME = oldPaperclipHome;
++    if (oldPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
++    else process.env.PAPERCLIP_API_URL = oldPaperclipApiUrl;
++    if (paperclipHome) {
++      await fs.rm(paperclipHome, { recursive: true, force: true });
++    }
++    await tempDb?.cleanup();
++  }, 30_000);
++
++  async function seedAgentWithIssue(opts: {
++    agentEnv: Record<string, unknown>;
++    overrideAdapterConfig: Record<string, unknown>;
++  }) {
++    const companyId = randomUUID();
++    const agentId = randomUUID();
++    const issueId = randomUUID();
++    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
++
++    await db.insert(companies).values({
++      id: companyId,
++      name: "Paperclip",
++      issuePrefix,
++      requireBoardApprovalForNewAgents: false,
++    });
++
++    await db.insert(agents).values({
++      id: agentId,
++      companyId,
++      name: "Env Merge",
++      role: "engineer",
++      status: "idle",
++      adapterType: TEST_ADAPTER_TYPE,
++      adapterConfig: { env: opts.agentEnv },
++      runtimeConfig: {},
++      permissions: {},
++    });
++
++    await db.insert(issues).values({
++      id: issueId,
++      companyId,
++      title: "Env merge probe",
++      status: "todo",
++      priority: "medium",
++      assigneeAgentId: agentId,
++      responsibleUserId: "responsible-user",
++      assigneeAdapterOverrides: { adapterConfig: opts.overrideAdapterConfig },
++      issueNumber: 1,
++      identifier: `${issuePrefix}-1`,
++    });
++
++    return { companyId, agentId, issueId };
++  }
++
++  function configForIssue(issueId: string): Record<string, unknown> {
++    // A wake can dispatch a follow-up run for a previous issue that only
++    // reaches the adapter after teardown, so match captures by issue.
++    const found = capturedRuns.find((run) => run.ctxIssueId === issueId);
++    expect(found, `expected an adapter execution for issue ${issueId}`).toBeDefined();
++    return found!.config;
++  }
++
++  it("delivers both agent and issue override env keys to the adapter", async () => {
++    const { agentId, issueId } = await seedAgentWithIssue({
++      agentEnv: { HEARTBEAT_MERGE_BASE: "base-value" },
++      overrideAdapterConfig: { env: { HEARTBEAT_MERGE_OVERRIDE: "override-value" } },
++    });
++
++    const heartbeat = heartbeatService(db);
++    const run = await heartbeat.invoke(agentId, "on_demand", { issueId, taskId: issueId }, "manual");
++    expect(run).not.toBeNull();
++    expect((await waitForRunToFinish(heartbeat, run!.id))?.status).toBe("succeeded");
++
++    const env = configForIssue(issueId)["env"] as Record<string, unknown>;
++    // The issue override adds a key while the agent key survives the merge.
++    // Reverting the executeRun call site to the plain spread drops
++    // HEARTBEAT_MERGE_BASE and fails this assertion.
++    expect(env["HEARTBEAT_MERGE_BASE"]).toBe("base-value");
++    expect(env["HEARTBEAT_MERGE_OVERRIDE"]).toBe("override-value");
++  });
++
++  it("preserves an explicit null override env as a clearing operation", async () => {
++    const { agentId, issueId } = await seedAgentWithIssue({
++      agentEnv: { HEARTBEAT_MERGE_BASE: "base-value" },
++      overrideAdapterConfig: { env: null },
++    });
++
++    const heartbeat = heartbeatService(db);
++    const run = await heartbeat.invoke(agentId, "on_demand", { issueId, taskId: issueId }, "manual");
++    expect(run).not.toBeNull();
++    expect((await waitForRunToFinish(heartbeat, run!.id))?.status).toBe("succeeded");
++
++    const env = configForIssue(issueId)["env"] as Record<string, unknown>;
++    // Clearing drops every agent/issue env key through runtime secret
++    // resolution: no inherited agent key may reappear. Host-injected
++    // operational vars (PAPERCLIP_*, GIT_CONFIG_GLOBAL, ...) are a separate
++    // layer and are not part of this contract.
++    expect(Object.keys(env ?? {}).filter((key) => key.startsWith("HEARTBEAT"))).toEqual([]);
++  });
++});
 diff --git a/server/src/services/execution-workspace-policy.ts b/server/src/services/execution-workspace-policy.ts
-index dd36825a2..45d01ffce 100644
+index dd36825a2..1719ab8b5 100644
 --- a/server/src/services/execution-workspace-policy.ts
 +++ b/server/src/services/execution-workspace-policy.ts
-@@ -446,3 +446,26 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
+@@ -446,3 +446,74 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
  
    return nextConfig;
  }
@@ -83,12 +370,27 @@ index dd36825a2..45d01ffce 100644
 +/**
 + * Merge an issue's `assigneeAdapterOverrides.adapterConfig` over a base agent
 + * config. Every key keeps shallow replace semantics except `env`, which merges
-+ * per key (`{ ...base.env, ...override.env }`).
++ * per key (`{ ...base.env, ...override.env }`) when the override carries an
++ * env object.
 + *
 + * A shallow spread replaces the whole `env` object, so an override that sets
 + * one env key drops every other key of the agent config, secret references
 + * included. Merging `env` per key keeps the base keys that the override omits.
 + * An override key still shadows the base key.
++ *
++ * Two edge cases keep the previous replace behavior instead of merging:
++ *
++ * - An explicit non-object `env` (including `null`) clears the agent env,
++ *   exactly as the previous spread did. Downstream resolution maps a
++ *   non-object env to `{}`, so `env: null` removes every agent environment
++ *   key. There is no per-key removal: an `env` entry set to `null` is not a
++ *   valid binding and is rejected at secret resolution.
++ * - An override key that differs only by letter case from a base key is
++ *   rejected. Environment names are case-sensitive on Linux but
++ *   case-insensitive on Windows targets, so `api_token` over `API_TOKEN`
++ *   would keep a shadowed secret binding that secret resolution must resolve
++ *   before the launch layer folds the names. Rename the override key to the
++ *   exact base spelling to replace it, or pick a non-conflicting name.
 + */
 +export function mergeIssueAdapterConfigOverrides(
 +  base: Record<string, unknown>,
@@ -96,11 +398,44 @@ index dd36825a2..45d01ffce 100644
 +): Record<string, unknown> {
 +  const next = { ...base, ...(override ?? {}) };
 +  if (override && "env" in override) {
-+    const baseEnv = parseObject(base.env);
-+    const overrideEnv = parseObject(override.env);
-+    next.env = { ...baseEnv, ...overrideEnv };
++    const overrideEnv = override.env;
++    if (!isEnvRecord(overrideEnv)) {
++      // Preserve an explicit clearing value (`null`, an array, a primitive)
++      // instead of merging the base env back over it.
++      next.env = overrideEnv;
++    } else {
++      rejectCaseVariantEnvAliases(parseObject(base.env), overrideEnv);
++      next.env = { ...parseObject(base.env), ...overrideEnv };
++    }
 +  }
 +  return next;
++}
++
++function isEnvRecord(value: unknown): value is Record<string, unknown> {
++  return typeof value === "object" && value !== null && !Array.isArray(value);
++}
++
++function rejectCaseVariantEnvAliases(
++  baseEnv: Record<string, unknown>,
++  overrideEnv: Record<string, unknown>,
++): void {
++  const baseKeys = Object.keys(baseEnv);
++  if (baseKeys.length === 0) return;
++  const canonicalBaseKey = new Map<string, string>();
++  for (const key of baseKeys) {
++    const canonical = key.toUpperCase();
++    if (!canonicalBaseKey.has(canonical)) canonicalBaseKey.set(canonical, key);
++  }
++  for (const key of Object.keys(overrideEnv)) {
++    const match = canonicalBaseKey.get(key.toUpperCase());
++    if (match !== undefined && match !== key) {
++      throw new Error(
++        `Issue override env key "${key}" conflicts with agent env key "${match}": ` +
++          `environment names are case-insensitive on some targets (Windows). ` +
++          `Use the exact key "${match}" to replace it, or choose a non-conflicting name.`,
++      );
++    }
++  }
 +}
 diff --git a/server/src/services/heartbeat.ts b/server/src/services/heartbeat.ts
 index e41bd2acf..69dc59d54 100644
