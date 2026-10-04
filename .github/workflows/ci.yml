@@ -232,8 +232,8 @@ jobs:
   #     or a cancel there means the gate itself did not work;
   #   - `verify` must have succeeded, or have been skipped because `changes` said
   #     `code=false`. A skip with `code=true` is a hole, not a docs-only PR.
-  # `if: always()` is required: without it a failed need would skip this job, and a
-  # skipped required check reads as passing.
+  # `if: always()` (not `!cancelled()`) is required: a skipped required check reads
+  # as passing, so on a failed OR cancelled need this job must still run and fail.
   ci-ok:
     name: ci-ok
     needs: [changes, verify, secret-scan]

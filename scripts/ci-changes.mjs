@@ -71,7 +71,9 @@ export function detect(env, git) {
   }
   try {
     const base = git(["merge-base", env.BASE_SHA, env.HEAD_SHA]).trim();
-    const files = git(["diff", "--name-only", base, env.HEAD_SHA]).split("\n");
+    // --no-renames: with rename detection `git mv src/x.ts docs/decisions/x.md`
+    // lists only the new path, and a code file would be classified as docs.
+    const files = git(["diff", "--name-only", "--no-renames", base, env.HEAD_SHA]).split("\n");
     return { ...classify(files), files: files.filter(Boolean) };
   } catch (err) {
     return { code: true, reason: `diff failed (${err instanceof Error ? err.message : err}): full run` };

@@ -8,7 +8,7 @@
  * run everything" or "the gate cannot report green by skipping by accident".
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -79,7 +79,7 @@ describe("classify: only inert documentation may skip the heavy job", () => {
     ["docs/PROCESS.md"],
     ["docs/contracts/compatible-upstream-v1.md"],
     ["docs/operator/tog-2922-pace-prerequisites.json"],
-    ["docs/operator/TOG-3419-async-invoke.md"],
+    ["docs/operator/pacer-shadow-diff-report.md"],
     ["docs/branch-ruleset.main.json"],
   ])("%s is read by a test or the pack step, so it runs everything", (file) => {
     expect(ci.classify([file]).code).toBe(true);
@@ -133,7 +133,7 @@ describe("detect: every non-skip route fails safe", () => {
     });
     expect(calls).toEqual([
       ["merge-base", "base", "head"],
-      ["diff", "--name-only", "mb", "head"],
+      ["diff", "--name-only", "--no-renames", "mb", "head"],
     ]);
   });
 
@@ -191,6 +191,32 @@ describe("the script, run for real against a git history", () => {
     expect(run({ "docs/decisions/0001-x.md": "x\n" })).toBe("code=false");
   });
 
+  it("moving a code file into the docs allow-list is still a code change", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ci-changes-rename-"));
+    const sh = (...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: "pipe" });
+    try {
+      sh("init", "-q", "-b", "main");
+      sh("config", "user.email", "ci@example.invalid");
+      sh("config", "user.name", "ci");
+      mkdirSync(join(dir, "src"));
+      writeFileSync(join(dir, "src", "gate.ts"), "export const gate = () => true;\n");
+      sh("add", ".");
+      sh("commit", "-qm", "base");
+      const base = sh("rev-parse", "HEAD").trim();
+      mkdirSync(join(dir, "docs", "decisions"), { recursive: true });
+      sh("mv", "src/gate.ts", "docs/decisions/gate.md");
+      sh("commit", "-qam", "rename");
+      const head = sh("rev-parse", "HEAD").trim();
+      const out = join(dir, "gh-output");
+      writeFileSync(out, "");
+      const env = { ...process.env, EVENT_NAME: "pull_request", BASE_SHA: base, HEAD_SHA: head, GITHUB_OUTPUT: out };
+      execFileSync("node", [script], { cwd: dir, env, encoding: "utf8", stdio: "pipe" });
+      expect(readFileSync(out, "utf8").trim()).toBe("code=true");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("a dependency manifest change writes code=true", () => {
     expect(run({ "package.json": "{}\n" })).toBe("code=true");
   });
@@ -201,6 +227,50 @@ describe("the script, run for real against a git history", () => {
 
   it("a push event writes code=true even for a docs-only diff", () => {
     expect(run({ "AGENTS.md": "x\n" }, "push")).toBe("code=true");
+  });
+});
+
+describe("the allow-list stays honest", () => {
+  // A listed doc must not be read by any test, script, config or build step, or
+  // a docs-only PR would skip the job that fails when that doc drifts. This is a
+  // best-effort textual guard: it flags any non-comment line in the code that
+  // runs in CI which names a listed file or directory. It cannot see a read that
+  // builds its path at runtime, which is why the list is kept short.
+  const LISTED = ["CONTRIBUTING.md", "AGENTS.md", "docs/decisions", "docs/security"];
+  const SELF = new Set(["scripts/ci-changes.mjs", "tests/ci-changes.spec.ts"]);
+  const SKIP_DIRS = new Set(["node_modules", "dist", ".git", ".venv", "__pycache__"]);
+
+  function* walk(dir: string): Generator<string> {
+    for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
+      const rel = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) yield* walk(rel);
+      } else if (/\.(m?[jt]s|py|sh|json|ya?ml)$/.test(entry.name)) {
+        yield rel;
+      }
+    }
+  }
+
+  it("no executable file reads a listed doc", () => {
+    const files = [
+      ...["tests", "scripts", "packages", "src", ".github/scripts"].flatMap((d) => [...walk(d)]),
+      "esbuild.config.mjs",
+      "vitest.config.ts",
+      "tsconfig.json",
+      "package.json",
+    ].filter((f) => !SELF.has(f));
+    expect(files.length, "the walk found nothing to scan").toBeGreaterThan(50);
+    const hits: string[] = [];
+    for (const f of files) {
+      readFileSync(join(root, f), "utf8")
+        .split("\n")
+        .forEach((line, i) => {
+          const t = line.trim();
+          if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*") || t.startsWith("#")) return;
+          for (const needle of LISTED) if (line.includes(needle)) hits.push(`${f}:${i + 1} names ${needle}`);
+        });
+    }
+    expect(hits, "take the doc off DOCS_ONLY in scripts/ci-changes.mjs").toEqual([]);
   });
 });
 
