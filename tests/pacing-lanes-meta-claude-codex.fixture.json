@@ -1,0 +1,219 @@
+{
+  "version": 1,
+  "description": "Frozen pacing-lane entry vectors for the meta/Claude/Codex lanes. Offline only: every entry below is a capacityRouting.sources[] row run through the JSON Schema (hostValidator pattern) and resolveConfig — no HTTP, no live catalogue read, no roster write. The three lane rows mirror the lane-row vector suites (muse fixture binds muse-spark-1.3-contributor to cliproxy-meta; pack-2 binds oc/claude-sonnet-5 to cliproxy-claude and oc/gpt-5.6-codex to cliproxy-codex) so the schema/resolver pins and the consumer vectors agree on lane identity. Edge rows pin fail-neutral resolver behavior: a health-only pace block (empty windows) and a source without pace both resolve to pace-neutral, never denied; malformed pace rows resolve to undefined instead of throwing. Sliced from TOG-13513; live lanes wiring and roster apply belong to TOG-13934.",
+  "sources": {
+    "meta": {
+      "id": "cliproxy-meta",
+      "statusUrl": "https://telemetry.example.invalid/meta",
+      "modelIds": ["muse-spark-1.3-contributor"],
+      "healthFields": ["state"],
+      "windows": [
+        {
+          "name": "five-hour",
+          "utilizationFields": ["five_hour_utilization"],
+          "resetFields": ["five_hour_resets_at"]
+        }
+      ],
+      "pace": {
+        "laneId": "cliproxy-meta",
+        "healthFields": ["state"],
+        "windows": [
+          {
+            "name": "five-hour",
+            "role": "serviceability",
+            "utilizationFields": ["five_hour_utilization"],
+            "resetFields": ["five_hour_resets_at"]
+          },
+          {
+            "name": "weekly",
+            "role": "allowance",
+            "utilizationFields": ["weekly_utilization"],
+            "resetFields": ["weekly_resets_at"]
+          }
+        ]
+      }
+    },
+    "claude": {
+      "id": "cliproxy-claude",
+      "statusUrl": "https://telemetry.example.invalid/claude",
+      "modelIds": ["oc/claude-sonnet-5"],
+      "healthFields": ["state"],
+      "windows": [
+        {
+          "name": "five-hour",
+          "utilizationFields": ["five_hour_utilization"],
+          "resetFields": ["five_hour_resets_at"]
+        }
+      ],
+      "pace": {
+        "laneId": "cliproxy-claude",
+        "healthFields": ["state"],
+        "windows": [
+          {
+            "name": "five-hour",
+            "role": "serviceability",
+            "utilizationFields": ["five_hour_utilization"],
+            "resetFields": ["five_hour_resets_at"]
+          },
+          {
+            "name": "weekly",
+            "role": "allowance",
+            "utilizationFields": ["weekly_utilization"],
+            "resetFields": ["weekly_resets_at"]
+          }
+        ]
+      }
+    },
+    "codex": {
+      "id": "cliproxy-codex",
+      "statusUrl": "https://telemetry.example.invalid/codex",
+      "modelIds": ["oc/gpt-5.6-codex"],
+      "healthFields": ["state"],
+      "windows": [
+        {
+          "name": "five-hour",
+          "utilizationFields": ["five_hour_utilization"],
+          "resetFields": ["five_hour_resets_at"]
+        }
+      ],
+      "pace": {
+        "laneId": "cliproxy-codex",
+        "free": true,
+        "healthFields": ["state"],
+        "weightFields": ["weight"],
+        "governingWindowField": "governing_window",
+        "windowSecondsField": "window_seconds",
+        "staleAfterSecondsField": "staleAfterSeconds",
+        "windows": [
+          {
+            "name": "five-hour",
+            "role": "serviceability",
+            "utilizationFields": ["five_hour_utilization"],
+            "resetFields": ["five_hour_resets_at"],
+            "defaultWindowSeconds": 18000
+          },
+          {
+            "name": "weekly",
+            "role": "allowance",
+            "utilizationFields": ["weekly_utilization"],
+            "resetFields": ["weekly_resets_at"]
+          }
+        ]
+      }
+    },
+    "minimalPace": {
+      "id": "cliproxy-minimal",
+      "statusUrl": "https://telemetry.example.invalid/minimal",
+      "modelIds": ["minimal-model"],
+      "windows": [
+        {
+          "name": "five-hour",
+          "utilizationFields": ["five_hour_utilization"]
+        }
+      ],
+      "pace": {
+        "laneId": "cliproxy-minimal"
+      }
+    }
+  },
+  "edges": {
+    "healthOnlyPace": {
+      "id": "cliproxy-health-only",
+      "statusUrl": "https://telemetry.example.invalid/health-only",
+      "modelIds": ["health-only-model"],
+      "windows": [
+        {
+          "name": "five-hour",
+          "utilizationFields": ["five_hour_utilization"]
+        }
+      ],
+      "pace": {
+        "laneId": "cliproxy-health-only",
+        "windows": []
+      }
+    },
+    "noPace": {
+      "id": "cliproxy-no-pace",
+      "statusUrl": "https://telemetry.example.invalid/no-pace",
+      "modelIds": ["no-pace-model"],
+      "windows": [
+        {
+          "name": "five-hour",
+          "utilizationFields": ["five_hour_utilization"]
+        }
+      ]
+    },
+    "missingLaneId": {
+      "id": "cliproxy-missing-lane",
+      "statusUrl": "https://telemetry.example.invalid/missing-lane",
+      "modelIds": ["missing-lane-model"],
+      "windows": [
+        {
+          "name": "five-hour",
+          "utilizationFields": ["five_hour_utilization"]
+        }
+      ],
+      "pace": {
+        "windows": [
+          {
+            "name": "five-hour",
+            "role": "serviceability",
+            "utilizationFields": ["five_hour_utilization"]
+          }
+        ]
+      }
+    },
+    "mixedWindows": {
+      "id": "cliproxy-mixed",
+      "statusUrl": "https://telemetry.example.invalid/mixed",
+      "modelIds": ["mixed-model"],
+      "windows": [
+        {
+          "name": "five-hour",
+          "utilizationFields": ["five_hour_utilization"]
+        }
+      ],
+      "pace": {
+        "laneId": "cliproxy-mixed",
+        "windows": [
+          {
+            "name": "five-hour",
+            "role": "serviceability",
+            "utilizationFields": ["five_hour_utilization"],
+            "resetFields": ["five_hour_resets_at"],
+            "defaultWindowSeconds": 18000
+          },
+          {
+            "name": "no-role",
+            "utilizationFields": ["weekly_utilization"]
+          },
+          {
+            "name": "bad-role",
+            "role": "throttle",
+            "utilizationFields": ["weekly_utilization"]
+          },
+          {
+            "name": "empty-utilization",
+            "role": "allowance",
+            "utilizationFields": []
+          },
+          {
+            "name": "",
+            "role": "allowance",
+            "utilizationFields": ["weekly_utilization"]
+          }
+        ]
+      }
+    },
+    "emptyLegacyWindows": {
+      "id": "cliproxy-empty-legacy",
+      "statusUrl": "https://telemetry.example.invalid/empty-legacy",
+      "modelIds": ["empty-legacy-model"],
+      "windows": [],
+      "pace": {
+        "laneId": "cliproxy-empty-legacy",
+        "windows": []
+      }
+    }
+  }
+}
