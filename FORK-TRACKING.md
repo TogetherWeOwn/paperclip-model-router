@@ -8,3 +8,4 @@ goes through the audits, steward and operator review path.
 | Patch | Base host commit | Target | Status |
 | --- | --- | --- | --- |
 | `docs/operator/no-progress-no-event-wake-suppression.patch` (doc: `no-progress-no-event-wake-suppression.md`) — suppress run-final-message comments on no-progress, no-event wakes | `14f66a7cf6422b43fe87d1d747ceabdf9f23b583` | Next host build after the current cutover packet | Tracked, awaiting upstream route |
+| `docs/operator/low-trust-review-model-credential.patch` (doc: `low-trust-review-model-credential.md`) — allow the assigned review agent's model-provider credential binding(s) in low-trust GitHub reviews | `14f66a7cf6422b43fe87d1d747ceabdf9f23b583` | Next host build after the current cutover packet | Tracked, awaiting upstream route |
