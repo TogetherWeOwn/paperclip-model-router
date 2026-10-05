@@ -1,0 +1,248 @@
+diff --git a/server/src/services/heartbeat-run-summary.ts b/server/src/services/heartbeat-run-summary.ts
+--- a/server/src/services/heartbeat-run-summary.ts
++++ b/server/src/services/heartbeat-run-summary.ts
+@@ -2,6 +2,7 @@
+   RunPresentationDecision,
+   RunPresentationSource,
+ } from "@paperclipai/shared";
++import { THROTTLED_ISSUE_REWAKE_REASONS } from "./issue-rewake-throttle.js";
+ 
+ export const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
+ export const HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS = 4_096;
+@@ -119,6 +120,29 @@
+ 
+ export const LEGACY_WITHHELD_RUN_COMMENT =
+   "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
++
++// Wakes that carry no new event for the issue. The throttle set covers
++// assignment, continuation, recovery and liveness re-wakes; monitor and timer
++// wakes are the same shape (a due check, not a new event), so they join the
++// set here. A null/undefined reason is a reason-less on-demand invoke, also
++// event-free.
++export const NO_PROGRESS_NO_EVENT_WAKE_REASONS: ReadonlySet<string> = new Set([
++  ...THROTTLED_ISSUE_REWAKE_REASONS,
++  "issue_monitor_due",
++  "issue_monitor_recovery",
++  "issue_monitor_recovery_issue",
++  "heartbeat_timer",
++]);
++
++export const NO_PROGRESS_NO_EVENT_WAKE_REASON_CODE =
++  "no_progress_no_event_wake";
++
++export function isNoEventWakeReason(
++  reason: string | null | undefined,
++): boolean {
++  if (reason == null) return true;
++  return NO_PROGRESS_NO_EVENT_WAKE_REASONS.has(reason);
++}
+ 
+ export const RUN_PRESENTATION_RESOLVER_VERSION = "1";
+ export const CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON =
+@@ -372,6 +396,15 @@
+     channel: "final" | "unknown";
+     reasonCode?: string;
+   } | null;
++  /**
++   * Wake provenance for no-progress suppression. When the wake carried no new
++   * event and the run left no issue-visible progress, the run's final message
++   * stays in the run log and no issue comment is published. Omit
++   * `runMadeIssueProgress` (or pass true) to preserve the legacy behavior.
++   */
++  wakeReason?: string | null;
++  wakeCommentId?: string | null;
++  runMadeIssueProgress?: boolean;
+ }): ResolvedHeartbeatRunResponse {
+   const resultJson = record(input.resultJson);
+   const finalAgentText = readCommentText(input.finalAgentMessage?.text);
+@@ -531,6 +564,25 @@
+     };
+   }
+ 
++  // A wake that carried no new event and a run that left no issue-visible
++  // progress must not publish the run's final message as an issue comment.
++  // The text stays in the run log; the thread stays clean. An explicit
++  // run comment already returned above with reuse precedence, and external
++  // chat precedence returned earlier, so neither is suppressed here.
++  if (
++    input.runMadeIssueProgress === false &&
++    isNoEventWakeReason(input.wakeReason ?? null) &&
++    !readCommentText(input.wakeCommentId)
++  ) {
++    return {
++      text: null,
++      decision: decision("none", {
++        commentAction: "none",
++        reasonCodes: [NO_PROGRESS_NO_EVENT_WAKE_REASON_CODE],
++      }),
++    };
++  }
++
+   const upstream = resolveCompletedUpstreamResponse();
+   if (upstream) return upstream;
+ 
+diff --git a/server/src/services/heartbeat.ts b/server/src/services/heartbeat.ts
+--- a/server/src/services/heartbeat.ts
++++ b/server/src/services/heartbeat.ts
+@@ -24986,6 +24986,46 @@
+                     runId: livenessRun.id,
+                   })
+                 : null;
++            // No-progress, no-event suppression: a wake that carried no new
++            // event plus a run that left no issue-visible progress must not
++            // publish its final message as a comment. The text stays in the
++            // run log. Progress is any ISSUE_PROGRESS_ACTIVITY_ACTIONS row
++            // attributed to this run, or an explicit run comment (which keeps
++            // reuse precedence inside the resolver).
++            const presentationWakeSnapshot = parseObject(
++              livenessRun.contextSnapshot,
++            );
++            const presentationWakeReason = readNonEmptyString(
++              presentationWakeSnapshot.wakeReason,
++            );
++            const presentationWakeCommentId = deriveCommentId(
++              presentationWakeSnapshot,
++              null,
++            );
++            let presentationRunMadeIssueProgress: boolean | undefined;
++            if (issueId) {
++              if (existingRunComment) {
++                presentationRunMadeIssueProgress = true;
++              } else {
++                const progressRows = await db
++                  .select({ id: activityLog.id })
++                  .from(activityLog)
++                  .where(
++                    and(
++                      eq(activityLog.companyId, livenessRun.companyId),
++                      eq(activityLog.runId, livenessRun.id),
++                      eq(activityLog.entityType, "issue"),
++                      eq(activityLog.entityId, issueId),
++                      inArray(
++                        activityLog.action,
++                        ISSUE_PROGRESS_ACTIVITY_ACTIONS,
++                      ),
++                    ),
++                  )
++                  .limit(1);
++                presentationRunMadeIssueProgress = progressRows.length > 0;
++              }
++            }
+             const resolved = resolveHeartbeatRunResponse({
+               resultJson: persistedResultJson,
+               conversationTurnFinished: isConversation(issueContext) &&
+@@ -25003,6 +25043,9 @@
+                 Boolean(adapterResult.nativeFinalization) &&
+                 externalChatPresentationAuthorization ===
+                   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
++              wakeReason: presentationWakeReason,
++              wakeCommentId: presentationWakeCommentId,
++              runMadeIssueProgress: presentationRunMadeIssueProgress,
+             });
+             let presentationDecision: RunPresentationDecision =
+               resolved.decision;
+diff --git a/server/src/__tests__/heartbeat-run-summary.test.ts b/server/src/__tests__/heartbeat-run-summary.test.ts
+--- a/server/src/__tests__/heartbeat-run-summary.test.ts
++++ b/server/src/__tests__/heartbeat-run-summary.test.ts
+@@ -876,6 +876,101 @@
+   });
+ });
+ 
++describe("resolveHeartbeatRunResponse no-progress no-event wakes", () => {
++  it("publishes nothing on a no-op monitor wake", () => {
++    for (const wakeReason of [
++      "issue_monitor_due",
++      "issue_continuation_needed",
++      "issue_assigned",
++      "issue_assignment_recovery",
++      "issue_graph_liveness_backstop",
++      "heartbeat_timer",
++      null,
++    ]) {
++      expect(
++        resolveHeartbeatRunResponse({
++          resultJson: { summary: "No-op wake handled quietly" },
++          wakeReason,
++          runMadeIssueProgress: false,
++        }),
++      ).toMatchObject({
++        text: null,
++        decision: {
++          chosenSource: "none",
++          commentAction: "none",
++          reasonCodes: ["no_progress_no_event_wake"],
++        },
++      });
++    }
++  });
++
++  it("still publishes when the run made issue progress", () => {
++    expect(
++      resolveHeartbeatRunResponse({
++        resultJson: { summary: "Changed status this run" },
++        wakeReason: "issue_monitor_due",
++        runMadeIssueProgress: true,
++      }),
++    ).toMatchObject({
++      text: "Changed status this run",
++      decision: { commentAction: "create" },
++    });
++  });
++
++  it("still reuses an explicit run comment on a no-event wake", () => {
++    expect(
++      resolveHeartbeatRunResponse({
++        resultJson: { summary: "New final text" },
++        existingComment: { id: "comment-1", body: "Posted reply" },
++        wakeReason: "issue_monitor_due",
++        runMadeIssueProgress: false,
++      }),
++    ).toMatchObject({
++      text: "Posted reply",
++      decision: {
++        chosenSource: "existing_issue_comment",
++        commentAction: "reuse",
++      },
++    });
++  });
++
++  it("still publishes on a comment wake without run progress", () => {
++    expect(
++      resolveHeartbeatRunResponse({
++        resultJson: { summary: "Reply to the new comment" },
++        wakeReason: "issue_monitor_due",
++        wakeCommentId: "comment-9",
++        runMadeIssueProgress: false,
++      }),
++    ).toMatchObject({
++      text: "Reply to the new comment",
++      decision: { commentAction: "create" },
++    });
++    expect(
++      resolveHeartbeatRunResponse({
++        resultJson: { summary: "Reply to the new comment" },
++        wakeReason: "issue_commented",
++        runMadeIssueProgress: false,
++      }),
++    ).toMatchObject({
++      text: "Reply to the new comment",
++      decision: { commentAction: "create" },
++    });
++  });
++
++  it("preserves legacy behavior when progress is unknown", () => {
++    expect(
++      resolveHeartbeatRunResponse({
++        resultJson: { summary: "Legacy text" },
++        wakeReason: "issue_monitor_due",
++      }),
++    ).toMatchObject({
++      text: "Legacy text",
++      decision: { commentAction: "create" },
++    });
++  });
++});
++
+ describe("projectHistoricalHeartbeatRunComment", () => {
+   it("projects the accepted semantic response over the known placeholder", () => {
+     const summary = "# Full recipe\n\n" + "ribs ".repeat(400);
