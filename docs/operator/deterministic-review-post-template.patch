@@ -27,11 +27,19 @@ diff --git a/packages/shared/src/validators/chat-github.ts b/packages/shared/src
      rationale: z.string().trim().min(1).max(12000),
      coverage: z
        .object({
-@@ -129,7 +129,10 @@
+@@ -129,7 +129,18 @@
              side: z.enum(["LEFT", "RIGHT"]),
              severity: z.enum(["info", "warning", "error"]),
              category: z.string().min(1).max(80),
-+            title: z.string().trim().min(1).max(120),
++            title: z
++              .string()
++              .trim()
++              .min(1)
++              .max(120)
++              // Titles render inside a GFM table cell, where `|` opens a
++              // column and a newline splits the row; the renderer escapes
++              // both as a second layer of defence.
++              .regex(/^[^|\r\n]*$/, "Title must be a single line without '|'"),
              body: z.string().trim().min(1).max(12000),
 +            evidence: z.string().trim().min(1).max(500).optional(),
 +            suggestion: z.string().trim().min(1).max(4000).optional(),
@@ -122,7 +130,7 @@ diff --git a/server/src/services/chat-github-review-template.ts b/server/src/ser
 new file mode 100644
 --- /dev/null
 +++ b/server/src/services/chat-github-review-template.ts
-@@ -0,0 +1,213 @@
+@@ -0,0 +1,274 @@
 +import type {
 +  GitHubReviewAssessment,
 +  GitHubReviewFinding,
@@ -153,6 +161,14 @@ new file mode 100644
 +  return `https://github.com/${repository}/commit/${sha}`;
 +}
 +
++/**
++ * File permalink at the reviewed commit. The `#L{line}` anchor is emitted
++ * for completeness, but `projectSafeChatPublicationText` strips URL
++ * fragments (and query strings) on publish because they can carry tokens —
++ * so the visible `path:line` label, not the href, carries the line number
++ * in the published post. The published href still resolves to the file at
++ * the reviewed commit.
++ */
 +export function githubFilePermalink(
 +  repository: string,
 +  sha: string,
@@ -170,12 +186,63 @@ new file mode 100644
 +  return `https://github.com/${repository}/pull/${pullNumber}`;
 +}
 +
++/** Room reserved for the block closers a truncation cut may append. */
++const TRUNCATION_CLOSER_RESERVE = "\n```\n</details>".length;
++
++/**
++ * Slice text to at most `maxUnits` UTF-16 units, stopping only on a
++ * code-point boundary so astral characters (emoji) are never split. The
++ * ceiling is enforced on this unit because that is how transports and
++ * `.length` measure the published post.
++ */
++function sliceByUtf16Length(text: string, maxUnits: number): string {
++  let units = 0;
++  let end = 0;
++  for (const char of text) {
++    if (units + char.length > maxUnits) break;
++    units += char.length;
++    end += char.length;
++  }
++  return text.slice(0, end);
++}
++
++function countOccurrences(haystack: string, needle: string): number {
++  return haystack.split(needle).length - 1;
++}
++
 +function truncatePost(text: string): string {
 +  if (text.length <= REVIEW_POST_MAX_CHARS) return text;
-+  const keep = REVIEW_POST_MAX_CHARS - REVIEW_POST_TRUNCATION_SUFFIX.length;
-+  return (
-+    Array.from(text).slice(0, keep).join("") + REVIEW_POST_TRUNCATION_SUFFIX
-+  );
++  const keep =
++    REVIEW_POST_MAX_CHARS -
++    REVIEW_POST_TRUNCATION_SUFFIX.length -
++    TRUNCATION_CLOSER_RESERVE;
++  let cut = sliceByUtf16Length(text, Math.max(keep, 0));
++  // Never cut mid-line: back up to the previous newline so a cut never
++  // lands inside a link, fence or `<details>` tag.
++  const lastNewline = cut.lastIndexOf("\n");
++  if (lastNewline > 0) cut = cut.slice(0, lastNewline);
++  // Re-close any block left open by the cut so the published post renders.
++  if (countOccurrences(cut, "```") % 2 === 1) cut += "\n```";
++  if (countOccurrences(cut, "<details>") > countOccurrences(cut, "</details>"))
++    cut += "\n</details>";
++  return cut + REVIEW_POST_TRUNCATION_SUFFIX;
++}
++
++/**
++ * Collapse model text to a single line for headline and summary positions
++ * where a newline would break the surrounding markdown.
++ */
++function singleLine(text: string): string {
++  return text.replace(/\r?\n/g, " ");
++}
++
++/**
++ * Escape model text for a GFM table cell: `|` would open a new column.
++ * The schema rejects pipes and newlines; this keeps the renderer safe for
++ * any caller that bypasses validation.
++ */
++function escapeTableCell(text: string): string {
++  return singleLine(text).replace(/\|/g, "\\|");
 +}
 +
 +function emojiFor(severity: string): string {
@@ -213,6 +280,8 @@ new file mode 100644
 +    finding.path,
 +    finding.line,
 +  );
++  const title = singleLine(finding.title);
++  const category = singleLine(finding.category);
 +  const evidence = finding.evidence
 +    ? ` — ${finding.evidence}`
 +    : "";
@@ -220,7 +289,7 @@ new file mode 100644
 +    ? `Fix:\n\`\`\`suggestion\n${finding.suggestion}\n\`\`\``
 +    : "Fix: no suggestion provided.";
 +  return [
-+    `<details><summary><b>${index}. ${finding.title}</b> — ${emojiFor(finding.severity)} ${labelFor(finding.severity)} · ${finding.category} · [\`${finding.path}:${finding.line}\`](${fileUrl})</summary>`,
++    `<details><summary><b>${index}. ${title}</b> — ${emojiFor(finding.severity)} ${labelFor(finding.severity)} · ${category} · [\`${finding.path}:${finding.line}\`](${fileUrl})</summary>`,
 +    ``,
 +    `What: ${finding.body}`,
 +    ``,
@@ -267,7 +336,7 @@ new file mode 100644
 +      `|---|----------|---------|----------|`,
 +      ...assessment.findings.map(
 +        (finding, i) =>
-+          `| ${i + 1} | ${emojiFor(finding.severity)} ${labelFor(finding.severity)} | ${finding.title} | [\`${finding.path}:${finding.line}\`](${githubFilePermalink(repository, headSha, finding.path, finding.line)}) |`,
++          `| ${i + 1} | ${emojiFor(finding.severity)} ${labelFor(finding.severity)} | ${escapeTableCell(finding.title)} | [\`${finding.path}:${finding.line}\`](${githubFilePermalink(repository, headSha, finding.path, finding.line)}) |`,
 +      ),
 +      ``,
 +      ...assessment.findings.flatMap((finding, i) => [
@@ -307,7 +376,7 @@ new file mode 100644
 +  );
 +  const verdict = complete ? `${score}/5` : "incomplete";
 +  const lines: string[] = [
-+    `**${emojiFor(finding.severity)} ${labelFor(finding.severity)} · ${finding.category}** — ${finding.title} · ${verdict} · [\`${headSha.slice(0, 7)}\`](${commitUrl})`,
++    `**${emojiFor(finding.severity)} ${labelFor(finding.severity)} · ${singleLine(finding.category)}** — ${singleLine(finding.title)} · ${verdict} · [\`${headSha.slice(0, 7)}\`](${commitUrl})`,
 +    ``,
 +    finding.body,
 +    ``,
@@ -340,7 +409,7 @@ diff --git a/server/src/services/chat-github-review-template.test.ts b/server/sr
 new file mode 100644
 --- /dev/null
 +++ b/server/src/services/chat-github-review-template.test.ts
-@@ -0,0 +1,202 @@
+@@ -0,0 +1,297 @@
 +import { describe, expect, it } from "vitest";
 +import type {
 +  GitHubReviewAssessment,
@@ -356,6 +425,7 @@ new file mode 100644
 +  REVIEW_POST_MAX_CHARS,
 +  REVIEW_POST_TRUNCATION_SUFFIX,
 +} from "./chat-github-review-template.js";
++import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 +
 +const HEAD_SHA = "a".repeat(40);
 +const REPOSITORY = "acme/web";
@@ -447,6 +517,28 @@ new file mode 100644
 +    expect(out).not.toContain("…truncated");
 +  });
 +
++  it("keeps the findings table intact for pipe and newline titles", () => {
++    const out = renderReviewSummary({
++      assessment: assessment({
++        score: 3,
++        findings: [finding({ title: "Fix | this\nand that" })],
++      }),
++      repository: REPOSITORY,
++      pullNumber: 42,
++      headSha: HEAD_SHA,
++    });
++    expect(out).toContain("| 1 | 🔴 Error | Fix \\| this and that |");
++    const row = out.split("\n").find((line) => line.startsWith("| 1 |"));
++    expect(row).toContain("| 1 |");
++    // Five structural column separators remain once the escaped pipe
++    // in the title is removed from the count.
++    expect((row ?? "").replace(/\\\|/g, "").split("|").length - 1).toBe(5);
++    // The permalink still carries the full-SHA anchor pre-sanitizer.
++    expect(out).toContain(
++      githubFilePermalink(REPOSITORY, HEAD_SHA, "src/a.ts", 10),
++    );
++  });
++
 +  it("renders an incomplete review", () => {
 +    const out = renderReviewSummary({
 +      assessment: assessment({ complete: false, score: 0, summary: "Partial." }),
@@ -473,6 +565,35 @@ new file mode 100644
 +    );
 +    const out = renderReviewSummary({
 +      assessment: assessment({ score: 4, findings }),
++      repository: REPOSITORY,
++      pullNumber: 42,
++      headSha: HEAD_SHA,
++    });
++    // The ceiling is enforced on the published unit (UTF-16 length), so
++    // astral emoji in severity markers never push the post over it.
++    expect(out.length).toBeLessThanOrEqual(REVIEW_POST_MAX_CHARS);
++    expect(out.endsWith(REVIEW_POST_TRUNCATION_SUFFIX)).toBe(true);
++    // The cut lands on a line boundary with every opened block re-closed.
++    expect((out.match(/```/g) ?? []).length % 2).toBe(0);
++    expect((out.match(/<\/details>/g) ?? []).length).toBeGreaterThanOrEqual(
++      (out.match(/<details>/g) ?? []).length,
++    );
++  });
++
++  it("holds the ceiling for astral-emoji-heavy posts", () => {
++    const findings = Array.from({ length: 300 }, (_, i) =>
++      finding({
++        key: `k${i}`,
++        path: `src/f${i}.ts`,
++        line: i + 1,
++        severity: "warning",
++        category: "style",
++        title: `🟡 Nit ${i} — trailing whitespace 🟡🔴`,
++        body: "🟡".repeat(200),
++      }),
++    );
++    const out = renderReviewSummary({
++      assessment: assessment({ score: 2, findings }),
 +      repository: REPOSITORY,
 +      pullNumber: 42,
 +      headSha: HEAD_SHA,
@@ -507,6 +628,35 @@ new file mode 100644
 +  });
 +});
 +
++describe("published output", () => {
++  it("keeps the line number after the sanitizer strips URL fragments", () => {
++    const rendered = renderReviewSummary({
++      assessment: assessment({ score: 3, findings: [finding()] }),
++      repository: REPOSITORY,
++      pullNumber: 42,
++      headSha: HEAD_SHA,
++    });
++    expect(rendered).toContain("#L10");
++    const published = projectSafeChatPublicationText(rendered);
++    expect(published).toContain("`src/a.ts:10`");
++    expect(published).not.toContain("#L10");
++    expect(published).toContain(`blob/${HEAD_SHA}/src/a.ts`);
++  });
++
++  it("keeps inline finding lines after sanitization", () => {
++    const rendered = renderInlineFinding({
++      finding: finding(),
++      score: 3,
++      complete: true,
++      repository: REPOSITORY,
++      headSha: HEAD_SHA,
++    });
++    const published = projectSafeChatPublicationText(rendered);
++    expect(published).toContain("`src/a.ts:10`");
++    expect(published).not.toContain("#L10");
++  });
++});
++
 +describe("renderCheckSummary", () => {
 +  it("matches the rendered PR comment summary", () => {
 +    const input = {
@@ -534,6 +684,20 @@ new file mode 100644
 +      findings: [{ ...finding(), title: "t".repeat(121) }],
 +    };
 +    expect(githubReviewAssessmentSchema.safeParse(longTitle).success).toBe(
++      false,
++    );
++    const pipeTitle = {
++      ...base,
++      findings: [{ ...finding(), title: "Fix | this" }],
++    };
++    expect(githubReviewAssessmentSchema.safeParse(pipeTitle).success).toBe(
++      false,
++    );
++    const newlineTitle = {
++      ...base,
++      findings: [{ ...finding(), title: "Fix\nthis" }],
++    };
++    expect(githubReviewAssessmentSchema.safeParse(newlineTitle).success).toBe(
 +      false,
 +    );
 +    const longSummary = { ...base, summary: "s".repeat(2001) };
