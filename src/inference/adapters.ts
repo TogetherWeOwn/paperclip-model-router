@@ -25,7 +25,10 @@ function objectOrThrow(value: unknown, message: string): Record<string, unknown>
 }
 
 function optionalNonNegativeInteger(value: unknown, name: string): number | null {
-  if (value === undefined) return null;
+  // TOG-16699: OpenAI-compatible gateways (e.g. CLI proxies) emit explicit
+  // nulls where OpenAI omits the key. Null means absent here, exactly like
+  // undefined; anything else must still be a non-negative integer.
+  if (value === undefined || value === null) return null;
   if (!Number.isInteger(value) || (value as number) < 0) throw new Error(`${name} is invalid`);
   return value as number;
 }
@@ -300,7 +303,9 @@ export function normalizeOpenAiSuccess(
   if (message.role !== "assistant") throw new Error("assistant role is invalid");
   const content: NormalizedResponse["content"] = [];
   if (typeof message.content === "string" && message.content.length > 0) content.push({ type: "text", text: message.content });
-  if (message.tool_calls !== undefined) {
+  // TOG-16699: an explicit null is the wire equivalent of an omitted key for
+  // gateways that always serialize the field. Only a present non-array throws.
+  if (message.tool_calls !== undefined && message.tool_calls !== null) {
     if (!Array.isArray(message.tool_calls)) throw new Error("tool_calls is invalid");
     for (const rawCall of message.tool_calls) {
       const call = objectOrThrow(rawCall, "tool call is invalid");
@@ -314,7 +319,8 @@ export function normalizeOpenAiSuccess(
       content.push({ type: "tool_call", id: call.id, name: fn.name, arguments: parsed });
     }
   }
-  const usage = body.usage === undefined ? null : objectOrThrow(body.usage, "usage is invalid");
+  // TOG-16699: explicit null usage is absent usage, not a malformed envelope.
+  const usage = body.usage === undefined || body.usage === null ? null : objectOrThrow(body.usage, "usage is invalid");
   const inputTokens = usage ? optionalNonNegativeInteger(usage.prompt_tokens, "prompt_tokens") : null;
   const outputTokens = usage ? optionalNonNegativeInteger(usage.completion_tokens, "completion_tokens") : null;
   const totalTokens = usage ? optionalNonNegativeInteger(usage.total_tokens, "total_tokens") : null;
@@ -360,7 +366,8 @@ export function normalizeAnthropicSuccess(
   // `thinking`-only reply is exactly what a reasoning model returns when the
   // output budget went entirely on hidden tokens. Structurally invalid blocks
   // still throw above; only the empty result is tolerated.
-  const usage = body.usage === undefined ? null : objectOrThrow(body.usage, "usage is invalid");
+  // TOG-16699: explicit null usage is absent usage, not a malformed envelope.
+  const usage = body.usage === undefined || body.usage === null ? null : objectOrThrow(body.usage, "usage is invalid");
   const inputTokens = usage ? optionalNonNegativeInteger(usage.input_tokens, "input_tokens") : null;
   const outputTokens = usage ? optionalNonNegativeInteger(usage.output_tokens, "output_tokens") : null;
   return {

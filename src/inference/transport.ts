@@ -249,8 +249,17 @@ export async function invokeCompatibleUpstream(input: {
         ? normalizeOpenAiSuccess(bounded.value, input.modelId, requestId)
         : normalizeAnthropicSuccess(bounded.value, input.modelId, requestId);
       return { response: normalized, error: null };
-    } catch {
-      return error("invalid-upstream-response", "The compatible upstream returned an invalid success envelope.", false);
+    } catch (cause) {
+      // TOG-16699: the bare envelope error hid WHICH field failed and dropped
+      // the 2xx status, so 12/12 probes reported the same opaque string while
+      // the origin kept returning 200. Name the violated check and keep the
+      // status/request id. Safe: every normalizer throw uses a static message
+      // with static field names, never upstream values — keep it that way.
+      const reason = cause instanceof Error ? cause.message.slice(0, 200) : "unknown validation failure";
+      return {
+        response: null,
+        error: { code: "invalid-upstream-response", message: `The compatible upstream returned an invalid success envelope: ${reason}.`, retryable: false, upstreamStatus: response.status, upstreamRequestId: requestId },
+      };
     }
   } catch {
     return error("upstream-connect", "The compatible upstream response could not be read.", true);
