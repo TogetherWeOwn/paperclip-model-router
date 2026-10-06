@@ -22,8 +22,11 @@
  *
  * --remap renames a configured model id whose verbatim form is proven absent
  * from the live CLIProxy catalogue (dynamic evidence, never static alias
- * inspection). Each remap target must already be catalogue-verified. The guard
- * proves the roster is otherwise untouched.
+ * inspection). Each remap target must already be catalogue-verified. --disable
+ * sets enabled:false on a configured id with no catalogue candidate; it is the
+ * reversible disposition for unserved ids (entries preserved, selection
+ * stopped) and needs an explicit policy decision before use. The guard proves
+ * the roster is otherwise untouched.
  */
 
 import fs from "node:fs";
@@ -54,7 +57,7 @@ function same(left, right) {
 }
 
 function parseArgs(argv) {
-  const options = { remap: [] };
+  const options = { remap: [], disable: [], drop: [] };
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index];
     const value = argv[index + 1];
@@ -63,14 +66,34 @@ function parseArgs(argv) {
       const equals = value.indexOf("=");
       if (equals <= 0 || equals === value.length - 1) fail(`--remap must be old-id=new-id, got ${JSON.stringify(value)}`);
       options.remap.push({ from: value.slice(0, equals), to: value.slice(equals + 1) });
+    } else if (key === "--disable") {
+      options.disable.push(value);
+    } else if (key === "--drop") {
+      options.drop.push(value);
     } else {
       options[key.slice(2)] = value;
     }
   }
   if (!options.input || !options.output || !options["credential-secret-id"]) {
-    fail("usage: cliproxy-upstream-repoint.mjs --input FILE --output FILE --credential-secret-id UUID [--remap old=new ...]");
+    fail("usage: cliproxy-upstream-repoint.mjs --input FILE --output FILE --credential-secret-id UUID [--remap old=new ...] [--disable id ...] [--drop id ...]");
   }
   return options;
+}
+
+function touchedIds(options) {
+  return [
+    ...options.remap.flatMap((pair) => [pair.from, pair.to]),
+    ...options.disable,
+    ...options.drop,
+  ];
+}
+
+function assertDeclaredOnce(options) {
+  const seen = new Set();
+  for (const id of touchedIds(options)) {
+    if (seen.has(id)) fail(`id ${JSON.stringify(id)} is declared twice across --remap/--disable/--drop`);
+    seen.add(id);
+  }
 }
 
 function unwrapConfig(backup) {
@@ -122,6 +145,7 @@ function main() {
   };
 
   if (!Array.isArray(config.models)) fail("config.models is missing: refusing to emit a model-less payload");
+  assertDeclaredOnce(options);
   const remaps = options.remap ?? [];
   const remappedIds = [];
   for (const { from, to } of remaps) {
@@ -137,6 +161,35 @@ function main() {
     remappedIds.push(`${from} -> ${to}`);
   }
 
+  const disables = options.disable ?? [];
+  const disabledIds = [];
+  const restoreEnabled = [];
+  for (const id of disables) {
+    if (remaps.some((pair) => pair.from === id || pair.to === id)) {
+      fail(`--disable ${JSON.stringify(id)} is also remapped: declare each id once`);
+    }
+    const hits = config.models.filter((model) => model?.id === id);
+    if (hits.length !== 1) {
+      fail(`--disable ${JSON.stringify(id)} matches ${hits.length} models (expected exactly 1)`);
+    }
+    const entry = hits[0];
+    restoreEnabled.push({ id, hadKey: "enabled" in entry, value: entry.enabled });
+    entry.enabled = false;
+    disabledIds.push(id);
+  }
+
+  const drops = options.drop ?? [];
+  const droppedEntries = [];
+  for (const id of drops) {
+    const index = config.models.findIndex((model) => model?.id === id);
+    if (index < 0) fail(`--drop ${JSON.stringify(id)} matches no model (expected exactly 1)`);
+    const [entry] = config.models.splice(index, 1);
+    if (config.models.some((model) => model?.id === id)) {
+      fail(`--drop ${JSON.stringify(id)} matches more than one model: refusing to guess`);
+    }
+    droppedEntries.push({ id, index, entry: clone(entry) });
+  }
+
   // Immutability guard: restoring the intended fields must reproduce the
   // input exactly. Anything else the script changed (or dropped) fails here.
   const restored = clone(config);
@@ -146,8 +199,19 @@ function main() {
     const hit = restored.models.find((model) => model?.id === to);
     if (hit) hit.id = from;
   }
+  for (const id of disabledIds) {
+    const hit = restored.models.find((model) => model?.id === id);
+    const saved = restoreEnabled.find((record) => record.id === id);
+    if (hit && saved) {
+      if (saved.hadKey) hit.enabled = saved.value;
+      else delete hit.enabled;
+    }
+  }
+  for (const { id, index, entry } of [...droppedEntries].sort((a, b) => a.index - b.index)) {
+    restored.models.splice(index, 0, entry);
+  }
   if (!same(restored, before)) {
-    fail("repoint changed fields outside upstream.baseUrl, upstream.credentialSecretRef.secretId, and declared --remap pairs");
+    fail("repoint changed fields outside upstream.baseUrl, upstream.credentialSecretRef.secretId, and declared --remap/--disable/--drop actions");
   }
 
   fs.writeFileSync(options.output, `${JSON.stringify({ configJson: config }, null, 2)}\n`, { mode: 0o600 });
@@ -158,6 +222,8 @@ function main() {
     protocol,
     credentialSecretRefReplaced: true,
     remaps: remappedIds,
+    disabled: disabledIds,
+    dropped: droppedEntries.map((record) => record.id),
     modelCount: config.models.length,
     modelIds: config.models.map((model) => model?.id ?? null),
   }, null, 2));

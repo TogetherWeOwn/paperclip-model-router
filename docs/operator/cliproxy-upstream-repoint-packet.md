@@ -72,23 +72,40 @@ this list. Report back only the HTTP status and the id list (no key material).
 - Any configured id **absent** from the catalogue: STOP. Do not apply. Report
   the missing id plus the catalogue's closest neighbouring ids; engineering
   supplies a remap on the tracking card and this packet re-runs from Step 0.
-- Validated mapping (live catalogue, HTTP 200, 181 ids, read-only fetch):
-  `cliproxy/gpt-6-luna` is absent (zero `cliproxy/`-prefixed ids served) and
-  remaps to `openai/gpt-6-luna` (catalogue-verified verbatim, and matches the
-  deployed static alias); `cliproxy/grok-build-0.1` is absent and remaps to
-  `grok-build-0.1` (catalogue-verified verbatim, sole neighbour). Every
-  further id from Step 1 gets the same verbatim check at apply time; any
-  additional miss stops the apply under the rule above.
+- Full-roster outcome (live catalogue, HTTP 200, 181 served, read-only
+  fetch): 113 configured ids, 11 verbatim hits (all `opencode-go/` lane ids,
+  kept untouched), 102 misses. Zero `cliproxy/`-prefixed ids are served: the
+  `cliproxy/` lane label is dead and every such id must move.
+- Reconciliation rule (documented per row on the tracking card): vendor
+  namespace first (`openai/`, `claude/`, `meta/` -- canonical identity,
+  matches the one deployed static-alias precedent), else the bare suffix
+  (direct-path precedent), else the proven `opencode-go/` serving lane, else
+  `devin/`. Duplicate lane twins of a kept id are disabled, never remapped
+  onto the kept id (the transformer refuses duplicate targets).
+- 55 remaps ship in `docs/operator/cliproxy-roster-decided.txt`. 47 disables
+  (19 dead-label twins + 28 ids with no catalogue candidate at all) ship in
+  `docs/operator/cliproxy-roster-pending.txt` and apply ONLY on the explicit
+  policy decision recorded on the tracking card. Catalogue absence is
+  necessary but not sufficient evidence -- it proves nothing about quota or
+  generation success -- so unserved ids are disabled (reversible, entries
+  preserved), never silently dropped.
+- If the Step 1 roster differs at all from the 113-id evidence (config
+  `updatedAt` moved, count differs): STOP. The transformer refuses unknown
+  remap sources and undeclared drift by construction; engineering re-derives
+  the flags before any apply.
 
 ## Step 3 — Build the payload (deterministic transformer)
 
 ```bash
+mapfile -t ROSTER_ARGS < docs/operator/cliproxy-roster-decided.txt
 node scripts/cliproxy-upstream-repoint.mjs \
   --input "$BACKUP" \
   --output /secure/path/model-router-cliproxy-repoint.payload.json \
   --credential-secret-id '<approved-cliproxy-secret-ref-uuid>' \
-  --remap cliproxy/gpt-6-luna=openai/gpt-6-luna \
-  --remap cliproxy/grok-build-0.1=grok-build-0.1
+  "${ROSTER_ARGS[@]}"
+# ONLY on the recorded policy decision, append the pending disables:
+# mapfile -t PENDING_ARGS < docs/operator/cliproxy-roster-pending.txt
+# ... "${ROSTER_ARGS[@]}" "${PENDING_ARGS[@]}"
 ```
 
 The script refuses to run unless the backup's baseUrl is exactly the retired
@@ -97,11 +114,11 @@ from the current one, and the protocol is a known compatible protocol. Each
 `--remap` must match exactly one roster entry and a target not already
 present; undeclared roster drift fails the run. It then asserts everything
 outside `upstream.baseUrl`, `upstream.credentialSecretRef.secretId`, and the
-declared remap pairs reproduces the backup exactly, and writes the
-full-replacement payload with mode `0600`. It prints a summary (protocol,
-remaps, model count, model ids) to stderr for the record. If Step 2 surfaced
-further misses, add one `--remap` per validated target; a miss with no
-validated target stops the apply.
+declared `--remap` / `--disable` / `--drop` actions reproduces the backup
+exactly, and writes the full-replacement payload with mode `0600`. It prints
+a summary (protocol, remaps, disabled, dropped, model count, model ids) to
+stderr for the record. If Step 2 surfaced further misses, add one action per
+validated disposition; a miss with no validated disposition stops the apply.
 
 ## Step 4 — Apply (full replacement, one company only)
 
@@ -128,14 +145,24 @@ npx paperclipai plugin config:set "$PLUGIN" -C "$COMPANY_ID" \
 
 Rollback trigger: any post-apply verification failure below, or any model
 error other than a clean generation after apply. Rollback restores the exact
-pre-change object, including the previous secret ref.
+pre-change object, including the previous secret ref and every roster entry
+(remapped ids, disabled twins, and unserved ids all return as they were).
+
+Preservation contract: the Step 0 backup is the only source of truth. Record
+`sha256sum "$BACKUP"` and the config `updatedAt` beside the payload; the
+readback in Step 6 must diff clean against the backup outside the declared
+actions. No entry is ever deleted by this packet except on an explicit
+`--drop` the transformer echoes in its summary -- the current packet drops
+nothing. Other-company configs are untouched by construction (`-C` scope plus
+a full-replacement body for that company only).
 
 ## Step 6 — Post-apply verification
 
 1. Config readback: `plugin config` again and diff against the backup
-   excluding the two intended fields; the roster and every other key must be
-   identical, and the binding snapshot fields present in the backup must still
-   be present.
+   excluding the declared actions (new baseUrl, new secret ref, 55 remaps,
+   plus pending disables only if decided); every other key must be identical,
+   and the binding snapshot fields present in the backup must still be
+   present.
 2. Endpoint shape (unauthenticated, credential-free):
    `curl -sSD - -o /dev/null https://cliproxy.infextion.net/v1/models` must
    return JSON (currently `401` with a JSON body), not `text/plain`.
@@ -146,10 +173,10 @@ pre-change object, including the previous secret ref.
 
 ## Pre-apply checklist
 
-- [ ] Backup captured at Step 0 and stored with `0600`; retired baseUrl confirmed in it.
-- [ ] Full configured id roster extracted (Step 1); count recorded.
-- [ ] Every configured id matched verbatim in the live catalogue (Step 2); no renames smuggled in.
-- [ ] Payload built by the reviewed transformer (Step 3); stderr summary archived.
+- [ ] Backup captured at Step 0 and stored with `0600`; retired baseUrl confirmed in it; `sha256sum` + config `updatedAt` recorded.
+- [ ] Full configured id roster extracted (Step 1); count is 113 and matches the evidence; any drift STOPS the apply.
+- [ ] Roster disposition reconciled (Step 2): 11 kept, 55 remapped per the decided flags, 47 disables gated on the recorded policy decision; no renames or disables smuggled in beyond the flag files.
+- [ ] Payload built by the reviewed transformer (Step 3); stderr summary archived and shows exactly the declared actions.
 - [ ] Apply targets exactly one company id; other-company configs untouched by construction (`-C` scope + full-replacement body for that company only).
 - [ ] Existing binding snapshot preserved in the backup; rollback command tested for syntax (Step 5) before apply.
 - [ ] Authorization for the bounded secret-ref reuse recorded; no new key minted, rotated, projected, or hand-pinned.
