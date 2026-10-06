@@ -298,8 +298,14 @@ const ENABLED_IDS = new Set([
   "cliproxy/grok-4.3",
 ]);
 
+// Live rows with no `enabled` key occur in real configs and count as enabled
+// at runtime (src/config/resolve.ts:146). One enabled fixture entry stays
+// keyless so the suite pins default-enabled merge + coverage semantics.
+const KEYLESS_IDS = new Set(["cliproxy/glm-5.3-flash"]);
+
 function fixtureEntry(id: string): Record<string, unknown> {
-  const entry: Record<string, unknown> = { id, tier: "standard", enabled: ENABLED_IDS.has(id) };
+  const entry: Record<string, unknown> = { id, tier: "standard" };
+  if (!KEYLESS_IDS.has(id)) entry.enabled = ENABLED_IDS.has(id);
   if (id === "cliproxy/glm-5.3" || id === "cliproxy/glm-5.3-flash") entry.tier = "frontier";
   return entry;
 }
@@ -398,11 +404,13 @@ describe("cliproxy full-roster reconciliation", () => {
     const models = runWithFlagFiles([DECIDED_FLAGS, PENDING_FLAGS]);
     expect(models).toHaveLength(113);
     const byId = new Map(models.map((model) => [model.id as string, model]));
-    // The host STOP shape: an enabled twin survives under the served id with
-    // its own record; the disabled twin goes dark. Enabled count is kept.
-    for (const target of ["glm-5.3", "glm-5.3-flash"]) {
-      expect(byId.get(target)).toMatchObject({ id: target, tier: "frontier", enabled: true });
-    }
+    // The host STOP shape: a live twin survives under the served id with its
+    // own record (one explicit enabled:true, one default-enabled keyless); the
+    // disabled twin goes dark. Live count is kept.
+    expect(byId.get("glm-5.3")).toMatchObject({ id: "glm-5.3", tier: "frontier", enabled: true });
+    const flash = byId.get("glm-5.3-flash") as Record<string, unknown> | undefined;
+    expect(flash).toMatchObject({ id: "glm-5.3-flash", tier: "frontier" });
+    expect(flash?.enabled !== false).toBe(true);
     // Enabled entries on the keep and remap paths pass through untouched.
     expect(byId.get("opencode-go/qwen3.6-plus")).toMatchObject({ enabled: true });
     expect(byId.get("grok-4.3")).toMatchObject({ enabled: true });
@@ -420,7 +428,9 @@ describe("cliproxy full-roster reconciliation", () => {
       expect(byId.get(id)).toMatchObject({ id, enabled: false });
     }
     for (const id of keptIds()) expect(byId.get(id)).toEqual(fixtureEntry(id));
-    const enabledAfter = models.filter((model) => model.enabled === true).map((model) => model.id);
+    // Runtime liveness (missing `enabled` counts as enabled) — the same
+    // predicate the transformer summary uses for its coverage proof.
+    const enabledAfter = models.filter((model) => model.enabled !== false).map((model) => model.id);
     expect(new Set(enabledAfter)).toEqual(new Set(["glm-5.3", "glm-5.3-flash", "opencode-go/qwen3.6-plus", "grok-4.3"]));
   });
 });

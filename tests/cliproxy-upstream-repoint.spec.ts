@@ -272,6 +272,77 @@ describe("cliproxy-upstream-repoint", () => {
     expect(runTransform(backupWith(), [...secretArgs, "--merge", "cliproxy/gpt-6-luna cliproxy/gpt-6-luna cliproxy/grok-build-0.1"]).ok).toBe(false);
   });
 
+  it("merge treats a missing enabled key as live (runtime default-enabled)", () => {
+    // Regression for the Paperclip Review 3/5: the transformer used
+    // `enabled === true`, so a keyless twin was silently disabled and the
+    // both-live guard never fired. Runtime treats a missing key as enabled
+    // (src/config/resolve.ts:146 pickBoolean(raw.enabled, true)).
+    const input = backupWith();
+    input.configJson.models = [
+      { id: "opencode-go/glm-5.3", tier: "standard", quality: 70, costPerMTokIn: 1, costPerMTokOut: 5, contextWindow: 128000, capabilities: ["tools"], enabled: false },
+      { id: "cliproxy/glm-5.3", tier: "frontier", quality: 90, costPerMTokIn: 2, costPerMTokOut: 8, contextWindow: 200000, capabilities: ["tools", "vision"] },
+    ];
+    delete (input.configJson.models[1] as Record<string, unknown>).enabled;
+    const result = runTransform(input, [...secretArgs, "--merge", "glm-5.3 opencode-go/glm-5.3 cliproxy/glm-5.3"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const models = result.payload.configJson.models as Array<Record<string, unknown>>;
+    const byId = new Map(models.map((model) => [model.id as string, model]));
+    // Keyless winner keeps its entire record (still keyless, still live).
+    const survivor = byId.get("glm-5.3");
+    expect(survivor).toMatchObject({ id: "glm-5.3", tier: "frontier", quality: 90 });
+    expect(survivor).not.toHaveProperty("enabled", false);
+    expect((survivor as Record<string, unknown>).enabled !== false).toBe(true);
+    expect(byId.get("opencode-go/glm-5.3")).toMatchObject({ enabled: false });
+  });
+
+  it("merge refuses both-live twins when either side is default-enabled", () => {
+    // Both-live ambiguity must fail closed: keyless+true and keyless+keyless
+    // are both live pairs, not a winner plus a dark loser.
+    const keylessTrue = backupWith();
+    keylessTrue.configJson.models = [
+      { id: "a", tier: "standard", quality: 1, costPerMTokIn: 1, costPerMTokOut: 1, contextWindow: 1, capabilities: [] },
+      { id: "b", tier: "standard", quality: 1, costPerMTokIn: 1, costPerMTokOut: 1, contextWindow: 1, capabilities: [], enabled: true },
+    ];
+    expect(runTransform(keylessTrue, [...secretArgs, "--merge", "c a b"]).ok).toBe(false);
+    const keylessKeyless = backupWith();
+    keylessKeyless.configJson.models = [
+      { id: "a", tier: "standard", quality: 1, costPerMTokIn: 1, costPerMTokOut: 1, contextWindow: 1, capabilities: [] },
+      { id: "b", tier: "standard", quality: 1, costPerMTokIn: 1, costPerMTokOut: 1, contextWindow: 1, capabilities: [] },
+    ];
+    expect(runTransform(keylessKeyless, [...secretArgs, "--merge", "c a b"]).ok).toBe(false);
+  });
+
+  it("merge accepts three separate argv tokens as well as the quoted triple", () => {
+    // Documents the direct-argv advisory: --merge target srcA srcB (unquoted)
+    // parses to the same triple as --merge "target srcA srcB".
+    const modelsFor = (): TestBackup => {
+      const input = backupWith();
+      input.configJson.models = [
+        { id: "a", tier: "standard", quality: 1, costPerMTokIn: 1, costPerMTokOut: 1, contextWindow: 1, capabilities: [], enabled: false },
+        { id: "b", tier: "standard", quality: 1, costPerMTokIn: 1, costPerMTokOut: 1, contextWindow: 9, capabilities: [], enabled: true },
+      ];
+      return input;
+    };
+    const quoted = runTransform(modelsFor(), [...secretArgs, "--merge", "c a b"]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "merge-argv-"));
+    try {
+      const inputFile = path.join(dir, "backup.json");
+      const outputFile = path.join(dir, "payload.json");
+      fs.writeFileSync(inputFile, JSON.stringify(modelsFor()));
+      // Separate argv tokens: no shell quoting involved (execFile arg list).
+      execFileSync("node", [SCRIPT, "--input", inputFile, "--output", outputFile,
+        "--credential-secret-id", NEW_SECRET, "--merge", "c", "a", "b"],
+        { stdio: ["ignore", "ignore", "pipe"] });
+      const direct = JSON.parse(fs.readFileSync(outputFile, "utf8"));
+      expect(quoted.ok).toBe(true);
+      if (!quoted.ok) return;
+      expect(direct.configJson.models).toEqual(quoted.payload.configJson.models);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a backup with no upstream block instead of inventing one", () => {
     const input = backupWith();
     delete input.configJson.upstream;
