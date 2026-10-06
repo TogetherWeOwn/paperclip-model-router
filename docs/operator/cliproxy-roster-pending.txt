@@ -1,3 +1,11 @@
+--merge kimi-k2.5 opencode-go/kimi-k2.5 cliproxy/kimi-k2.5
+--merge kimi-k2.6 opencode-go/kimi-k2.6 cliproxy/kimi-k2.6
+--merge kimi-k2.7-code opencode-go/kimi-k2.7-code cliproxy/kimi-k2.7-code
+--merge kimi-k3 opencode-go/kimi-k3 cliproxy/kimi-k3
+--merge grok-4.5 opencode-go/grok-4.5 cliproxy/grok-4.5
+--merge grok-4.6 opencode-go/grok-4.6 cliproxy/grok-4.6
+--merge glm-5.3 opencode-go/glm-5.3 cliproxy/glm-5.3
+--merge glm-5.3-flash opencode-go/glm-5.3-flash cliproxy/glm-5.3-flash
 --disable cliproxy/deepseek-v4-flash
 --disable cliproxy/deepseek-v4-flash-vision-exp
 --disable cliproxy/deepseek-v4-pro
@@ -9,14 +17,6 @@
 --disable cliproxy/minimax-m2.5
 --disable cliproxy/minimax-m2.7
 --disable cliproxy/minimax-m3
---disable cliproxy/kimi-k2.5
---disable cliproxy/kimi-k2.6
---disable cliproxy/kimi-k2.7-code
---disable cliproxy/kimi-k3
---disable cliproxy/grok-4.5
---disable cliproxy/grok-4.6
---disable cliproxy/glm-5.3
---disable cliproxy/glm-5.3-flash
 --disable cliproxy/claude-fable-5
 --disable cliproxy/claude-opus-4-5-20251101
 --disable cliproxy/claude-sonnet-4-5-20250929
@@ -34,9 +34,6 @@
 --disable cliproxy/gpt-5.6-luna-go
 --disable cliproxy/grok-4.5-go
 --disable cliproxy/grok-4.6-go
---disable cliproxy/kimi-k2.5-go
---disable cliproxy/kimi-k2.6-go
---disable cliproxy/kimi-k2.7-code-go
 --disable cliproxy/kimi-k3-go
 --disable cliproxy/glm-5
 --disable cliproxy/glm-5.1
@@ -45,3 +42,6 @@
 --disable opencode-go/glm-5.1
 --disable opencode-go/glm-5.2
 --disable opencode-go/gpt-5.6-luna
+--disable cliproxy/kimi-k2.5-go
+--disable cliproxy/kimi-k2.6-go
+--disable cliproxy/kimi-k2.7-code-go
