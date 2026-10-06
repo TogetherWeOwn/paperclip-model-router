@@ -232,6 +232,46 @@ describe("cliproxy-upstream-repoint", () => {
     }
   });
 
+  it("merge keeps the enabled twin's full record and darkens the loser", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "merge-"));
+    try {
+      const inputFile = path.join(dir, "backup.json");
+      const outputFile = path.join(dir, "payload.json");
+      const input = backupWith();
+      input.configJson.models = [
+        { id: "opencode-go/glm-5.3", tier: "standard", quality: 70, costPerMTokIn: 1, costPerMTokOut: 5, contextWindow: 128000, capabilities: ["tools"], enabled: false },
+        { id: "cliproxy/glm-5.3", tier: "frontier", quality: 90, costPerMTokIn: 2, costPerMTokOut: 8, contextWindow: 200000, capabilities: ["tools", "vision"], enabled: true },
+      ];
+      fs.writeFileSync(inputFile, JSON.stringify(input));
+      execFileSync("node", [SCRIPT, "--input", inputFile, "--output", outputFile,
+        "--credential-secret-id", NEW_SECRET,
+        "--merge", "glm-5.3 opencode-go/glm-5.3 cliproxy/glm-5.3"],
+        { stdio: ["ignore", "ignore", "pipe"] });
+      const models = JSON.parse(fs.readFileSync(outputFile, "utf8")).configJson.models as Array<Record<string, unknown>>;
+      expect(models).toHaveLength(2);
+      const byId = new Map(models.map((model) => [model.id as string, model]));
+      // Survivor is the enabled cliproxy record, renamed; the disabled twin is dark.
+      expect(byId.get("glm-5.3")).toEqual({
+        id: "glm-5.3", tier: "frontier", quality: 90, costPerMTokIn: 2,
+        costPerMTokOut: 8, contextWindow: 200000, capabilities: ["tools", "vision"], enabled: true,
+      });
+      expect(byId.get("opencode-go/glm-5.3")).toMatchObject({ enabled: false });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("merge refuses both-enabled twins and unknown ids", () => {
+    const input = backupWith();
+    input.configJson.models = [
+      { id: "a", tier: "standard", quality: 1, costPerMTokIn: 1, costPerMTokOut: 1, contextWindow: 1, capabilities: [], enabled: true },
+      { id: "b", tier: "standard", quality: 1, costPerMTokIn: 1, costPerMTokOut: 1, contextWindow: 1, capabilities: [], enabled: true },
+    ];
+    expect(runTransform(input, [...secretArgs, "--merge", "c a b"]).ok).toBe(false);
+    expect(runTransform(backupWith(), [...secretArgs, "--merge", "c nope cliproxy/gpt-6-luna"]).ok).toBe(false);
+    expect(runTransform(backupWith(), [...secretArgs, "--merge", "cliproxy/gpt-6-luna cliproxy/gpt-6-luna cliproxy/grok-build-0.1"]).ok).toBe(false);
+  });
+
   it("refuses a backup with no upstream block instead of inventing one", () => {
     const input = backupWith();
     delete input.configJson.upstream;
