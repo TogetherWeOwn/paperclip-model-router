@@ -1,6 +1,6 @@
 {
   "name": "@togetherweown/paperclip-model-router",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "description": "Paperclip plugin: select a model, invoke a company-compatible upstream once, and return a normalized audited result.",
   "license": "MIT",
