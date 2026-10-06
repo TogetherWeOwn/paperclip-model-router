@@ -10,6 +10,20 @@ version is not present here.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-06
+
+### Fixed
+
+- **Explicit-null success envelopes.** The OpenAI/Anthropic normalizers
+  rejected explicit nulls (`message.tool_calls: null`, `body.usage: null`,
+  null usage counters) that null-serializing gateways emit where the
+  reference API omits the key, failing every such generation with
+  `invalid-upstream-response` while the origin returned 200. Explicit null
+  now means absent; present-but-wrong-typed values still throw. Envelope
+  errors name the violated check and keep the upstream status and request
+  id. Compatibility: protocol, capabilities, jobs, and migrations are
+  unchanged from 0.8.0 — ordinary plugin-only upgrade path.
+
 ## [0.8.0] - 2026-09-27
 
 ### Added

@@ -7,6 +7,8 @@ The same async protocol applies to v0.7.1; its tool-name validation fix is
 recorded in the changelog. v0.8.0 keeps the protocol and adds the TOG-7417
 run-end reap (`cancel-run-invocations`), an authoritative host-injected
 budget fraction, and per-request abort — see the v0.8.0 changelog entry.
+v0.8.1 keeps the protocol and capabilities unchanged and accepts explicit-null
+success-envelope fields from null-serializing gateways.
 This compatibility note is not install approval.
 
 ## Scope
