@@ -40,6 +40,19 @@ export type {
   BurnAlertThresholds,
   EmitBurnAlertProposalsOptions,
 } from "./burn-alerts.js";
+export {
+  applyHysteresis,
+  proposeFleetAdmission,
+} from "./fleet-admission.js";
+export type {
+  FleetAdmissionInventory,
+  FleetAdmissionLaneInput,
+  FleetAdmissionLevel,
+  FleetAdmissionPolicy,
+  FleetAdmissionProposal,
+  FleetAdmissionReason,
+  FleetLaneRate,
+} from "./fleet-admission.js";
 export type {
   CapacityEvidence,
   CapacityHealth,
