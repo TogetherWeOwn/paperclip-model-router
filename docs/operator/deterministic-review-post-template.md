@@ -40,7 +40,8 @@ In `packages/shared/src/validators/chat-github.ts`
 (`githubReviewAssessmentSchema`):
 
 - `summary` bound tightened to ≤2000 chars (was 24000);
-- finding `title` required (1–120), `evidence` ≤500, `suggestion` ≤4000;
+- finding `title` required (1–120, single line, no `|`), `evidence` ≤500,
+  `suggestion` ≤4000;
 - `line` stays a positive int, so `line: null` is rejected (pinned by test).
 
 New `server/src/services/chat-github-review-template.ts`:
@@ -49,14 +50,21 @@ New `server/src/services/chat-github-review-template.ts`:
   (check = same rendered summary; title stays `{score}/5` /
   `Incomplete review` at the call site).
 - Permalinks use the full SHA: commit `…/commit/{sha}`, file
-  `…/blob/{sha}/{path}#L{line}`.
+  `…/blob/{sha}/{path}#L{line}`. The sanitizer strips URL fragments on
+  publish, so the visible `` `path:line` `` label carries the line number;
+  tests assert the published (post-sanitizer) form.
+- Titles/categories render through `singleLine`/`escapeTableCell`, so `|` and
+  newlines in model text cannot break the findings table.
 - Summary: verdict + score line, commit permalink, files-reviewed count,
   summary, findings table (`#` / severity emoji / title / `path:line`
   permalink), one `<details>` per finding (What / Evidence / Fix +
   `suggestion` block), Coverage line. No Task/Run links.
 - Inline: `**🔴 Error · reliability** — {title} · {score}/5 · [`sha7`](commit)`,
   body, Evidence permalink, `suggestion` block, `<details>` with long text.
-- Truncation at 60,000 chars with `…truncated, see the PR comment`.
+- Truncation at 60,000 chars with `…truncated, see the PR comment`,
+  enforced on UTF-16 length (astral emoji no longer push the post over the
+  ceiling), cutting only on line boundaries and re-closing any open fence or
+  `<details>` block.
 
 In `server/src/services/chat-github-reviews.ts`:
 
@@ -90,15 +98,24 @@ cd server
 
 New tests snapshot each builder: pass, issues, incomplete, 0 findings,
 300 findings → truncation; permalinks use the full SHA; `line: null` is
-rejected. Results on the patched tree (patch sha256
-`4d2d549d9a403256734d00a3f1e136fec5e7a792cc64e9ed1d379a5594ea0767`):
+rejected. Rev-2 answers three review findings: `#L` anchors are asserted in
+their published (post-sanitizer) form, pipe/newline titles are rejected by
+the schema and escaped by the renderer, and truncation is enforced on
+UTF-16 length with line-boundary cuts and re-closed blocks. Results
+(patch sha256
+`fd2ba856a3d01db50592b815a93d4af02d6caef8a3492943e322cf0a23fb6f92`):
 
-- `chat-github-review-template.test.ts` + `chat-github-review-policy.test.ts`:
-  19 passed (7 new template/schema tests, 12 existing policy tests).
-- `tsc --noEmit` on `server`: clean.
-- Builder logic additionally verified standalone with node (23/23 assertions:
-  pass/issues/incomplete/0/300-truncation cases) before packaging.
-- `git apply --check` passes against the five touched host files.
+- v1 on the patched tree: `chat-github-review-template.test.ts` +
+  `chat-github-review-policy.test.ts` 19 passed; `tsc --noEmit` clean;
+  `git apply --check` passes against the touched host files.
+- Rev-2 delta verified without the host tree: all 10 patch hunks are
+  line-count consistent; the two new host files extracted from the patch
+  pass `tsc --strict --noEmit`; 27/27 behavioral assertions pass against
+  the bundled template plus a verbatim copy of the host sanitizer —
+  including a v1-vs-rev-2 comparison on one 300-finding emoji-heavy input
+  (v1 renders 64,464 chars, rev-2 59,899, both truncated with the suffix).
+- Host `vitest` re-run on rev-2 happens at operator port time; the port PR
+  needs Paperclip Review 5/5 on its merge head regardless.
 
 Still required after deploy: one live review on a two-web-next PR matching
 the template exactly, and a Paperclip Review 5/5 on the port PR itself.
