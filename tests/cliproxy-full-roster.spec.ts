@@ -263,6 +263,16 @@ function flagArgs(file: string): string[] {
   });
 }
 
+/**
+ * Runs the transformer exactly the way the operator runbook does: roster
+ * actions arrive via --flags-file, never as self-parsed argv. This is the
+ * regression pin for the shipped mapfile shape, which silently applied zero
+ * roster actions while exiting 0.
+ */
+function runWithFlagFiles(flagFiles: string[]) {
+  return runWith(flagFiles.flatMap((file) => ["--flags-file", file]));
+}
+
 function runWith(extraArgs: string[]) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "roster-"));
   const inputFile = path.join(dir, "backup.json");
@@ -329,7 +339,7 @@ describe("cliproxy full-roster reconciliation", () => {
   });
 
   it("decided flags remap 55 and leave the other 58 byte-identical", () => {
-    const models = runWith(flagArgs(DECIDED_FLAGS));
+    const models = runWithFlagFiles([DECIDED_FLAGS]);
     expect(models).toHaveLength(113);
     const byId = new Map(models.map((model) => [model.id as string, model]));
     for (const [from, to] of EXPECTED_REMAPS) {
@@ -344,7 +354,7 @@ describe("cliproxy full-roster reconciliation", () => {
   });
 
   it("decided + pending flags leave 11 kept, 55 remapped, 47 disabled", () => {
-    const models = runWith([...flagArgs(DECIDED_FLAGS), ...flagArgs(PENDING_FLAGS)]);
+    const models = runWithFlagFiles([DECIDED_FLAGS, PENDING_FLAGS]);
     expect(models).toHaveLength(113);
     const byId = new Map(models.map((model) => [model.id as string, model]));
     const remapSources = new Set(EXPECTED_REMAPS.map(([from]) => from));

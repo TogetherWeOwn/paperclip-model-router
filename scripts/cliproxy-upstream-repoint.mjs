@@ -25,8 +25,10 @@
  * inspection). Each remap target must already be catalogue-verified. --disable
  * sets enabled:false on a configured id with no catalogue candidate; it is the
  * reversible disposition for unserved ids (entries preserved, selection
- * stopped) and needs an explicit policy decision before use. The guard proves
- * the roster is otherwise untouched.
+ * stopped) and needs an explicit policy decision before use. --flags-file
+ * reads bulk actions from a file (one "<flag> <value>" per line) and is the
+ * operator runbook's invocation shape. The guard proves the roster is
+ * otherwise untouched.
  */
 
 import fs from "node:fs";
@@ -56,7 +58,42 @@ function same(left, right) {
   return JSON.stringify(stable(left)) === JSON.stringify(stable(right));
 }
 
-function parseArgs(argv) {
+/**
+ * Expand --flags-file FILE mates into raw argv tokens before pair parsing.
+ * Each non-empty line must be exactly one flag plus its value
+ * (`--remap old=new`, `--disable id`, `--drop id`); anything else fails.
+ * This is the shape the operator runbook uses, so the runbook's literal
+ * command is covered by spec, not just self-parsed in tests.
+ */
+function expandFlagFiles(argv) {
+  const expanded = [];
+  for (let index = 0; index < argv.length; index += 2) {
+    const key = argv[index];
+    const value = argv[index + 1];
+    if (!key?.startsWith("--") || !value) fail(`invalid argument near ${key ?? "<end>"}`);
+    if (key !== "--flags-file") {
+      expanded.push(key, value);
+      continue;
+    }
+    let lines;
+    try {
+      lines = fs.readFileSync(value, "utf8").split("\n");
+    } catch {
+      fail(`cannot read flags file ${JSON.stringify(value)}`);
+    }
+    for (const line of lines.filter((candidate) => candidate.length > 0)) {
+      const tokens = line.trim().split(/\s+/);
+      if (tokens.length !== 2 || !tokens[0].startsWith("--")) {
+        fail(`unparseable flags-file line ${JSON.stringify(line)} (expected "<flag> <value>")`);
+      }
+      expanded.push(tokens[0], tokens[1]);
+    }
+  }
+  return expanded;
+}
+
+function parseArgs(rawArgv) {
+  const argv = expandFlagFiles(rawArgv);
   const options = { remap: [], disable: [], drop: [] };
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index];
@@ -75,7 +112,7 @@ function parseArgs(argv) {
     }
   }
   if (!options.input || !options.output || !options["credential-secret-id"]) {
-    fail("usage: cliproxy-upstream-repoint.mjs --input FILE --output FILE --credential-secret-id UUID [--remap old=new ...] [--disable id ...] [--drop id ...]");
+    fail("usage: cliproxy-upstream-repoint.mjs --input FILE --output FILE --credential-secret-id UUID [--remap old=new ...] [--disable id ...] [--drop id ...] [--flags-file FILE ...]");
   }
   return options;
 }

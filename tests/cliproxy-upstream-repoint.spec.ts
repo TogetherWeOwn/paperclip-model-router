@@ -175,6 +175,63 @@ describe("cliproxy-upstream-repoint", () => {
     expect(runTransform(backupWith(), [...secretArgs, "--remap", `${sameId}=${otherId}`]).ok).toBe(false);
   });
 
+  it("reads bulk actions from --flags-file in the runbook's literal argv shape", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "flags-"));
+    try {
+      const flagsFile = path.join(dir, "flags.txt");
+      fs.writeFileSync(flagsFile, "--remap cliproxy/gpt-6-luna=openai/gpt-6-luna\n--disable cliproxy/gpt-5.4\n");
+      const inputFile = path.join(dir, "backup.json");
+      const outputFile = path.join(dir, "payload.json");
+      const input = backupWith();
+      input.configJson.models.push({
+        id: "cliproxy/gpt-5.4",
+        tier: "standard",
+        quality: 60,
+        costPerMTokIn: 1,
+        costPerMTokOut: 5,
+        contextWindow: 128000,
+        capabilities: ["tools"],
+        enabled: true,
+      });
+      fs.writeFileSync(inputFile, JSON.stringify(input));
+      execFileSync("node", [SCRIPT, "--input", inputFile, "--output", outputFile,
+        "--credential-secret-id", NEW_SECRET, "--flags-file", flagsFile],
+        { stdio: ["ignore", "ignore", "pipe"] });
+      const payload = JSON.parse(fs.readFileSync(outputFile, "utf8")).configJson;
+      const byId = new Map(payload.models.map((model: Record<string, unknown>) => [model.id, model]));
+      const first = input.configJson.models[0];
+      if (!first) throw new Error("fixture must include a model");
+      expect(byId.get("openai/gpt-6-luna")).toEqual({ ...first, id: "openai/gpt-6-luna" });
+      expect(byId.get("cliproxy/gpt-5.4")).toMatchObject({ id: "cliproxy/gpt-5.4", enabled: false });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a flags file with a malformed line or a missing file", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "flags-bad-"));
+    try {
+      const badFile = path.join(dir, "bad.txt");
+      fs.writeFileSync(badFile, "--remap cliproxy/gpt-6-luna=openai/gpt-6-luna extra-token\n");
+      const inputFile = path.join(dir, "backup.json");
+      const outputFile = path.join(dir, "payload.json");
+      fs.writeFileSync(inputFile, JSON.stringify(backupWith()));
+      const run = (args: string[]) => {
+        try {
+          execFileSync("node", [SCRIPT, "--input", inputFile, "--output", outputFile, ...args],
+            { stdio: ["ignore", "ignore", "pipe"] });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      expect(run(["--credential-secret-id", NEW_SECRET, "--flags-file", badFile])).toBe(false);
+      expect(run(["--credential-secret-id", NEW_SECRET, "--flags-file", path.join(dir, "absent.txt")])).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a backup with no upstream block instead of inventing one", () => {
     const input = backupWith();
     delete input.configJson.upstream;

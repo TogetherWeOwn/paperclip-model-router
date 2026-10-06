@@ -97,16 +97,19 @@ this list. Report back only the HTTP status and the id list (no key material).
 ## Step 3 — Build the payload (deterministic transformer)
 
 ```bash
-mapfile -t ROSTER_ARGS < docs/operator/cliproxy-roster-decided.txt
 node scripts/cliproxy-upstream-repoint.mjs \
   --input "$BACKUP" \
   --output /secure/path/model-router-cliproxy-repoint.payload.json \
   --credential-secret-id '<approved-cliproxy-secret-ref-uuid>' \
-  "${ROSTER_ARGS[@]}"
+  --flags-file docs/operator/cliproxy-roster-decided.txt
 # ONLY on the recorded policy decision, append the pending disables:
-# mapfile -t PENDING_ARGS < docs/operator/cliproxy-roster-pending.txt
-# ... "${ROSTER_ARGS[@]}" "${PENDING_ARGS[@]}"
+#  --flags-file docs/operator/cliproxy-roster-pending.txt
 ```
+
+Roster actions travel via `--flags-file` (one `<flag> <value>` per line),
+never via shell array expansion: the script parses the file itself, and the
+spec suite executes this exact `--flags-file` shape end to end. A malformed
+line or missing file fails the run before anything is written.
 
 The script refuses to run unless the backup's baseUrl is exactly the retired
 endpoint (no double-apply), the replacement id is a well-formed UUID different
