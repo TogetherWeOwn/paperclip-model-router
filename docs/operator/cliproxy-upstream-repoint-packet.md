@@ -82,10 +82,12 @@ this list. Report back only the HTTP status and the id list (no key material).
   (direct-path precedent), else the proven `opencode-go/` serving lane, else
   `devin/`. Duplicate lane twins of a kept id are disabled, never remapped
   onto the kept id (the transformer refuses duplicate targets).
-- Twin pairs sharing one served id coalesce with `--merge`: the enabled twin
+- Twin pairs sharing one served id coalesce with `--merge`: the live twin
   wins so live coverage never silently goes dark, the loser is disabled, and
-  the survivor keeps its entire record (a both-enabled pair fails for a policy
-  decision instead of guessing).
+  the survivor keeps its entire record (a both-live pair fails for a policy
+  decision instead of guessing). Live means runtime-enabled: only an explicit
+  `enabled: false` is dark; a missing `enabled` key counts as enabled,
+  mirroring `src/config/resolve.ts:146`.
 - 47 remaps ship in `docs/operator/cliproxy-roster-decided.txt`. 8 merges plus
   39 disables (11 dead-label twins of kept ids + 28 ids with no catalogue
   candidate at all) ship in `docs/operator/cliproxy-roster-pending.txt` and
@@ -113,14 +115,17 @@ node scripts/cliproxy-upstream-repoint.mjs \
 Roster actions travel via `--flags-file` (one flag plus its values per line),
 never via shell array expansion: the script parses the file itself, and the
 spec suite executes this exact `--flags-file` shape end to end. A malformed
-line or missing file fails the run before anything is written.
+line or missing file fails the run before anything is written. A `--merge`
+may also be typed directly as `--merge "target srcA srcB"` (quoted) or
+`--merge target srcA srcB` (three tokens); both parse to the same triple.
 
 The script refuses to run unless the backup's baseUrl is exactly the retired
 endpoint (no double-apply), the replacement id is a well-formed UUID different
 from the current one, and the protocol is a known compatible protocol. Each
 `--remap` must match exactly one roster entry and a target not already
 present; each `--merge` must name two live sources and an unused target, and
-the enabled twin wins (both-enabled fails for a policy decision); undeclared
+the live twin wins (both-live, including default-enabled keyless rows, fails
+for a policy decision); undeclared
 roster drift fails the run. It then asserts everything outside
 `upstream.baseUrl`, `upstream.credentialSecretRef.secretId`, and the declared
 `--remap` / `--disable` / `--drop` / `--merge` actions reproduces the backup
@@ -174,7 +179,8 @@ a full-replacement body for that company only).
    identical, and the binding snapshot fields present in the backup must still
    be present.
 2. Enabled-coverage check: the transformer summary prints `enabledBefore` and
-   `enabledAfter`. Every before-id must resolve to an after-enabled id via
+   `enabledAfter` using runtime liveness (a missing `enabled` key counts as
+   enabled). Every before-id must resolve to an after-live id via
    identity, remap, or merge win; any dark loss outside the decided disable
    set STOPS the apply (restore the backup, report back). The decided-only
    run must show zero dark losses.

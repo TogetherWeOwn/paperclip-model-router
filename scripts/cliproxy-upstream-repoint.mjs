@@ -18,7 +18,12 @@
  *   node scripts/cliproxy-upstream-repoint.mjs \
  *     --input BACKUP.json --output PAYLOAD.json \
  *     --credential-secret-id <uuid-of-approved-cliproxy-ref> \
- *     [--remap old-id=new-id ...] [--merge target srcA srcB ...]
+ *     [--remap old-id=new-id ...] [--merge "target srcA srcB" ...]
+ *
+ * --merge accepts the quoted triple ("target srcA srcB", the canonical form
+ * used by --flags-file and the runbook) or three separate argv tokens
+ * (--merge target srcA srcB); both parse to the same triple and fail closed
+ * otherwise.
  *
  * --remap renames a configured model id whose verbatim form is proven absent
  * from the live CLIProxy catalogue (dynamic evidence, never static alias
@@ -61,6 +66,17 @@ function same(left, right) {
   return JSON.stringify(stable(left)) === JSON.stringify(stable(right));
 }
 
+/**
+ * Runtime liveness: a model row with no `enabled` key is enabled.
+ * Mirrors src/config/resolve.ts:146 (`pickBoolean(raw.enabled, true)`) and
+ * the schema default (`enabled: { type: "boolean", default: true }`). Only an
+ * explicit `enabled: false` is dark. Anything else (missing key, true, or a
+ * non-boolean that the resolver folds to the default) counts as live.
+ */
+function isLive(entry) {
+  return entry?.enabled !== false;
+}
+
 const FLAG_ARITY = { "--remap": 1, "--disable": 1, "--drop": 1, "--merge": 3 };
 
 /**
@@ -73,12 +89,37 @@ const FLAG_ARITY = { "--remap": 1, "--disable": 1, "--drop": 1, "--merge": 3 };
  */
 function expandFlagFiles(argv) {
   const expanded = [];
-  for (let index = 0; index < argv.length; index += 2) {
+  for (let index = 0; index < argv.length;) {
     const key = argv[index];
     const value = argv[index + 1];
-    if (!key?.startsWith("--") || !value) fail(`invalid argument near ${key ?? "<end>"}`);
+    if (!key?.startsWith("--") || value === undefined) fail(`invalid argument near ${key ?? "<end>"}`);
+    // --merge takes three ids: the quoted triple ("target srcA srcB", the
+    // canonical flags-file/runbook shape) or three separate argv tokens
+    // (--merge target srcA srcB). Normalize both to one triple token.
+    if (key === "--merge") {
+      const parts = value.split(" ").filter((part) => part.length > 0);
+      if (parts.length === 3) {
+        expanded.push(key, parts.join(" "));
+        index += 2;
+        continue;
+      }
+      const nextA = argv[index + 1];
+      const nextB = argv[index + 2];
+      const nextC = argv[index + 3];
+      if (
+        nextA !== undefined && !nextA.startsWith("--") && !nextA.includes(" ") &&
+        nextB !== undefined && !nextB.startsWith("--") &&
+        nextC !== undefined && !nextC.startsWith("--")
+      ) {
+        expanded.push(key, `${nextA} ${nextB} ${nextC}`);
+        index += 4;
+        continue;
+      }
+      fail(`--merge must be "target srcA srcB" (quoted) or --merge target srcA srcB, got ${JSON.stringify(value)}`);
+    }
     if (key !== "--flags-file") {
       expanded.push(key, value);
+      index += 2;
       continue;
     }
     let lines;
@@ -95,6 +136,7 @@ function expandFlagFiles(argv) {
       }
       expanded.push(flag, values.join(" "));
     }
+    index += 2;
   }
   return expanded;
 }
@@ -115,15 +157,16 @@ function parseArgs(rawArgv) {
     } else if (key === "--drop") {
       options.drop.push(value);
     } else if (key === "--merge") {
-      const [target, srcA, srcB] = value.split(" ");
-      if (!target || !srcA || !srcB) fail(`--merge must be "target srcA srcB", got ${JSON.stringify(value)}`);
+      const parts = value.split(" ").filter((part) => part.length > 0);
+      if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) fail(`--merge must be "target srcA srcB" (quoted) or --merge target srcA srcB, got ${JSON.stringify(value)}`);
+      const [target, srcA, srcB] = parts;
       options.merge.push({ target, srcA, srcB });
     } else {
       options[key.slice(2)] = value;
     }
   }
   if (!options.input || !options.output || !options["credential-secret-id"]) {
-    fail("usage: cliproxy-upstream-repoint.mjs --input FILE --output FILE --credential-secret-id UUID [--remap old=new ...] [--disable id ...] [--drop id ...] [--merge target srcA srcB ...] [--flags-file FILE ...]");
+    fail('usage: cliproxy-upstream-repoint.mjs --input FILE --output FILE --credential-secret-id UUID [--remap old=new ...] [--disable id ...] [--drop id ...] [--merge "target srcA srcB" ...] [--flags-file FILE ...]');
   }
   return options;
 }
@@ -213,10 +256,13 @@ function main() {
   // Twin coalescing: two lane labels for one model collapse onto the served
   // id. The survivor keeps its ENTIRE record (all non-id metadata); the loser
   // is disabled, never deleted. Survivor choice is live-state driven: the
-  // enabled twin wins so active coverage can never silently go dark. A
-  // both-enabled pair is a genuine ambiguity and fails for a policy decision;
-  // a both-disabled pair keeps the first-listed source (deterministic; the
-  // entry stays unselected either way, so the choice is metadata-only).
+  // live twin wins so active coverage can never silently go dark. Live means
+  // runtime-enabled (isLive): only an explicit `enabled: false` is dark; a
+  // missing `enabled` key counts as enabled, mirroring
+  // src/config/resolve.ts:146. A both-live pair is a genuine ambiguity and
+  // fails for a policy decision; a both-dark pair keeps the first-listed
+  // source (deterministic; the entry stays unselected either way, so the
+  // choice is metadata-only).
   const merges = options.merge ?? [];
   const mergedIds = [];
   const restoreMerges = [];
@@ -234,10 +280,10 @@ function main() {
     }
     const entryA = hitA[0];
     const entryB = hitB[0];
-    const enabledA = entryA.enabled === true;
-    const enabledB = entryB.enabled === true;
+    const enabledA = isLive(entryA);
+    const enabledB = isLive(entryB);
     if (enabledA && enabledB) {
-      fail(`--merge sources ${JSON.stringify(srcA)} and ${JSON.stringify(srcB)} are both enabled: dropping either loses coverage, needs a policy decision`);
+      fail(`--merge sources ${JSON.stringify(srcA)} and ${JSON.stringify(srcB)} are both live (enabled or default-enabled): dropping either loses coverage, needs a policy decision`);
     }
     const winner = enabledA ? entryA : enabledB ? entryB : entryA;
     const loser = winner === entryA ? entryB : entryA;
@@ -326,8 +372,8 @@ function main() {
     merges: mergedIds,
     disabled: disabledIds,
     dropped: droppedEntries.map((record) => record.id),
-    enabledBefore: before.models.filter((model) => model?.enabled === true).map((model) => model.id),
-    enabledAfter: config.models.filter((model) => model?.enabled === true).map((model) => model.id),
+    enabledBefore: before.models.filter(isLive).map((model) => model.id),
+    enabledAfter: config.models.filter(isLive).map((model) => model.id),
     modelCount: config.models.length,
     modelIds: config.models.map((model) => model?.id ?? null),
   }, null, 2));
