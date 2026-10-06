@@ -143,6 +143,38 @@ describe("cliproxy-upstream-repoint", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("applies declared remaps and leaves every other model identical", () => {
+    const input = backupWith();
+    const result = runTransform(input, [
+      ...secretArgs,
+      "--remap", "cliproxy/gpt-6-luna=openai/gpt-6-luna",
+      "--remap", "cliproxy/grok-build-0.1=grok-build-0.1",
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const ids = result.payload.configJson.models.map((model: Record<string, unknown>) => model.id);
+    expect(ids).toEqual(["openai/gpt-6-luna", "grok-build-0.1"]);
+    // Non-id fields of remapped entries survive the rename.
+    expect(result.payload.configJson.models[0].tier).toBe("frontier");
+    expect(result.payload.configJson.models[1].contextWindow).toBe(128000);
+    expect(result.payload.configJson.models).toHaveLength(input.configJson.models.length);
+  });
+
+  it("refuses a remap whose source id is absent from the roster", () => {
+    const result = runTransform(backupWith(), [...secretArgs, "--remap", "cliproxy/nope=model"]);
+    expect(result.ok).toBe(false);
+  });
+
+  it("refuses a no-op remap and a remap onto an existing id", () => {
+    const input = backupWith();
+    const sameId = input.configJson.models[0]?.id;
+    if (typeof sameId !== "string") throw new Error("fixture must include a string model id");
+    expect(runTransform(backupWith(), [...secretArgs, "--remap", `${sameId}=${sameId}`]).ok).toBe(false);
+    const otherId = input.configJson.models[1]?.id;
+    if (typeof otherId !== "string") throw new Error("fixture must include a string model id");
+    expect(runTransform(backupWith(), [...secretArgs, "--remap", `${sameId}=${otherId}`]).ok).toBe(false);
+  });
+
   it("refuses a backup with no upstream block instead of inventing one", () => {
     const input = backupWith();
     delete input.configJson.upstream;

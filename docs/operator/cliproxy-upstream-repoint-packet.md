@@ -72,9 +72,13 @@ this list. Report back only the HTTP status and the id list (no key material).
 - Any configured id **absent** from the catalogue: STOP. Do not apply. Report
   the missing id plus the catalogue's closest neighbouring ids; engineering
   supplies a remap on the tracking card and this packet re-runs from Step 0.
-- Known suspect shape: ids carrying a `cliproxy/` prefix have no catalogue
-  proof to date, while the direct-CLIProxy precedent used bare upstream ids.
-  Treat every prefixed id as guilty until the catalogue clears it.
+- Validated mapping (live catalogue, HTTP 200, 181 ids, read-only fetch):
+  `cliproxy/gpt-6-luna` is absent (zero `cliproxy/`-prefixed ids served) and
+  remaps to `openai/gpt-6-luna` (catalogue-verified verbatim, and matches the
+  deployed static alias); `cliproxy/grok-build-0.1` is absent and remaps to
+  `grok-build-0.1` (catalogue-verified verbatim, sole neighbour). Every
+  further id from Step 1 gets the same verbatim check at apply time; any
+  additional miss stops the apply under the rule above.
 
 ## Step 3 — Build the payload (deterministic transformer)
 
@@ -82,16 +86,22 @@ this list. Report back only the HTTP status and the id list (no key material).
 node scripts/cliproxy-upstream-repoint.mjs \
   --input "$BACKUP" \
   --output /secure/path/model-router-cliproxy-repoint.payload.json \
-  --credential-secret-id '<approved-cliproxy-secret-ref-uuid>'
+  --credential-secret-id '<approved-cliproxy-secret-ref-uuid>' \
+  --remap cliproxy/gpt-6-luna=openai/gpt-6-luna \
+  --remap cliproxy/grok-build-0.1=grok-build-0.1
 ```
 
 The script refuses to run unless the backup's baseUrl is exactly the retired
 endpoint (no double-apply), the replacement id is a well-formed UUID different
-from the current one, and the protocol is a known compatible protocol. It then
-asserts everything outside `upstream.baseUrl` and
-`upstream.credentialSecretRef.secretId` reproduces the backup exactly, and
-writes the full-replacement payload with mode `0600`. It prints a summary
-(protocol, model count, model ids) to stderr for the record.
+from the current one, and the protocol is a known compatible protocol. Each
+`--remap` must match exactly one roster entry and a target not already
+present; undeclared roster drift fails the run. It then asserts everything
+outside `upstream.baseUrl`, `upstream.credentialSecretRef.secretId`, and the
+declared remap pairs reproduces the backup exactly, and writes the
+full-replacement payload with mode `0600`. It prints a summary (protocol,
+remaps, model count, model ids) to stderr for the record. If Step 2 surfaced
+further misses, add one `--remap` per validated target; a miss with no
+validated target stops the apply.
 
 ## Step 4 — Apply (full replacement, one company only)
 

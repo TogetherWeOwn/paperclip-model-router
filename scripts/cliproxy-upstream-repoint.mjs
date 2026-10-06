@@ -17,7 +17,13 @@
  * Usage:
  *   node scripts/cliproxy-upstream-repoint.mjs \
  *     --input BACKUP.json --output PAYLOAD.json \
- *     --credential-secret-id <uuid-of-approved-cliproxy-ref>
+ *     --credential-secret-id <uuid-of-approved-cliproxy-ref> \
+ *     [--remap old-id=new-id ...]
+ *
+ * --remap renames a configured model id whose verbatim form is proven absent
+ * from the live CLIProxy catalogue (dynamic evidence, never static alias
+ * inspection). Each remap target must already be catalogue-verified. The guard
+ * proves the roster is otherwise untouched.
  */
 
 import fs from "node:fs";
@@ -48,15 +54,21 @@ function same(left, right) {
 }
 
 function parseArgs(argv) {
-  const options = {};
+  const options = { remap: [] };
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index];
     const value = argv[index + 1];
     if (!key?.startsWith("--") || !value) fail(`invalid argument near ${key ?? "<end>"}`);
-    options[key.slice(2)] = value;
+    if (key === "--remap") {
+      const equals = value.indexOf("=");
+      if (equals <= 0 || equals === value.length - 1) fail(`--remap must be old-id=new-id, got ${JSON.stringify(value)}`);
+      options.remap.push({ from: value.slice(0, equals), to: value.slice(equals + 1) });
+    } else {
+      options[key.slice(2)] = value;
+    }
   }
   if (!options.input || !options.output || !options["credential-secret-id"]) {
-    fail("usage: cliproxy-upstream-repoint.mjs --input FILE --output FILE --credential-secret-id UUID");
+    fail("usage: cliproxy-upstream-repoint.mjs --input FILE --output FILE --credential-secret-id UUID [--remap old=new ...]");
   }
   return options;
 }
@@ -109,15 +121,34 @@ function main() {
     credentialSecretRef: { ...oldRef, type: "secret_ref", secretId: credentialSecretId },
   };
 
-  // Immutability guard: restoring the two intended fields must reproduce the
+  if (!Array.isArray(config.models)) fail("config.models is missing: refusing to emit a model-less payload");
+  const remaps = options.remap ?? [];
+  const remappedIds = [];
+  for (const { from, to } of remaps) {
+    if (from === to) fail(`--remap ${JSON.stringify(from)} is a no-op`);
+    const hits = config.models.filter((model) => model?.id === from);
+    if (hits.length !== 1) {
+      fail(`--remap source ${JSON.stringify(from)} matches ${hits.length} models (expected exactly 1)`);
+    }
+    if (config.models.some((model) => model?.id === to)) {
+      fail(`--remap target ${JSON.stringify(to)} already exists in the roster`);
+    }
+    hits[0].id = to;
+    remappedIds.push(`${from} -> ${to}`);
+  }
+
+  // Immutability guard: restoring the intended fields must reproduce the
   // input exactly. Anything else the script changed (or dropped) fails here.
   const restored = clone(config);
   restored.upstream.baseUrl = before.upstream.baseUrl;
   restored.upstream.credentialSecretRef = before.upstream.credentialSecretRef;
-  if (!same(restored, before)) {
-    fail("repoint changed fields outside upstream.baseUrl and upstream.credentialSecretRef.secretId");
+  for (const { from, to } of remaps) {
+    const hit = restored.models.find((model) => model?.id === to);
+    if (hit) hit.id = from;
   }
-  if (!Array.isArray(config.models)) fail("config.models is missing: refusing to emit a model-less payload");
+  if (!same(restored, before)) {
+    fail("repoint changed fields outside upstream.baseUrl, upstream.credentialSecretRef.secretId, and declared --remap pairs");
+  }
 
   fs.writeFileSync(options.output, `${JSON.stringify({ configJson: config }, null, 2)}\n`, { mode: 0o600 });
 
@@ -126,6 +157,7 @@ function main() {
     healthyBaseUrl: HEALTHY_BASE_URL,
     protocol,
     credentialSecretRefReplaced: true,
+    remaps: remappedIds,
     modelCount: config.models.length,
     modelIds: config.models.map((model) => model?.id ?? null),
   }, null, 2));
