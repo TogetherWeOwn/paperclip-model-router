@@ -190,14 +190,25 @@ const EXPECTED_REMAPS: Array<[string, string]> = [
   ["cliproxy/gpt-6-luna", "openai/gpt-6-luna"],
   ["cliproxy/claude-sonnet-5-5", "claude/claude-sonnet-5-5"],
   ["cliproxy/grok-4.7", "grok-4.7"],
-  ["opencode-go/kimi-k2.5", "kimi-k2.5"],
-  ["opencode-go/kimi-k2.6", "kimi-k2.6"],
-  ["opencode-go/kimi-k2.7-code", "kimi-k2.7-code"],
-  ["opencode-go/kimi-k3", "kimi-k3"],
-  ["opencode-go/grok-4.5", "grok-4.5"],
-  ["opencode-go/grok-4.6", "grok-4.6"],
-  ["opencode-go/glm-5.3", "glm-5.3"],
-  ["opencode-go/glm-5.3-flash", "glm-5.3-flash"],
+];
+
+/**
+ * Twin coalescing: two lane labels for one served id. The first source is the
+ * deterministic winner when neither twin is enabled; a live enabled twin wins
+ * regardless of order (pinned by the mixed-enabled regression below). The
+ * loser is disabled, never deleted. Live evidence: the glm-5.3 pair is
+ * (disabled opencode-go, enabled cliproxy) -- the exact shape that lost
+ * coverage under remap-one/disable-other.
+ */
+const EXPECTED_MERGES: Array<[string, string, string]> = [
+  ["kimi-k2.5", "opencode-go/kimi-k2.5", "cliproxy/kimi-k2.5"],
+  ["kimi-k2.6", "opencode-go/kimi-k2.6", "cliproxy/kimi-k2.6"],
+  ["kimi-k2.7-code", "opencode-go/kimi-k2.7-code", "cliproxy/kimi-k2.7-code"],
+  ["kimi-k3", "opencode-go/kimi-k3", "cliproxy/kimi-k3"],
+  ["grok-4.5", "opencode-go/grok-4.5", "cliproxy/grok-4.5"],
+  ["grok-4.6", "opencode-go/grok-4.6", "cliproxy/grok-4.6"],
+  ["glm-5.3", "opencode-go/glm-5.3", "cliproxy/glm-5.3"],
+  ["glm-5.3-flash", "opencode-go/glm-5.3-flash", "cliproxy/glm-5.3-flash"],
 ];
 
 const EXPECTED_DISABLED: string[] = [
@@ -212,14 +223,6 @@ const EXPECTED_DISABLED: string[] = [
   "cliproxy/minimax-m2.5",
   "cliproxy/minimax-m2.7",
   "cliproxy/minimax-m3",
-  "cliproxy/kimi-k2.5",
-  "cliproxy/kimi-k2.6",
-  "cliproxy/kimi-k2.7-code",
-  "cliproxy/kimi-k3",
-  "cliproxy/grok-4.5",
-  "cliproxy/grok-4.6",
-  "cliproxy/glm-5.3",
-  "cliproxy/glm-5.3-flash",
   "cliproxy/claude-fable-5",
   "cliproxy/claude-opus-4-5-20251101",
   "cliproxy/claude-sonnet-4-5-20250929",
@@ -253,12 +256,19 @@ const EXPECTED_DISABLED: string[] = [
 const OLD_SECRET = "11111111-1111-4111-8111-111111111111";
 const NEW_SECRET = "22222222-2222-4222-8222-222222222222";
 
-function flagArgs(file: string): string[] {
-  return fs.readFileSync(file, "utf8").split("\n").filter((line) => line.length > 0).flatMap((line): string[] => {
+interface FlagAction {
+  kind: "remap" | "disable" | "merge";
+  args: string[];
+}
+
+function flagActions(file: string): FlagAction[] {
+  return fs.readFileSync(file, "utf8").split("\n").filter((line) => line.length > 0).map((line): FlagAction => {
     const remap = line.match(/^--remap (\S+)=(\S+)$/);
-    if (remap?.[1] && remap[2]) return ["--remap", `${remap[1]}=${remap[2]}`];
+    if (remap?.[1] && remap[2]) return { kind: "remap", args: [remap[1], remap[2]] };
     const disable = line.match(/^--disable (\S+)$/);
-    if (disable?.[1]) return ["--disable", disable[1]];
+    if (disable?.[1]) return { kind: "disable", args: [disable[1]] };
+    const merge = line.match(/^--merge (\S+) (\S+) (\S+)$/);
+    if (merge?.[1] && merge[2] && merge[3]) return { kind: "merge", args: [merge[1], merge[2], merge[3]] };
     throw new Error(`unparseable flag line: ${JSON.stringify(line)}`);
   });
 }
@@ -271,6 +281,27 @@ function flagArgs(file: string): string[] {
  */
 function runWithFlagFiles(flagFiles: string[]) {
   return runWith(flagFiles.flatMap((file) => ["--flags-file", file]));
+}
+
+/**
+ * Mixed-enabled fixture. Enabled flags mirror the live facts the host STOP
+ * proved (both cliproxy/glm-5.3 twins enabled, both opencode-go twins
+ * disabled) plus synthetic enabled entries on the keep and remap paths, so a
+ * coverage regression fails here instead of at apply time. The two cliproxy
+ * GLM twins carry a distinctive tier so the survivor's record -- not just its
+ * id -- is pinned to the enabled source.
+ */
+const ENABLED_IDS = new Set([
+  "cliproxy/glm-5.3",
+  "cliproxy/glm-5.3-flash",
+  "opencode-go/qwen3.6-plus",
+  "cliproxy/grok-4.3",
+]);
+
+function fixtureEntry(id: string): Record<string, unknown> {
+  const entry: Record<string, unknown> = { id, tier: "standard", enabled: ENABLED_IDS.has(id) };
+  if (id === "cliproxy/glm-5.3" || id === "cliproxy/glm-5.3-flash") entry.tier = "frontier";
+  return entry;
 }
 
 function runWith(extraArgs: string[]) {
@@ -287,7 +318,7 @@ function runWith(extraArgs: string[]) {
         maxResponseBytes: 8388608,
         extraHeaders: {},
       },
-      models: ALL_CONFIGURED.map((id) => ({ id })),
+      models: ALL_CONFIGURED.map(fixtureEntry),
     },
   }));
   try {
@@ -299,69 +330,97 @@ function runWith(extraArgs: string[]) {
   }
 }
 
+const MERGE_SOURCES = EXPECTED_MERGES.flatMap(([, a, b]) => [a, b]);
+
+function keptIds(): string[] {
+  const touched = new Set([
+    ...EXPECTED_REMAPS.map(([from]) => from),
+    ...MERGE_SOURCES,
+    ...EXPECTED_DISABLED,
+  ]);
+  return ALL_CONFIGURED.filter((id) => !touched.has(id));
+}
+
 describe("cliproxy full-roster reconciliation", () => {
   it("partitions the 113 configured ids with no overlap and no gaps", () => {
     expect(ALL_CONFIGURED).toHaveLength(113);
-    expect(EXPECTED_REMAPS).toHaveLength(55);
-    expect(EXPECTED_DISABLED).toHaveLength(47);
-    const remapSources = EXPECTED_REMAPS.map(([from]) => from);
-    const kept = ALL_CONFIGURED.filter((id) => !remapSources.includes(id) && !EXPECTED_DISABLED.includes(id));
+    expect(EXPECTED_REMAPS).toHaveLength(47);
+    expect(EXPECTED_MERGES).toHaveLength(8);
+    expect(EXPECTED_DISABLED).toHaveLength(39);
+    const kept = keptIds();
     expect(kept).toHaveLength(11);
-    expect(new Set([...remapSources, ...EXPECTED_DISABLED, ...kept]).size).toBe(113);
-    // No remap target may collide with a kept or disabled roster id.
-    for (const [, to] of EXPECTED_REMAPS) {
-      expect(kept).not.toContain(to);
-      expect(EXPECTED_DISABLED).not.toContain(to);
-    }
+    expect(new Set([
+      ...EXPECTED_REMAPS.map(([from]) => from),
+      ...MERGE_SOURCES,
+      ...EXPECTED_DISABLED,
+      ...kept,
+    ]).size).toBe(113);
+    // No remap or merge target may collide with a kept, disabled, or merged id.
+    const occupied = new Set([...kept, ...EXPECTED_DISABLED, ...MERGE_SOURCES]);
+    for (const [, to] of EXPECTED_REMAPS) expect(occupied.has(to)).toBe(false);
+    for (const [target] of EXPECTED_MERGES) expect(occupied.has(target)).toBe(false);
   });
 
   it("flag files match the expected reconciliation exactly", () => {
-    const decided = flagArgs(DECIDED_FLAGS);
-    const pending = flagArgs(PENDING_FLAGS);
-    const fileRemaps: Array<[string, string]> = [];
-    for (let i = 0; i < decided.length; i += 2) {
-      expect(decided[i]).toBe("--remap");
-      const parts = decided[i + 1]?.split("=");
-      if (parts?.length !== 2 || !parts[0] || !parts[1]) throw new Error("flag file shape changed");
-      fileRemaps.push([parts[0], parts[1]]);
+    const decided = flagActions(DECIDED_FLAGS);
+    expect(decided.every((action) => action.kind === "remap")).toBe(true);
+    expect(decided).toHaveLength(47);
+    for (const [from, to] of EXPECTED_REMAPS) {
+      expect(decided).toContainEqual({ kind: "remap", args: [from, to] });
     }
-    expect(fileRemaps).toHaveLength(55);
-    for (const pair of EXPECTED_REMAPS) expect(fileRemaps).toContainEqual(pair);
-    const fileDisables: string[] = [];
-    for (let i = 0; i < pending.length; i += 2) {
-      expect(pending[i]).toBe("--disable");
-      const id = pending[i + 1];
-      if (!id) throw new Error("flag file shape changed");
-      fileDisables.push(id);
+    const pending = flagActions(PENDING_FLAGS);
+    const pendingMerges = pending.filter((action) => action.kind === "merge");
+    const pendingDisables = pending.filter((action) => action.kind === "disable");
+    expect(pendingMerges).toHaveLength(8);
+    expect(pendingDisables).toHaveLength(39);
+    for (const [target, a, b] of EXPECTED_MERGES) {
+      expect(pendingMerges).toContainEqual({ kind: "merge", args: [target, a, b] });
     }
-    expect(fileDisables).toHaveLength(47);
-    for (const id of EXPECTED_DISABLED) expect(fileDisables).toContain(id);
+    for (const id of EXPECTED_DISABLED) {
+      expect(pendingDisables).toContainEqual({ kind: "disable", args: [id] });
+    }
   });
 
-  it("decided flags remap 55 and leave the other 58 byte-identical", () => {
+  it("decided flags remap 47 and leave everything else byte-identical", () => {
     const models = runWithFlagFiles([DECIDED_FLAGS]);
     expect(models).toHaveLength(113);
     const byId = new Map(models.map((model) => [model.id as string, model]));
     for (const [from, to] of EXPECTED_REMAPS) {
       expect(byId.has(from)).toBe(false);
-      expect(byId.get(to)).toEqual({ id: to });
+      expect(byId.get(to)).toEqual({ ...fixtureEntry(from), id: to });
     }
-    for (const id of [...EXPECTED_DISABLED,
-      ...ALL_CONFIGURED.filter((candidate) =>
-        !EXPECTED_REMAPS.some(([from]) => from === candidate) && !EXPECTED_DISABLED.includes(candidate))]) {
-      expect(byId.get(id)).toEqual({ id });
+    for (const id of [...MERGE_SOURCES, ...EXPECTED_DISABLED, ...keptIds()]) {
+      expect(byId.get(id)).toEqual(fixtureEntry(id));
     }
   });
 
-  it("decided + pending flags leave 11 kept, 55 remapped, 47 disabled", () => {
+  it("decided + pending flags preserve enabled coverage across merges", () => {
     const models = runWithFlagFiles([DECIDED_FLAGS, PENDING_FLAGS]);
     expect(models).toHaveLength(113);
     const byId = new Map(models.map((model) => [model.id as string, model]));
-    const remapSources = new Set(EXPECTED_REMAPS.map(([from]) => from));
-    const kept = ALL_CONFIGURED.filter((id) => !remapSources.has(id) && !EXPECTED_DISABLED.includes(id));
-    expect(kept).toHaveLength(11);
-    for (const id of kept) expect(byId.get(id)).toEqual({ id });
-    for (const [, to] of EXPECTED_REMAPS) expect(byId.get(to)).toEqual({ id: to });
-    for (const id of EXPECTED_DISABLED) expect(byId.get(id)).toEqual({ id, enabled: false });
+    // The host STOP shape: an enabled twin survives under the served id with
+    // its own record; the disabled twin goes dark. Enabled count is kept.
+    for (const target of ["glm-5.3", "glm-5.3-flash"]) {
+      expect(byId.get(target)).toMatchObject({ id: target, tier: "frontier", enabled: true });
+    }
+    // Enabled entries on the keep and remap paths pass through untouched.
+    expect(byId.get("opencode-go/qwen3.6-plus")).toMatchObject({ enabled: true });
+    expect(byId.get("grok-4.3")).toMatchObject({ enabled: true });
+    // Per merge: the target serves the winner's record, exactly one source
+    // id survives as the dark loser, the other source id is gone (renamed).
+    for (const [target, a, b] of EXPECTED_MERGES) {
+      expect(byId.has(target)).toBe(true);
+      const survivors = [a, b].filter((id) => byId.has(id));
+      expect(survivors).toHaveLength(1);
+      const loser = survivors[0];
+      if (!loser) throw new Error("merge must leave exactly one dark loser");
+      expect(byId.get(loser)).toMatchObject({ id: loser, enabled: false });
+    }
+    for (const id of EXPECTED_DISABLED) {
+      expect(byId.get(id)).toMatchObject({ id, enabled: false });
+    }
+    for (const id of keptIds()) expect(byId.get(id)).toEqual(fixtureEntry(id));
+    const enabledAfter = models.filter((model) => model.enabled === true).map((model) => model.id);
+    expect(new Set(enabledAfter)).toEqual(new Set(["glm-5.3", "glm-5.3-flash", "opencode-go/qwen3.6-plus", "grok-4.3"]));
   });
 });
