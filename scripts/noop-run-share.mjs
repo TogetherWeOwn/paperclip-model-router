@@ -28,7 +28,14 @@
 
 import { writeFileSync } from "node:fs";
 import { collectRuns } from "./lib/heartbeat-runs.mjs";
-import { buildReport, compactIssueRows, issuesNeedingActivity, renderMarkdown } from "./lib/noop-run-share.mjs";
+import {
+  ARMED_MONITOR_LIST_LIMIT,
+  buildReport,
+  compactIssueRows,
+  isArmedMonitorListCapped,
+  issuesNeedingActivity,
+  renderMarkdown,
+} from "./lib/noop-run-share.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).flatMap((a, i, all) => {
@@ -103,9 +110,11 @@ const agentNames = new Map(
 const issueIds = new Set(issuesNeedingActivity(rows));
 let armedMonitorIssues = null;
 let armedMonitorDiscoveryFailed = false;
+let armedMonitorListCapped = false;
 try {
-  const open = await api(`/api/companies/${COMPANY}/issues?status=in_progress,in_review&limit=1000`);
+  const open = await api(`/api/companies/${COMPANY}/issues?status=in_progress,in_review&limit=${ARMED_MONITOR_LIST_LIMIT}`);
   if (!Array.isArray(open)) throw new Error("expected an array");
+  armedMonitorListCapped = isArmedMonitorListCapped(open.length);
   armedMonitorIssues = open.filter((issue) => issue?.monitorNextCheckAt);
   for (const issue of armedMonitorIssues) issueIds.add(issue.id);
 } catch (error) {
@@ -141,6 +150,7 @@ const report = buildReport({
   truncatedAgents,
   undatedRows,
   armedMonitorDiscoveryFailed,
+  armedMonitorListCapped,
 });
 const meta = {
   windowHours: HOURS,

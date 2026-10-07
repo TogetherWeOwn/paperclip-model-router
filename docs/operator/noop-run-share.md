@@ -65,8 +65,8 @@ monitor armed now, so a deferred wake with no run is still seen.
   marked `complete: false`, and its older runs are not counted. A 7-day window is
   truncated for the busiest agents; use `--hours 24` for a figure that is
   complete.
-- Missing or invalid run timestamps, unreadable issue activity, or a failed
-  scan for currently armed monitors sets `complete: false`; counters that depend
+- Missing or invalid run timestamps, unreadable issue activity, or a failed or
+  row-capped (1000) scan for currently armed monitors sets `complete: false`; counters that depend
   on those rows must not be treated as a complete window.
 - Activity comes from `GET /api/issues/{id}/activity`, which is not capped. The
   company-wide activity list is not used: it cannot filter by run and caps at
@@ -83,9 +83,10 @@ The constants and `isMonitorOnlyIssueUpdateDetails` are copied from the host
 (`heartbeat.ts`, `issue-rewake-throttle.ts`, `heartbeat-run-summary.ts`); the
 file header names each source. `tests/noop-run-share.spec.ts` pins every branch
 the host tests pin and the run attribution on top, and
-`scripts/noop-run-share-mutation-gate.mjs` applies 21 one-line mutants (a
-monitor-only update counted as progress, policy creation without a monitor,
-run attribution dropped, checkout releases compared against the wrong status,
-and incomplete-window guards removed). The gate first proves the baseline suite
+`scripts/noop-run-share-mutation-gate.mjs` applies 23 one-line mutants (a
+monitor-only update counted as progress, a monitor-less scheduling-only policy
+creation counted as progress (host parity), run attribution dropped, checkout
+releases compared against the wrong status, and incomplete-window guards
+removed). The gate first proves the baseline suite
 passes and counts a mutant as killed only when Vitest reports assertion failures;
 runner or setup failures are gate failures.

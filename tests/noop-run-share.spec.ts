@@ -50,6 +50,8 @@ interface Share {
     NOOP_HOUSEKEEPING: string;
     NOOP_NOTHING: string;
   };
+  ARMED_MONITOR_LIST_LIMIT: number;
+  isArmedMonitorListCapped(rowCount: number): boolean;
   classifyRun(run: Run, rows: Row[] | null): string;
   compactIssueRows(rows: unknown[]): Row[];
   issuesNeedingActivity(runs: Run[]): string[];
@@ -62,6 +64,7 @@ interface Share {
     truncatedAgents?: unknown[];
     undatedRows?: number;
     armedMonitorDiscoveryFailed?: boolean;
+    armedMonitorListCapped?: boolean;
   }): Report;
   renderMarkdown(report: Report, meta: { windowHours: number; windowUntil: string; generatedAt: string }): string;
 }
@@ -153,12 +156,13 @@ describe("isMonitorOnlyIssueUpdateDetails (host rule parity)", () => {
     expect(only(fixture.pluginPatch)).toBe(false);
   });
 
-  it("treats only a policy creation with a monitor as scheduling housekeeping", () => {
+  it("treats a scheduling-only policy creation as housekeeping, with or without a monitor (host parity)", () => {
     expect(
       only({ changes: { executionPolicy: { to: { mode: "normal", stages: [], monitor: { nextCheckAt: "t2" }, commentRequired: true }, from: null } } }),
     ).toBe(true);
-    expect(only({ changes: { executionPolicy: { to: { mode: "normal", stages: [], commentRequired: true }, from: null } } })).toBe(false);
-    expect(only({ changes: { executionPolicy: { to: { mode: "normal", stages: [], monitor: null }, from: null } } })).toBe(false);
+    expect(only({ changes: { executionPolicy: { to: { mode: "normal", stages: [], commentRequired: true }, from: null } } })).toBe(true);
+    expect(only({ changes: { executionPolicy: { to: { mode: "normal", stages: [], monitor: null }, from: null } } })).toBe(true);
+    expect(only({ changes: { executionPolicy: { to: {}, from: null } } })).toBe(true);
   });
 
   it("treats a policy creation with planned stages or other keys as progress", () => {
@@ -499,6 +503,19 @@ describe("buildReport", () => {
     const report = S.buildReport({ runs, activityByIssue, armedMonitorDiscoveryFailed: true, ...window });
     expect(report.complete).toBe(false);
     expect(report.caveats.join(" ")).toMatch(/could not discover issues with an armed monitor/);
+  });
+
+  it("marks the report incomplete when the armed-monitor read hit its row limit", () => {
+    const { runs, activityByIssue } = scenario();
+    const report = S.buildReport({ runs, activityByIssue, armedMonitorListCapped: true, ...window });
+    expect(report.complete).toBe(false);
+    expect(report.caveats.join(" ")).toMatch(/open-issue read returned its 1000-row limit/);
+    expect(S.buildReport({ runs, activityByIssue, ...window }).complete).toBe(true);
+  });
+
+  it("treats a list at exactly its limit as capped, and one row fewer as complete", () => {
+    expect(S.isArmedMonitorListCapped(S.ARMED_MONITOR_LIST_LIMIT)).toBe(true);
+    expect(S.isArmedMonitorListCapped(S.ARMED_MONITOR_LIST_LIMIT - 1)).toBe(false);
   });
 
   it("marks the report incomplete when activity for an armed-only issue is unreadable", () => {

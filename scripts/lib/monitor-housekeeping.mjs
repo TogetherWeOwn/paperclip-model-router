@@ -96,7 +96,6 @@ function withoutMonitorSubObject(value) {
 }
 
 function isSchedulingOnlyPolicyCreation(value) {
-  if (!isPlainObject(value) || !isPlainObject(value.monitor)) return false;
   const stripped = withoutMonitorSubObject(value);
   if (!isPlainObject(stripped)) return false;
   for (const [key, entry] of Object.entries(stripped)) {

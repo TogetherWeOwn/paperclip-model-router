@@ -26,10 +26,10 @@ const mutations = [
     to: "export const MONITOR_HOUSEKEEPING_ACTIONS = new Set([]);",
   },
   {
-    name: "a policy creation without a monitor is treated as housekeeping",
+    name: "a scheduling-only policy creation without a monitor counts as progress (host parity lost)",
     file: housekeeping,
-    from: "  if (!isPlainObject(value) || !isPlainObject(value.monitor)) return false;",
-    to: "  if (!isPlainObject(value)) return false;",
+    from: "function isSchedulingOnlyPolicyCreation(value) {\n",
+    to: "function isSchedulingOnlyPolicyCreation(value) {\n  if (!isPlainObject(value) || !isPlainObject(value.monitor)) return false;\n",
   },
   {
     name: "run attribution dropped: any run's rows count",
@@ -126,6 +126,18 @@ const mutations = [
     file: share,
     from: "  if (armedMonitorDiscoveryFailed) caveats.push(\"could not discover issues with an armed monitor; monitor-policy counters may be incomplete\");",
     to: "  if (false) caveats.push(\"could not discover issues with an armed monitor; monitor-policy counters may be incomplete\");",
+  },
+  {
+    name: "a capped armed-monitor read does not make the report incomplete",
+    file: share,
+    from: "  if (armedMonitorListCapped) {",
+    to: "  if (false) {",
+  },
+  {
+    name: "an armed-monitor read exactly at its limit is not treated as capped",
+    file: share,
+    from: "  return rowCount >= ARMED_MONITOR_LIST_LIMIT;",
+    to: "  return rowCount > ARMED_MONITOR_LIST_LIMIT;",
   },
   {
     name: "unreadable armed-only activity does not make the report incomplete",

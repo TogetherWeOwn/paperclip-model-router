@@ -31,6 +31,14 @@ import {
 
 export const TARGET_NOOP_SHARE = 0.1;
 
+/** Row limit of the open-issue read that finds armed monitors. */
+export const ARMED_MONITOR_LIST_LIMIT = 1000;
+
+/** A list that returns exactly its limit may have been cut short. */
+export function isArmedMonitorListCapped(rowCount) {
+  return rowCount >= ARMED_MONITOR_LIST_LIMIT;
+}
+
 export const OUTCOMES = Object.freeze({
   EVENT_WAKE: "event_wake",
   UNSCOPED: "no_event_unscoped",
@@ -262,6 +270,7 @@ export function monitorPolicyCounts(activityByIssue, sinceMs, untilMs) {
  * @param {object[]} [input.truncatedAgents]           from collectRuns
  * @param {number} [input.undatedRows]                 run rows with unknown window membership
  * @param {boolean} [input.armedMonitorDiscoveryFailed] whether the armed-issue scan failed
+ * @param {boolean} [input.armedMonitorListCapped]       whether the armed-issue scan hit its row limit
  */
 export function buildReport({
   runs,
@@ -272,6 +281,7 @@ export function buildReport({
   truncatedAgents = [],
   undatedRows = 0,
   armedMonitorDiscoveryFailed = false,
+  armedMonitorListCapped = false,
 }) {
   const byStatus = new Map();
   const byWakeReason = new Map();
@@ -331,6 +341,9 @@ export function buildReport({
   if (unverified > 0) caveats.push(`${unverified} no-event run(s) could not be classified because their issue activity was unreadable`);
   if (undatedRows > 0) caveats.push(`${undatedRows} run row(s) have missing or invalid createdAt; window membership is unknown`);
   if (armedMonitorDiscoveryFailed) caveats.push("could not discover issues with an armed monitor; monitor-policy counters may be incomplete");
+  if (armedMonitorListCapped) {
+    caveats.push(`the open-issue read returned its ${ARMED_MONITOR_LIST_LIMIT}-row limit; armed monitors beyond it are not seen and monitor-policy counters may be incomplete`);
+  }
   if (unreadableActivityIssues > 0) {
     caveats.push(`${unreadableActivityIssues} issue activity read(s) failed; monitor-policy counters may be incomplete`);
   }
