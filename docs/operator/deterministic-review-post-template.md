@@ -4,8 +4,12 @@
 structured model fields through deterministic server-side builders. The model
 fills fields concisely and never formats markdown; `renderReviewSummary`,
 `renderInlineFinding` and `renderCheckSummary` render the summary comment,
-inline findings and check-run summary. Internal Task/Run links no longer appear
-in posts (dropped entirely, per upstream issue #15287's requested setting).
+inline findings and check-run summary. Model-controlled prose is flattened to
+one line and escaped as literal Markdown; suggestions containing a backtick
+fence are omitted rather than allowed to close the server-rendered block.
+Internal Task/Run
+links no longer appear in posts (dropped entirely, per upstream issue #15287's
+requested setting).
 
 This repository does not own the Paperclip host source, so this is the
 smallest exact upstream patch plus executable verification. It has not been
@@ -55,14 +59,19 @@ New `server/src/services/chat-github-review-template.ts`:
   `…/blob/{sha}/{path}#L{line}`. The sanitizer strips URL fragments on
   publish, so the visible `` `path:line` `` label carries the line number;
   tests assert the published (post-sanitizer) form.
-- Titles/categories render through `singleLine`/`escapeTableCell`, so `|` and
-  newlines in model text cannot break the findings table.
+- Model-controlled titles, categories, paths, keys, body, evidence, summary,
+  rationale and limitations are flattened and escaped as literal Markdown.
+  Server-generated permalinks remain clickable; model-provided links and
+  formatting do not.
+- Suggestions render in a fenced block unless they contain a backtick fence;
+  that unsafe suggestion is omitted with a fixed explanation so it cannot close
+  the server-owned block.
 - Summary: verdict + score line, commit permalink, files-reviewed count,
   summary, findings table (`#` / severity emoji / title / `path:line`
   permalink), one `<details>` per finding (What / Evidence / Fix +
   `suggestion` block), Coverage line. No Task/Run links.
 - Inline: `**🔴 Error · reliability** — {title} · {score}/5 · [`sha7`](commit)`,
-  body, Evidence permalink, `suggestion` block, `<details>` with long text.
+  body, Evidence permalink, safe `suggestion` block, `<details>` with long text.
 - Truncation at 60,000 chars with `…truncated, see the PR comment`,
   enforced on UTF-16 length (astral emoji no longer push the post over the
   ceiling), cutting only on line boundaries and re-closing any open fence or
@@ -105,16 +114,22 @@ cd server
 
 New tests snapshot each builder: pass, issues, incomplete, 0 findings,
 300 findings → truncation; permalinks use the full SHA; `line: null` is
-rejected. Rev-3 adds a publication-retry regression: a pre-deploy assessment
-with a 2,001-character summary and no finding title is rejected by the strict
+rejected. Renderer regressions verify Markdown/HTML-shaped model text stays
+literal and a suggestion containing a backtick fence cannot close the rendered
+block. The compatibility regression verifies a pre-deploy assessment with a
+2,001-character summary and no finding title is rejected by the strict
 submission validator but accepted by the stored-assessment validator, which
 fills the title from the finding category. Results (patch sha256
-`cf0fe2cba3673bef830ac52e36d046d573dde05e26260c2bdc342d709ae4588d`):
+`712add16b7556063be052c61446c41a1d5ff19ec31d1f034f5bcb6c9f94d8ed0`):
 
-- `git apply --check` passed for the prior and regenerated patches against the
-  exact host source files fetched at base commit `302776c7878881970c0f37941ba8cd3bc1255138`;
-  applying the regenerated patch produced the expected eight-file tree.
-- `tsc --noEmit --strict` passed for the updated shared validator.
+- `git apply --check` and application passed against the pristine host fixture
+  at base commit `302776c7878881970c0f37941ba8cd3bc1255138`; the applied tree
+  exactly matched the expected eight-file result.
+- An esbuild syntax transform passed for the renderer and its host test. A
+  standalone renderer smoke test passed for escaped Markdown/HTML, forged links,
+  parenthesized file paths, and suggestions containing a closing fence.
+- `tsc --noEmit --strict` passed for the shared validator in the compatibility
+  revision; the validator is unchanged in this renderer revision.
 - Four standalone schema assertions passed: strict input rejects legacy data,
   stored parsing accepts it and preserves the summary, derives a title, and
   still rejects `line: null`.
