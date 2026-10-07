@@ -1,0 +1,193 @@
+diff --git a/packages/adapter-utils/src/github-launcher.test.ts b/packages/adapter-utils/src/github-launcher.test.ts
+index 8ff19e5..c8f2643 100644
+--- a/packages/adapter-utils/src/github-launcher.test.ts
++++ b/packages/adapter-utils/src/github-launcher.test.ts
+@@ -1,6 +1,6 @@
+ import { execFile } from "node:child_process";
+ import { createServer } from "node:http";
+-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
++import { mkdtemp, mkdir, readdir, symlink, writeFile, rm } from "node:fs/promises";
+ import os from "node:os";
+ import path from "node:path";
+ import { promisify } from "node:util";
+@@ -153,4 +153,88 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
+     expect(env.GH_TOKEN).toBe("");
+     expect(env.GIT_AUTHOR_NAME).toBe("");
+   });
++
++  it("never re-executes itself through a cwd-relative PATH entry (github-operation-nesting)", async () => {
++    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-reentry-"));
++    cleanups.push(() => rm(root, { recursive: true, force: true }));
++    const bin = path.join(root, "managed"), realBin = path.join(root, "real"), cwdDir = path.join(root, "work");
++    await mkdir(bin); await mkdir(realBin); await mkdir(cwdDir);
++    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
++    await writeFile(path.join(realBin, "git"), '#!/usr/bin/env node\nprocess.stdout.write("real-git");', { mode: 0o700 });
++    await symlink(path.join(bin, "git"), path.join(cwdDir, "git"));
++    const configRoot = path.join(root, "ops");
++    // The leading empty entry resolves against cwdDir, where `git` shadows
++    // the real binary. The launcher must skip it instead of nesting one
++    // operation directory per level until the path no longer fits.
++    const result = await exec(path.join(bin, "git"), ["--version"], { cwd: cwdDir, timeout: 20_000, env: {
++      ...process.env, ...githubBrokerEnvironment({}, { url: "", token: "" }),
++      GH_CONFIG_DIR: configRoot, PATH: `:${bin}:${realBin}:${process.env.PATH}`,
++    } });
++    expect(result.stdout).toBe("real-git");
++    expect(await readdir(configRoot).catch(() => [])).toEqual([]);
++    expect(await readdir(cwdDir)).toEqual(["git"]);
++  });
++
++  it("skips shadow entries that resolve back into its own directory (github-operation-nesting)", async () => {
++    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-shadow-"));
++    cleanups.push(() => rm(root, { recursive: true, force: true }));
++    const bin = path.join(root, "managed"), shadowBin = path.join(root, "shadow"), realBin = path.join(root, "real");
++    await mkdir(bin); await mkdir(shadowBin); await mkdir(realBin);
++    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
++    await symlink(path.join(bin, "git"), path.join(shadowBin, "git"));
++    await writeFile(path.join(realBin, "git"), '#!/usr/bin/env node\nprocess.stdout.write("real-git");', { mode: 0o700 });
++    const configRoot = path.join(root, "ops");
++    const result = await exec(path.join(bin, "git"), ["--version"], { cwd: root, timeout: 20_000, env: {
++      ...process.env, ...githubBrokerEnvironment({}, { url: "", token: "" }),
++      GH_CONFIG_DIR: configRoot, PATH: `${bin}:${shadowBin}:${realBin}:${process.env.PATH}`,
++    } });
++    expect(result.stdout).toBe("real-git");
++    expect(await readdir(configRoot).catch(() => [])).toEqual([]);
++  });
++
++  it("anchors a relative GH_CONFIG_DIR at the system temp directory (github-operation-nesting)", async () => {
++    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-relative-"));
++    cleanups.push(() => rm(root, { recursive: true, force: true }));
++    const bin = path.join(root, "managed"), realBin = path.join(root, "real"), repo = path.join(root, "repo");
++    await mkdir(bin); await mkdir(realBin); await mkdir(repo);
++    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
++    await writeFile(path.join(realBin, "git"), '#!/usr/bin/env node\nprocess.stdout.write("real-git");', { mode: 0o700 });
++    // A relative operation root would nest inside the caller's working
++    // directory on every nested command. It must land in os.tmpdir() instead
++    // and leave the working directory untouched.
++    const result = await exec(path.join(bin, "git"), ["--version"], { cwd: repo, timeout: 20_000, env: {
++      ...process.env, ...githubBrokerEnvironment({}, { url: "", token: "" }),
++      GH_CONFIG_DIR: "relative-gh-config", PATH: `${bin}:${realBin}:${process.env.PATH}`,
++    } });
++    expect(result.stdout).toBe("real-git");
++    expect(result.stderr).toContain("configuration_directory_not_absolute");
++    expect(await readdir(repo)).toEqual([]);
++  });
++
++  it("refuses to nest past the operation depth limit instead of hanging (github-operation-nesting)", async () => {
++    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-pingpong-"));
++    cleanups.push(() => rm(root, { recursive: true, force: true }));
++    const bin = path.join(root, "managed"), fakeBin = path.join(root, "fake"), repo = path.join(root, "repo");
++    await mkdir(bin); await mkdir(fakeBin); await mkdir(repo);
++    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
++    // A test double that shadows git but passes everything through to the
++    // managed binary as its "real" git (captured while the managed PATH was
++    // active). Without a nesting limit this ping-pongs one operation
++    // directory deeper per level until the path no longer fits.
++    await writeFile(path.join(fakeBin, "git"), `#!/usr/bin/env node
++const { spawnSync } = require('node:child_process');
++const child = spawnSync(process.env.FAKE_REAL_GIT, process.argv.slice(2), { stdio: 'inherit' });
++process.exit(child.status ?? 1);
++`, { mode: 0o700 });
++    const configRoot = path.join(root, "ops");
++    const failure = await exec(path.join(bin, "git"), ["--version"], { cwd: repo, timeout: 20_000, env: {
++      ...process.env, ...githubBrokerEnvironment({}, { url: "", token: "" }),
++      GH_CONFIG_DIR: configRoot, FAKE_REAL_GIT: path.join(bin, "git"),
++      PATH: `${bin}:${fakeBin}:${process.env.PATH}`,
++    } }).then(() => null, (error) => error);
++    expect(failure).not.toBeNull();
++    expect(failure?.code).toBe(127);
++    expect(String(failure?.stderr ?? "")).toContain("operation_nesting_limit");
++    expect(await readdir(configRoot).catch(() => [])).toEqual([]);
++  });
+ });
+diff --git a/packages/adapter-utils/src/github-launcher.ts b/packages/adapter-utils/src/github-launcher.ts
+index 1de7a29..489f5a1 100644
+--- a/packages/adapter-utils/src/github-launcher.ts
++++ b/packages/adapter-utils/src/github-launcher.ts
+@@ -7,11 +7,25 @@ const os = require('node:os');
+ const { spawn } = require('node:child_process');
+ const directory = path.dirname(fs.realpathSync(process.argv[1]));
+ const program = path.basename(process.argv[1]);
++// Only absolute search entries can name the real binary. Relative entries
++// (including empty ones, which resolve against the caller's working
++// directory) could reselect this launcher through a working-tree file and
++// recurse once per level until the path no longer fits.
+ const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
++  if (!path.isAbsolute(p)) return false;
+   try { return fs.realpathSync(p) !== directory; } catch { return true; }
+ });
++const launcherPrefix = directory.endsWith(path.sep) ? directory : directory + path.sep;
++// Never execute this launcher again, even when a shadow entry (for example a
++// symlink in another directory) points back into it. Spawning it would nest
++// one operation directory per level until mkdtemp fails, and the fallback
++// then runs without managed credentials.
+ const executable = originalPath.map(p => path.join(p, program)).find(p => {
+-  try { fs.accessSync(p, fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; }
++  try {
++    fs.accessSync(p, fs.constants.X_OK);
++    if (!fs.statSync(p).isFile()) return false;
++    return !fs.realpathSync(p).startsWith(launcherPrefix);
++  } catch { return false; }
+ });
+ if (!['git', 'gh'].includes(program) || !executable) {
+   process.stderr.write('Paperclip: requested GitHub command is not installed.\n');
+@@ -20,7 +34,22 @@ if (!['git', 'gh'].includes(program) || !executable) {
+ async function main() {
+   let env = { ...process.env };
+   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
+-  const configRoot = env.GH_CONFIG_DIR || os.tmpdir();
++  const requestedRoot = env.GH_CONFIG_DIR || os.tmpdir();
++  // A relative operation root would nest inside the caller's working
++  // directory: mkdtemp returns a relative path, so every nested command would
++  // create its directory inside the previous one until the path no longer
++  // fits. Anchor those at the system temp directory instead.
++  const configRoot = path.isAbsolute(requestedRoot) ? requestedRoot : os.tmpdir();
++  if (configRoot !== requestedRoot) process.stderr.write('Paperclip: GitHub configuration_directory_not_absolute; using the system temp directory.\n');
++  const parentDepth = /^\d+$/.test(env.PAPERCLIP_GITHUB_OPERATION_DEPTH || '') ? parseInt(env.PAPERCLIP_GITHUB_OPERATION_DEPTH, 10) : 0;
++  // A descendant that resolves back into a launcher (for example a test
++  // double that re-executes the managed binary as its "real" git) would
++  // otherwise nest one operation directory per level without end. Refuse
++  // loudly instead of hanging until the path no longer fits.
++  if (parentDepth >= 3) {
++    process.stderr.write('Paperclip: GitHub operation_nesting_limit; refusing to nest further. Check for git/gh doubles that re-execute the managed binary.\n');
++    process.exit(127);
++  }
+   // A missing/unwritable scratch directory must not break local Git. The
+   // fallback deliberately cannot load the host's gh authentication files.
+   let configDirectory = path.join(directory, 'unavailable-gh-config');
+@@ -30,14 +59,13 @@ async function main() {
+     configDirectory = fs.mkdtempSync(path.join(configRoot, 'paperclip-github-operation-'));
+     fs.chmodSync(configDirectory, 0o700);
+     configReady = true;
+-    process.once('exit', () => { try { fs.rmSync(configDirectory, { recursive: true, force: true }); } catch {} });
+   } catch { diagnostic('configuration_directory_unavailable'); }
+   {
+     for (const key of Object.keys(env)) {
+       if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*)$/.test(key)) delete env[key];
+     }
+     Object.assign(env, {
+-      GH_CONFIG_DIR: configDirectory, SSH_AUTH_SOCK: '',
++      GH_CONFIG_DIR: configDirectory, PAPERCLIP_GITHUB_OPERATION_DEPTH: String(parentDepth + 1), SSH_AUTH_SOCK: '',
+       GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+       GIT_TERMINAL_PROMPT: '0',
+       // The inherited identity was deleted above. Empty identity env values
+@@ -92,10 +120,16 @@ async function main() {
+   env.ZDOTDIR = configDirectory;
+   env.BASH_ENV = '/dev/null';
+   env.GIT_SSH_COMMAND = 'ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=none -o BatchMode=yes';
+-  const child = spawn(executable, process.argv.slice(2), { env, stdio: 'inherit' });
+-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
+-  child.once('error', () => { process.stderr.write('Paperclip: GitHub command could not start.\n'); process.exitCode = 1; });
+-  child.once('exit', (code, signal) => { process.exitCode = code === null ? 128 : code; });
++  try {
++    const child = spawn(executable, process.argv.slice(2), { env, stdio: 'inherit' });
++    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
++    process.exitCode = await new Promise((resolve) => {
++      child.once('error', () => { process.stderr.write('Paperclip: GitHub command could not start.\n'); resolve(1); });
++      child.once('exit', (code, signal) => { resolve(code === null ? 128 : code); });
++    });
++  } finally {
++    if (configReady) { try { fs.rmSync(configDirectory, { recursive: true, force: true }); } catch {} }
++  }
+ }
+ main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
+ `;

@@ -59,8 +59,11 @@ describe("docs/OPERATIONS.md runbook (TOG-7889)", () => {
 
   it("pins the same sha256 in the pin check and the download", () => {
     const install = section("Release, pin, install");
-    const pinned = install.match(/--expect-sha256 ([0-9a-f]{64})/)?.[1];
-    const checked = install.match(/echo "([0-9a-f]{64}) {2}\$TGZ" \| sha256sum -c -/)?.[1];
+    // Either a literal digest on both sides or the same `$SHA256` variable. The
+    // digest of an unpublished release cannot be known when its version bumps.
+    const digest = String.raw`([0-9a-f]{64}|\$SHA256)`;
+    const pinned = install.match(new RegExp(String.raw`--expect-sha256 "?${digest}"?`))?.[1];
+    const checked = install.match(new RegExp(String.raw`echo "${digest} {2}\$TGZ" \| sha256sum -c -`))?.[1];
     expect(pinned).toBeDefined();
     expect(checked).toBe(pinned);
   });

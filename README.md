@@ -273,6 +273,8 @@ npm run verify:host
 npm run rehearse
 ```
 
-`npm run verify:host` runs the built manifest through Paperclip's install-time validators. `npm run rehearse` loads the built worker once, invokes two isolated sync company configurations through different compatible protocols, and submits an async invocation (submit → poll) plus a run-end cancel on a third.
+Build before running `npm run verify:host`: it runs the built manifest through Paperclip's install-time validators. When a host checkout is reachable, the strict gate also compares the local capability mirror against the host's exported slot and launcher enumerations; drift or a required check that cannot run fails the gate. The UI slot mirror includes `appShellOverlay` → `ui.action.register` and `organizationSwitcher` → `ui.sidebar.register`. Host-less CI uses the mirror, not a host-verification receipt.
+
+`npm run rehearse` loads the built worker once, invokes two isolated sync company configurations through different compatible protocols, and submits an async invocation (submit → poll) plus a run-end cancel on a third.
 
 Licensed under the [MIT License](./LICENSE). No install or release is performed by the build or test commands.

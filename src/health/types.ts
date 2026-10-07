@@ -29,6 +29,10 @@ export interface ModelHealthEntry {
   lastInvocationAt: string | null;
   /** ISO timestamp at which the current degraded verdict began. */
   degradedAt: string | null;
+  /** Rolling outcome ring for the error-rate circuit breaker: one entry per
+   * routed call, pruned to the rate window on every observation and bounded
+   * so the state row cannot grow without limit. */
+  recentOutcomes: Array<{ at: string; succeeded: boolean }>;
 }
 
 export type ModelHealthState = Record<string, ModelHealthEntry>;
