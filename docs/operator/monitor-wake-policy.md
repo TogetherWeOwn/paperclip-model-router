@@ -2,22 +2,23 @@
 
 **Result:** a host patch that avoids a full agent session for an unchanged
 timer monitor. It normally waits at least 2 hours after the agent's last run,
-then defers a quiet card up to 4 hours after that run. New input and a timeout
-within two scheduler intervals of the proposed deferral target dispatch
-immediately. The initial 24-hour replay estimated a 13% reduction in all runs;
-that estimate predates the timeout-margin fix below. The revised policy's live
-savings are not yet measured.
+then defers a quiet card up to 4 hours after that run. New input dispatches
+immediately. A timeout at or before the proposed deferral target plus two
+scheduler intervals also dispatches immediately, avoiding a timeout race on the
+next scheduler tick. The initial 24-hour replay estimated a 13% reduction in all
+runs; that estimate predates the timeout-margin fix below. The revised policy's
+live savings are not yet measured.
 
 This repository does not own the Paperclip host source, so this is the smallest
 exact patch plus executable verification. It has not been published to a
 third-party repository. Base: host fork commit
 `ee341c9b1` (`fix(heartbeat): ignore monitor re-arm when measuring run progress
-for comment suppression`). The final packet applies cleanly to that base and
-reconstructs the tested isolated checkout byte-for-byte. It has not been
-rechecked or executed against the serving host tree; live-host BEFORE/AFTER
-verification remains outstanding, and no serving source was modified. Patch
-sha256
-`ae37ca5f5a54cdc0adbad2cf38c4f20e245b7a76d3b3dbe27fe6067f92368994`.
+for comment suppression`). The packet targets that base. Its monitor policy
+source was tested in an isolated checkout; the final database fixture
+refinement is called out under verification. It has not been rechecked or
+executed against the serving host tree; live-host BEFORE/AFTER verification
+remains outstanding, and no serving source was modified. Patch sha256
+`29d8dca1e7a42996197db3955bd0c0124a6fd91a85531f105067e2df53eb88f6`.
 Tracked for the next host build after the current cutover packet. Dependent
 patch packets must be rebased and checked against this revised checksum before
 stacking.
@@ -57,7 +58,7 @@ Rules, in order:
 | No finished run in the last 4 hours, or the last run did not succeed | dispatch (recovery is never delayed) |
 | Last run ended 4 or more hours ago | dispatch (quiet backstop) |
 | New issue input or a linked external change since the run | dispatch |
-| `timeoutAt` is within two scheduler intervals after the proposed next-check target | dispatch now, before timeout exhaustion |
+| `timeoutAt` is at or before the proposed next-check target plus two scheduler intervals | dispatch now, before timeout exhaustion |
 | Due less than 2 hours after the run | defer to run end + 2 hours |
 | Quiet, past 2 hours | defer 2 hours, never past run end + 4 hours |
 
@@ -68,15 +69,17 @@ the external reference) verbatim. The write is guarded on the claim token, so a
 monitor an agent re-armed in the meantime is not overwritten.
 
 Not touched: manual `monitor/check-now` checks, provider-quota recovery
-monitors, monitors a board user scheduled, and monitors with either
-`kind: "external_service"` or a non-empty, trimmed `serviceName`. The host does
-not observe what those watch (CI, deploys), so a quiet card proves nothing.
-A missing or blank service name does not exempt a timer. This packet carries a
-default-off gate, `PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED`, that the
-[event-wake packet](./github-event-wakes.md) uses to lift the exemption for
-GitHub service names. Left unset, nothing changes for them: check and review
-events only reach the host through that follow-up packet, and the operator
-confirms delivery coverage before enabling the gate.
+monitors, and monitors a board user scheduled. Monitors with either
+`kind: "external_service"` or a non-empty, trimmed `serviceName` stay exempt by
+default because the host does not observe what they watch (CI, deploys). Exactly
+`PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED=true` lifts that exemption only for
+service names containing `github` (case-insensitive), including when `kind` is
+omitted. This is an operator confirmation gate, not GitHub event ingestion; do
+not enable it until check and review delivery coverage is verified for every
+affected installation and repository. Unknown or incomplete coverage means
+leave it unset. Other named services and unnamed typed external-service monitors
+remain exempt. A missing or blank service name by itself does not exempt a
+timer.
 
 The scheduler can pass a timeout that lands just after the proposed target
 before this policy runs. The policy dispatches with
@@ -101,21 +104,19 @@ the last run and the settings. The UI activity labels cover both.
 - `PAPERCLIP_MONITOR_MIN_INTERVAL_MS`: default `7200000`.
 - `PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS`: default `14400000`, never below the
   minimum interval.
+- `PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED`: defaults to `false`; only the
+  exact value `true` lifts the service-monitor exemption for names containing
+  `github`, case-insensitively. Enable only after operators verify check and
+  review delivery coverage; this patch does not implement event ingestion.
 
-Both intervals accept integers from 60000 to 86400000. A bad value falls back
-to the default.
-
-- `PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED`: default off. Only the exact value
-  `true` lifts the exemption for service names containing `github`
-  (case-insensitive), for typed and service-named monitors alike. Other
-  services, quota recovery, manual checks and board monitors stay exempt.
-- `HEARTBEAT_SCHEDULER_INTERVAL_MS`: read, never written. The timeout dispatch
-  margin is two intervals, with a 10-second floor on the interval (default 30
-  seconds, so 60 seconds).
+Both interval settings accept integers from 60000 to 86400000. A bad value
+falls back to the default.
 
 To see the effect before enforcing, start with `shadow` for a day and count
 `issue.monitor_deferral_shadowed` rows. Rollback without a rebuild: set
 `PAPERCLIP_MONITOR_WAKE_POLICY=off` and restart.
+
+This source packet does not measure live run savings.
 
 ## Artifact
 
@@ -165,33 +166,33 @@ hooking the database.
 
 ### Final review-fix verification
 
-The timeout-margin fix and the default-off GitHub gate were applied and tested in
-an isolated clone of host fork `ee341c9b1`, with this packet alone applied. Tests
-use embedded Postgres, not production data. The serving host source was not
-modified. Set `HOST_CHECKOUT` to the isolated repository root:
+The monitor policy was tested in an isolated checkout of host fork `ee341c9b1`.
+Tests use embedded Postgres, not production data; the serving host source was
+not modified. From that checkout:
 
 ```bash
-cd "$HOST_CHECKOUT"
-node_modules/.bin/vitest run server/src/__tests__/issue-monitor-wake-policy.test.ts server/src/__tests__/issue-monitor-wake-skip.test.ts server/src/__tests__/github-connection-events.test.ts server/src/__tests__/issue-monitor-scheduler.test.ts server/src/__tests__/issue-rewake-throttle.test.ts ui/src/lib/activity-format.test.ts
-pnpm --dir "$HOST_CHECKOUT" --filter @paperclipai/server exec tsc -p tsconfig.json --noEmit --pretty false
+node_modules/.bin/vitest run server/src/__tests__/issue-monitor-wake-policy.test.ts server/src/__tests__/issue-monitor-wake-skip.test.ts
+pnpm --filter @paperclipai/server exec tsc -p tsconfig.json --noEmit --pretty false
 ```
 
-- Baseline on the unpatched base: `github-connection-events`,
-  `issue-monitor-scheduler` and `issue-rewake-throttle` pass, 26/26 tests.
-- With this packet applied: the two new suites pass **82/82**; the six files
-  above pass **123/123** (82 new, 26 adjacent, 15 UI). Server `tsc --noEmit`
-  exits 0. The patch sha256 matches the value above.
-- The timeout boundary test uses a 10-second scheduler interval: a timeout exactly
-  20,000 ms after the proposed target dispatches; one 20,001 ms after it still
-  defers. A database test ticks the scheduler once after the target, with
-  `timeoutAt` 20 seconds later, and expects one `issue_monitor_due` wake and no
-  exhaustion.
-- Mutant: restoring the old bound, `timeoutAt <= deferUntil` without the margin,
-  fails both timeout-margin tests (the unit boundary test and the database tick
-  test); the source was restored byte-identical afterwards.
-- These results are isolated-clone verification, not the requested live-host
-  BEFORE/AFTER execution. That verification and the operator deployment
-  handoff remain outstanding; no serving host files were changed.
+- The most recent monitor-specific run passed **67/67 tests**; server TypeScript
+  checking exited 0. That run preceded the final database fixture refinement below.
+- The pure timeout boundary test uses a 10-second scheduler interval: a timeout
+  exactly 20,000 ms after the proposed target dispatches; one 20,001 ms after
+  it still defers.
+- The database regression now targets a due monitor at 12:30, a proposed
+  deferral at 14:10, `timeoutAt` at 14:10:20, and a later scheduler tick at
+  14:10:31. With the 30-second default interval, the initial 12:31 tick must
+  dispatch within the 60-second margin; otherwise the later tick would exhaust
+  the monitor. It asserts one `issue_monitor_due` wake and no deferral or
+  exhaustion. This fixture refinement was not rerun against a host checkout in
+  this update; the previously executed version used a 14:10:30 second tick and
+  an explicitly confirmed GitHub-service monitor. The current fixture is an
+  ordinary timer monitor so it isolates timeout-margin behavior from the
+  service-coverage gate.
+- These are isolated-checkout results, not live-host BEFORE/AFTER execution.
+  That verification and the operator deployment handoff remain outstanding;
+  no serving host files were changed.
 
 ## Replay estimate
 
@@ -199,11 +200,10 @@ The initial 24-hour run list and per-issue activity replay estimated 523 of 746
 monitor wakes deferred (417 inside the 2-hour floor, 106 on quiet cards).
 Collapsing 145 deferral chains estimated 378 runs avoided: 51% of monitor wakes
 and 13% of all runs. This is a historical estimate, not a measurement of the
-revised policy. It treats a named service as the `external_service` exemption,
+revised policy. It treats every named service as exempt under the default confirmation setting,
 sees only the 24-hour window, assumes the same re-arm cadence, and does not model
 the timeout-window dispatch added after review. Those monitors now dispatch
-rather than defer, so the revised savings must be recomputed. The weekly no-op
-share measurement is a separate follow-up; the under-10% target is unproven.
+rather than defer, so the revised savings must be recomputed.
 
 ## Upstream route
 

@@ -1,0 +1,48 @@
+{
+  "_comment": "Activity `details` payloads in the shapes the live host writes for `issue.updated` and the monitor actions. Ids and notes are placeholders.",
+  "details": {
+    "monitorRearmOnly": {
+      "source": "comment",
+      "changes": {
+        "monitorNotes": { "to": "Check the review verdict", "from": "Check the review verdict" },
+        "statusVersion": { "to": 3, "from": 2 },
+        "monitorNextCheckAt": { "to": "2026-10-07T05:00:00.000Z", "from": "2026-10-07T03:00:00.000Z" },
+        "executionState": {
+          "to": { "status": "idle", "monitor": { "kind": "external_service", "status": "scheduled", "nextCheckAt": "2026-10-07T05:00:00.000Z" } },
+          "from": { "status": "idle", "monitor": { "kind": "external_service", "status": "triggered", "nextCheckAt": "2026-10-07T03:00:00.000Z" } }
+        }
+      }
+    },
+    "statusBeforeCheckout": {
+      "changes": { "status": { "to": "in_review", "from": "todo" } }
+    },
+    "checkoutEvent": { "action": "issue.checked_out" },
+    "checkoutBack": {
+      "changes": {
+        "status": { "to": "in_review", "from": "in_progress" },
+        "checkoutRunId": { "to": null, "from": "RUN" },
+        "executionRunId": { "to": null, "from": "RUN" },
+        "executionLockedAt": { "to": null, "from": "2026-10-07T03:00:05.000Z" },
+        "executionAgentNameKey": { "to": null, "from": "agent" },
+        "statusVersion": { "to": 3, "from": 2 }
+      }
+    },
+    "closeIssue": {
+      "changes": {
+        "status": { "to": "done", "from": "in_progress" },
+        "completedAt": { "to": "2026-10-07T03:45:07.618Z", "from": null },
+        "checkoutRunId": { "to": null, "from": "RUN" },
+        "executionRunId": { "to": null, "from": "RUN" }
+      }
+    },
+    "blockerChange": {
+      "changes": { "blockedByIssueIds": { "to": ["other"], "from": [] }, "blockedTransitionAt": { "to": "2026-10-07T03:10:00.000Z", "from": null } }
+    },
+    "pluginPatch": {
+      "patch": { "labelIds": ["label"] },
+      "pluginKey": "example.plugin",
+      "initiatingRunId": null
+    },
+    "deferred": { "reason": "min_interval", "deferUntil": "2026-10-07T05:00:00.000Z", "lastRunId": "RUN" }
+  }
+}

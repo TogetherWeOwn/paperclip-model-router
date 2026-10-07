@@ -343,10 +343,10 @@ index 000000000..c38d7f468
 +});
 diff --git a/server/src/__tests__/issue-monitor-wake-skip.test.ts b/server/src/__tests__/issue-monitor-wake-skip.test.ts
 new file mode 100644
-index 000000000..2eb1fa3bb
+index 000000000..289377ed8
 --- /dev/null
 +++ b/server/src/__tests__/issue-monitor-wake-skip.test.ts
-@@ -0,0 +1,677 @@
+@@ -0,0 +1,678 @@
 +import { randomUUID } from "node:crypto";
 +import { eq, sql } from "drizzle-orm";
 +import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -928,22 +928,23 @@ index 000000000..2eb1fa3bb
 +    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_exhausted");
 +  });
 +
-+  it("dispatches before the floor when timeout is within two scheduler ticks", async () => {
-+    process.env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED = "true";
++  it("dispatches before the next scheduler tick can exhaust a near-target timeout", async () => {
 +    process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS = "30000";
 +    const timeoutAt = new Date("2026-04-11T14:10:20.000Z");
 +    const { issueId, agentId } = await seedFixture({ monitor: {
-+      kind: "external_service", serviceName: "github-actions", timeoutAt: timeoutAt.toISOString(), recoveryPolicy: "escalate_to_board",
++      timeoutAt: timeoutAt.toISOString(), recoveryPolicy: "escalate_to_board",
 +    } });
 +    const heartbeat = heartbeatService(db);
 +
 +    const firstTick = await heartbeat.tickTimers(TICK_AT);
-+    const secondTick = await heartbeat.tickTimers(new Date("2026-04-11T14:10:30.000Z"));
++    const secondTick = await heartbeat.tickTimers(new Date("2026-04-11T14:10:31.000Z"));
 +    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
 +    expect(firstTick.enqueued).toBe(1);
 +    expect(secondTick.enqueued).toBe(0);
 +    expect(wakes.map((row) => row.reason)).toEqual(["issue_monitor_due"]);
-+    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_exhausted");
++    const actions = (await activityActions(issueId)).map((row) => row.action);
++    expect(actions).not.toContain("issue.monitor_deferred");
++    expect(actions).not.toContain("issue.monitor_exhausted");
 +  });
 +
 +  it("still defers timer monitors with a null service name", async () => {

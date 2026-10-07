@@ -10,7 +10,7 @@ Normalization alone does not prove that CI or review signals arrive.
 This repository tracks the packet, not the Paperclip host source. Apply it
 in an isolated contributor checkout, never in the serving platform tree.
 It stacks on the **final** [`monitor-wake-policy.patch`](./monitor-wake-policy.patch)
-(sha256 `ae37ca5f5a54cdc0adbad2cf38c4f20e245b7a76d3b3dbe27fe6067f92368994`).
+(sha256 `29d8dca1e7a42996197db3955bd0c0124a6fd91a85531f105067e2df53eb88f6`).
 The host base is `ee341c9b17e6d4c81eb0e54ea79806fb3f90cb31` plus that packet.
 Event patch sha256:
 `611c202d7090c382360e34933d56f4cb66fb2065513b97f0e34bbb10f25ced36`.
@@ -93,7 +93,7 @@ measure production savings.
 
 ## Conditional monitor policy
 
-The revised first packet dispatches with `timeout_window_reached` when
+The merged monitor packet dispatches with `timeout_window_reached` when
 `timeoutAt` falls at or within two scheduler intervals after the proposed
 deferral target. This margin accounts for a scheduler tick passing the timeout
 before the policy runs; it is derived from the host scheduler interval and is
@@ -140,7 +140,7 @@ monitor/throttle tests passed. Its five original mutation families were
 killed. Those historical results do not prove the review revisions.
 
 Final review-fix verification uses an isolated checkout of the host base plus
-the revised first packet; tests use embedded Postgres, never production data.
+the merged monitor packet; tests use embedded Postgres, never production data.
 Set `HOST_CHECKOUT` to that repository root before running the commands below.
 
 ```bash
@@ -154,7 +154,7 @@ pnpm --filter @paperclipai/server exec tsc -p tsconfig.json --noEmit --pretty fa
 ```
 
 - BEFORE: the earlier new regression tests against the old event-wake
-  implementation on the revised first packet produced **24 failures / 75
+  implementation on the previous revision of the monitor packet produced **24 failures / 75
   passes**. Those failures covered housekeeping wakes, forced non-coalescing
   and absent coverage gating. The timeout-margin and running-run follow-up
   fixes were added after that baseline.
@@ -169,11 +169,11 @@ pnpm --filter @paperclipai/server exec tsc -p tsconfig.json --noEmit --pretty fa
   default; and removing the three GitHub reasons from the running-run
   follow-up set (the running-turn regression fails). Each modified source
   file was restored after its mutant.
-- Router checks: `npm run typecheck`, `npm test` (**1,259 tests**), and
-  `npm run build` all passed in the earlier router validation.
-- Reconstruction: both final packets apply in order to a fresh checkout of
-  host fork `ee341c9b1`; the resulting eight changed host files match the
-  tested isolated checkout byte-for-byte. The final packets have not been
+- Router checks on the merge with main: `npm run typecheck`, `npm test`
+  (**105 files, 1,377 tests**), and `npm run build` all pass.
+- Reconstruction: `git apply --check` and `git apply` accept the merged monitor
+  packet and then this packet, in order, on a fresh clone of host fork
+  `ee341c9b1`; the verification above ran on that clone. The packets have not been
   executed against the serving host tree. Live-host BEFORE/AFTER verification
   and the operator deployment handoff remain outstanding; no serving files
   were edited.
