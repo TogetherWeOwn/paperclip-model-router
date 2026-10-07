@@ -120,6 +120,13 @@ version is not present here.
 
 ### Fixed
 
+- **Host-validator UI slot mirror.** The local install-check mirror now requires
+  `ui.action.register` for `appShellOverlay` and `ui.sidebar.register` for
+  `organizationSwitcher`, matching the installed Paperclip capability table.
+  Behavior guards cover missing, correct and unrelated capabilities, combined
+  slots and duplicate slots. Strict host drift detection is unchanged; no plugin
+  manifest, runtime, configuration or host changes.
+
 - **MCP tools never throw on failure paths.** `model_router_invoke`
   and `model_router_invoke_async` resolve unexpected infrastructure failures
   (unreadable state, unwritable stickiness, failing audit or metrics writes)
