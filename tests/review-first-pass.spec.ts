@@ -12,7 +12,8 @@
  *   - "first" means earliest by start time, whatever order the caller lists runs,
  *   - a review still in progress is not a review yet.
  *
- * Offline: no GitHub access, only the pure functions and the argument parser.
+ * Offline: no GitHub access; pure functions, the argument parser and an injected
+ * collector transport (shared-head attribution and pagination).
  */
 
 import { describe, expect, it } from "vitest";
@@ -22,6 +23,9 @@ import { describe, expect, it } from "vitest";
 type Run = {
   status: string;
   started_at?: string;
+  name?: string;
+  external_id?: string | null;
+  head_sha?: string;
   output?: { title?: string; summary?: string };
 };
 type PrRecord = { repo?: string; number: number; author?: string | null; commits?: number; reviews: Run[] };
@@ -43,6 +47,8 @@ type Summary = {
 };
 type Mod = {
   checkRunsPath: (repo: string, sha: string) => string;
+  reviewPrNumber: (cr: Run) => number;
+  collect: (repo: string, options: { request: (path: string) => Promise<unknown> }) => Promise<PrRecord[]>;
   parseScore: (cr: Run) => number | null;
   classifyReview: (cr: Run) => { kind: string; score: number | null };
   summarizePr: (r: PrRecord) => {
@@ -59,7 +65,7 @@ type Mod = {
 };
 const spec = "../scripts/review-first-pass.mjs";
 const mod = (await import(/* @vite-ignore */ spec)) as Mod;
-const { checkRunsPath, parseScore, classifyReview, summarizePr, summarize, render, parseArgs } = mod;
+const { checkRunsPath, reviewPrNumber, collect, parseScore, classifyReview, summarizePr, summarize, render, parseArgs } = mod;
 
 const scored = (n: number, at: string): Run => ({
   status: "completed",
@@ -94,6 +100,82 @@ describe("checkRunsPath", () => {
     const path = checkRunsPath("o/a", "abc123");
     expect(path).toContain("filter=all");
     expect(path).toContain("check_name=Paperclip%20Review");
+  });
+});
+
+const head = "a".repeat(40);
+const attributed = (pr: number, score: number, at: string): Run => ({
+  ...scored(score, at),
+  name: "Paperclip Review",
+  head_sha: head,
+  external_id: `00000000-0000-4000-8000-000000000000:${pr}:${head}`,
+});
+
+describe("reviewPrNumber", () => {
+  it("uses Paperclip's PR identity, not the commit shared by stacked PRs", () => {
+    expect(reviewPrNumber(attributed(1, 4, "t1"))).toBe(1);
+    expect(reviewPrNumber(attributed(2, 5, "t2"))).toBe(2);
+  });
+
+  it("refuses absent, malformed, and unsafe PR identities rather than guessing", () => {
+    for (const external_id of [null, "", "other-format", `not-a-uuid:2:${head}`, `00000000-0000-4000-8000-000000000000:0:${head}`, `00000000-0000-4000-8000-000000000000:9007199254740992:${head}`]) {
+      expect(() => reviewPrNumber({ ...attributed(2, 5, "t1"), external_id })).toThrow(/attribute/i);
+    }
+  });
+
+  it("requires the identity's head to match the check's head", () => {
+    expect(() => reviewPrNumber({ ...attributed(2, 5, "t1"), head_sha: "b".repeat(40) })).toThrow(/attribute/i);
+    expect(() => reviewPrNumber({ ...attributed(2, 5, "t1"), head_sha: undefined })).toThrow(/attribute/i);
+  });
+});
+
+describe("collect", () => {
+  const prs = [1, 2].map((number) => ({ number, merged_at: "2026-10-07T01:00:00Z", user: { login: "dev" } }));
+  const runs = [attributed(1, 4, "t1"), attributed(1, 5, "t2"), attributed(2, 5, "t3")];
+  const request = async (path: string): Promise<unknown> => {
+    if (path.includes("/pulls?")) return prs;
+    if (path.includes("/commits?")) return [{ sha: head }];
+    if (path.includes("/check-runs?")) {
+      expect(path).toContain("filter=all");
+      return { check_runs: runs };
+    }
+    throw new Error(`Unexpected test path: ${path}`);
+  };
+
+  it("does not credit an earlier PR's reviews to another PR sharing the head", async () => {
+    const records = await collect("o/a", { request });
+    expect(records.map((r) => summarizePr(r))).toMatchObject([
+      { firstPass: false, scored: 2 },
+      { firstPass: true, scored: 1 },
+    ]);
+  });
+
+  it("ignores unrelated check names before requiring Paperclip attribution", async () => {
+    const otherCheck = async (path: string) => path.includes("/check-runs?")
+      ? { check_runs: [...runs, { status: "completed", name: "ci-ok" }] }
+      : request(path);
+    const records = await collect("o/a", { request: otherCheck });
+    expect(summarizePr(records[1]!)).toMatchObject({ firstPass: true, scored: 1 });
+  });
+
+  it("fails instead of emitting partial numbers when attribution is unavailable", async () => {
+    const missingIdentity = async (path: string) => path.includes("/check-runs?")
+      ? { check_runs: [{ ...runs[0], external_id: null }] }
+      : request(path);
+    await expect(collect("o/a", { request: missingIdentity })).rejects.toThrow(/attribute/i);
+  });
+
+  it("retains filter=all and PR attribution across check-run pages", async () => {
+    const paged = async (path: string) => {
+      if (path.includes("/check-runs?")) {
+        expect(path).toContain("filter=all");
+        const page = new URL(path, "https://example.invalid/").searchParams.get("page");
+        return { check_runs: page === "1" ? Array(100).fill(runs[0]) : [runs[2]] };
+      }
+      return request(path);
+    };
+    const records = await collect("o/a", { request: paged });
+    expect(summarizePr(records[1]!)).toMatchObject({ firstPass: true, scored: 1 });
   });
 });
 

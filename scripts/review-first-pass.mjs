@@ -15,6 +15,10 @@
  *                default `filter=latest` hides all but the newest run per
  *                head) and every completed run counts, including same-head
  *                re-reviews.
+ *   attribution  GitHub lists runs by commit, and stacked PRs can share commits.
+ *                Paperclip's `external_id` (<endpoint UUID>:<PR number>:<head SHA>)
+ *                identifies the reviewed PR. Only its own runs are counted; missing
+ *                or malformed attribution stops collection rather than guessing.
  *   scored       a review whose title or summary carries `N/5`.
  *   not scored   a completed check with no score: "Authorized manual review
  *                required" (the bot was not authorised to review that author's
@@ -203,20 +207,20 @@ async function gh(path) {
 }
 
 /** Every item of a list endpoint. `pick` returns the page's array from its body. */
-async function ghAll(path, pick = (body) => body) {
+async function ghAll(path, pick = (body) => body, request = gh) {
   const items = [];
   for (let page = 1; ; page++) {
-    const batch = pick(await gh(`${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`));
+    const batch = pick(await request(`${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`));
     items.push(...batch);
     if (batch.length < 100) return items;
   }
 }
 
 /** Merged PRs most recently updated first, up to `limit`. */
-async function mergedPrs(repo, limit, since) {
+async function mergedPrs(repo, limit, since, request = gh) {
   const prs = [];
   for (let page = 1; prs.length < limit; page++) {
-    const batch = await gh(`repos/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`);
+    const batch = await request(`repos/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`);
     if (!batch.length) break;
     for (const p of batch) {
       if (!p.merged_at) continue;
@@ -238,16 +242,32 @@ export function checkRunsPath(repo, sha) {
   return `repos/${repo}/commits/${sha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}&filter=all`;
 }
 
-/** Collect one repository's PR records from GitHub. */
-export async function collect(repo, { limit = 50, since = null } = {}) {
-  const prs = await mergedPrs(repo, limit, since);
+/**
+ * Paperclip publishes <endpoint UUID>:<PR number>:<head SHA> as external_id.
+ * GitHub's pull_requests array is not trigger attribution (and can be empty).
+ * Refuse an unknown identity rather than credit another PR's checks to this one.
+ */
+export function reviewPrNumber(checkRun) {
+  const identity = typeof checkRun?.external_id === "string"
+    ? /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}:(\d+):([0-9a-f]{40})$/i.exec(checkRun.external_id)
+    : null;
+  const number = identity ? Number(identity[1]) : NaN;
+  if (!Number.isSafeInteger(number) || number < 1 || typeof checkRun?.head_sha !== "string" || identity[2].toLowerCase() !== checkRun.head_sha.toLowerCase()) {
+    throw new Error("Cannot attribute Paperclip Review check: missing, malformed, or inconsistent external_id");
+  }
+  return number;
+}
+
+/** Collect one repository's PR records from GitHub. `request` permits hermetic collector tests. */
+export async function collect(repo, { limit = 50, since = null, request = gh } = {}) {
+  const prs = await mergedPrs(repo, limit, since, request);
   return Promise.all(
     prs.map(async (pr) => {
-      const commits = await ghAll(`repos/${repo}/pulls/${pr.number}/commits`);
+      const commits = await ghAll(`repos/${repo}/pulls/${pr.number}/commits`, (b) => b, request);
       const perCommit = await Promise.all(
-        commits.map((c) => ghAll(checkRunsPath(repo, c.sha), (b) => b.check_runs ?? [])),
+        commits.map((c) => ghAll(checkRunsPath(repo, c.sha), (b) => b.check_runs ?? [], request)),
       );
-      const reviews = perCommit.flat().filter((cr) => cr.name === CHECK_NAME);
+      const reviews = perCommit.flat().filter((cr) => cr.name === CHECK_NAME && reviewPrNumber(cr) === pr.number);
       return { repo, number: pr.number, author: pr.user?.login ?? null, commits: commits.length, reviews };
     }),
   );

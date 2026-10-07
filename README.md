@@ -275,4 +275,10 @@ npm run rehearse
 
 `npm run verify:host` runs the built manifest through Paperclip's install-time validators. `npm run rehearse` loads the built worker once, invokes two isolated sync company configurations through different compatible protocols, and submits an async invocation (submit → poll) plus a run-end cancel on a third.
 
+Measure first-pass review on merged PRs with `npm run measure:review -- --repo owner/name`.
+This read-only GitHub query counts every `Paperclip Review` run and attributes it through
+stock Paperclip's `external_id` format; unknown attribution stops the measurement rather
+than producing a partial rate. Definitions and the amended-head blind spot are in
+[`scripts/review-first-pass.mjs`](scripts/review-first-pass.mjs).
+
 Licensed under the [MIT License](./LICENSE). No install or release is performed by the build or test commands.

@@ -18,8 +18,10 @@ version is not present here.
   review is 5/5), scored rounds per PR, and the share of checks that carried no
   verdict (manual-review-required and incomplete runs, which say nothing about
   the code and stay out of the rate), by repository and by PR author.
-  `tests/review-first-pass.spec.ts` (21 tests) pins the definitions and the
-  argument checks.
+  `tests/review-first-pass.spec.ts` pins the definitions, argument checks,
+  pagination and PR attribution. Every same-head run is fetched (`filter=all`),
+  and stock Paperclip `external_id` attribution keeps stacked PRs from counting
+  each other's checks; missing or invalid attribution stops measurement.
   `docs/PROCESS.md` rule 7 and `AGENTS.md` ask authors to review their own diff
   against the 0-5 rubric before requesting review.
 
