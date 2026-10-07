@@ -102,11 +102,14 @@ const agentNames = new Map(
 // that never became a run).
 const issueIds = new Set(issuesNeedingActivity(rows));
 let armedMonitorIssues = null;
+let armedMonitorDiscoveryFailed = false;
 try {
   const open = await api(`/api/companies/${COMPANY}/issues?status=in_progress,in_review&limit=1000`);
-  armedMonitorIssues = (Array.isArray(open) ? open : []).filter((issue) => issue?.monitorNextCheckAt);
+  if (!Array.isArray(open)) throw new Error("expected an array");
+  armedMonitorIssues = open.filter((issue) => issue?.monitorNextCheckAt);
   for (const issue of armedMonitorIssues) issueIds.add(issue.id);
 } catch (error) {
+  armedMonitorDiscoveryFailed = true;
   console.warn(`noop-run-share: WARNING could not list armed monitors (${error.message}); deferral counters cover run-touched issues only`);
 }
 
@@ -129,7 +132,16 @@ await Promise.all(
   }),
 );
 
-const report = buildReport({ runs: rows, activityByIssue, agentNames, sinceMs, untilMs, truncatedAgents });
+const report = buildReport({
+  runs: rows,
+  activityByIssue,
+  agentNames,
+  sinceMs,
+  untilMs,
+  truncatedAgents,
+  undatedRows,
+  armedMonitorDiscoveryFailed,
+});
 const meta = {
   windowHours: HOURS,
   windowUntil: new Date(untilMs).toISOString(),

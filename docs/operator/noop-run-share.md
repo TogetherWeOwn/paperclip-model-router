@@ -47,6 +47,8 @@ Two figures follow, and they answer different questions:
   as "CI is green, review routed" is real information, and work done on
   GitHub is invisible in issue activity. It is the tracked figure because it is
   defined the same way every week. **Target: idle share of all runs under 10%.**
+  Its succeeded-no-event rate keeps unscoped and unverified succeeded runs in the
+  denominator rather than hiding unknown outcomes.
 
 It also reports the share of runs by wake reason, the share of runs whose wake
 carried no event, the host-rule no-ops that also moved another issue (a lower
@@ -63,6 +65,9 @@ monitor armed now, so a deferred wake with no run is still seen.
   marked `complete: false`, and its older runs are not counted. A 7-day window is
   truncated for the busiest agents; use `--hours 24` for a figure that is
   complete.
+- Missing or invalid run timestamps, unreadable issue activity, or a failed
+  scan for currently armed monitors sets `complete: false`; counters that depend
+  on those rows must not be treated as a complete window.
 - Activity comes from `GET /api/issues/{id}/activity`, which is not capped. The
   company-wide activity list is not used: it cannot filter by run and caps at
   500 rows.
@@ -78,7 +83,9 @@ The constants and `isMonitorOnlyIssueUpdateDetails` are copied from the host
 (`heartbeat.ts`, `issue-rewake-throttle.ts`, `heartbeat-run-summary.ts`); the
 file header names each source. `tests/noop-run-share.spec.ts` pins every branch
 the host tests pin and the run attribution on top, and
-`scripts/noop-run-share-mutation-gate.mjs` applies 14 one-line mutants (a
-monitor-only update counted as progress, run attribution dropped, a checkout
-release compared against the wrong starting status, and so on);
-each must fail the suite.
+`scripts/noop-run-share-mutation-gate.mjs` applies 21 one-line mutants (a
+monitor-only update counted as progress, policy creation without a monitor,
+run attribution dropped, checkout releases compared against the wrong status,
+and incomplete-window guards removed). The gate first proves the baseline suite
+passes and counts a mutant as killed only when Vitest reports assertion failures;
+runner or setup failures are gate failures.

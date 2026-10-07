@@ -260,8 +260,19 @@ export function monitorPolicyCounts(activityByIssue, sinceMs, untilMs) {
  * @param {number} input.sinceMs
  * @param {number} input.untilMs
  * @param {object[]} [input.truncatedAgents]           from collectRuns
+ * @param {number} [input.undatedRows]                 run rows with unknown window membership
+ * @param {boolean} [input.armedMonitorDiscoveryFailed] whether the armed-issue scan failed
  */
-export function buildReport({ runs, activityByIssue, agentNames = new Map(), sinceMs, untilMs, truncatedAgents = [] }) {
+export function buildReport({
+  runs,
+  activityByIssue,
+  agentNames = new Map(),
+  sinceMs,
+  untilMs,
+  truncatedAgents = [],
+  undatedRows = 0,
+  armedMonitorDiscoveryFailed = false,
+}) {
   const byStatus = new Map();
   const byWakeReason = new Map();
   const byAgent = new Map();
@@ -282,6 +293,7 @@ export function buildReport({ runs, activityByIssue, agentNames = new Map(), sin
 
   const total = ZERO();
   let noopWithProgressElsewhere = 0;
+  let succeededNoEventRuns = 0;
 
   for (const run of runs) {
     const issueId = issueIdOf(run);
@@ -300,6 +312,7 @@ export function buildReport({ runs, activityByIssue, agentNames = new Map(), sin
       entry.runs += 1;
       for (const [flag, on] of Object.entries(flags)) if (on) entry[flag] += 1;
     }
+    if (flags.succeeded && flags.noEvent) succeededNoEventRuns += 1;
     if (flags.noop) {
       const elsewhere = progressIssuesByRun.get(run.id);
       if (elsewhere && [...elsewhere].some((id) => id !== issueId)) noopWithProgressElsewhere += 1;
@@ -308,6 +321,7 @@ export function buildReport({ runs, activityByIssue, agentNames = new Map(), sin
 
   const totalRuns = total.runs;
   const unverified = byOutcome.get(OUTCOMES.UNVERIFIED) ?? 0;
+  const unreadableActivityIssues = [...activityByIssue.values()].filter((rows) => !Array.isArray(rows)).length;
   const caveats = [];
   if (truncatedAgents.length > 0) {
     caveats.push(
@@ -315,6 +329,11 @@ export function buildReport({ runs, activityByIssue, agentNames = new Map(), sin
     );
   }
   if (unverified > 0) caveats.push(`${unverified} no-event run(s) could not be classified because their issue activity was unreadable`);
+  if (undatedRows > 0) caveats.push(`${undatedRows} run row(s) have missing or invalid createdAt; window membership is unknown`);
+  if (armedMonitorDiscoveryFailed) caveats.push("could not discover issues with an armed monitor; monitor-policy counters may be incomplete");
+  if (unreadableActivityIssues > 0) {
+    caveats.push(`${unreadableActivityIssues} issue activity read(s) failed; monitor-policy counters may be incomplete`);
+  }
 
   const wakeReasons = sortedObject(byWakeReason);
   for (const entry of Object.values(wakeReasons)) {
@@ -356,7 +375,8 @@ export function buildReport({ runs, activityByIssue, agentNames = new Map(), sin
       checkoutChurnOnly: count(OUTCOMES.CHURN_ONLY),
       shareOfAllRuns: share(total.idle, totalRuns),
       shareOfSucceededRuns: share(total.idle, total.succeeded),
-      shareOfSucceededNoEventRuns: share(total.idle, total.idle + count(OUTCOMES.PROGRESS)),
+      succeededNoEventRuns,
+      shareOfSucceededNoEventRuns: share(total.idle, succeededNoEventRuns),
       noEventRunsWithProgress: count(OUTCOMES.PROGRESS),
       targetShare: TARGET_NOOP_SHARE,
       meetsTarget: totalRuns > 0 ? total.idle / totalRuns < TARGET_NOOP_SHARE : null,
@@ -387,7 +407,7 @@ export function renderMarkdown(report, { windowHours, windowUntil, generatedAt }
     `| **Idle runs** (no-op, or only a note / checkout churn) | **${idle.runs}** (${idle.noop} no-op, ${idle.commentOnly} comment-only, ${idle.checkoutChurnOnly} checkout churn) | — |`,
     `| **Idle share of all runs** | **${pct(idle.shareOfAllRuns)}** | < ${pct(idle.targetShare)} |`,
     `| Idle share of succeeded runs | ${pct(idle.shareOfSucceededRuns)} | — |`,
-    `| Idle share of succeeded no-event runs | ${pct(idle.shareOfSucceededNoEventRuns)} (${idle.noEventRunsWithProgress} left real progress) | — |`,
+    `| Idle share of succeeded no-event runs | ${pct(idle.shareOfSucceededNoEventRuns)} of ${idle.succeededNoEventRuns} (${idle.noEventRunsWithProgress} left real progress) | — |`,
     `| Host-rule no-op runs that touched another issue | ${noop.withProgressOnOtherIssues} (lower bound) | — |`,
     `| \`issue.monitor_triggered\` | ${policy.triggered} | — |`,
     `| \`issue.monitor_deferred\` | ${policy.deferred} | — |`,
