@@ -1,9 +1,9 @@
 diff --git a/server/src/__tests__/github-event-wakes.test.ts b/server/src/__tests__/github-event-wakes.test.ts
 new file mode 100644
-index 0000000..d730da4
+index 0000000..eefd803
 --- /dev/null
 +++ b/server/src/__tests__/github-event-wakes.test.ts
-@@ -0,0 +1,481 @@
+@@ -0,0 +1,556 @@
 +import { randomUUID } from "node:crypto";
 +import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 +import {
@@ -16,6 +16,7 @@ index 0000000..d730da4
 +  createDb,
 +  externalObjectMentions,
 +  externalObjects,
++  heartbeatRuns,
 +  issues,
 +  toolApplications,
 +  toolConnections,
@@ -28,6 +29,7 @@ index 0000000..d730da4
 +  githubConnectionEventService,
 +} from "../services/github-connection-events.js";
 +import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
++import { heartbeatService } from "../services/heartbeat.ts";
 +import {
 +  getEmbeddedPostgresTestSupport,
 +  startEmbeddedPostgresTestDatabase,
@@ -53,6 +55,7 @@ index 0000000..d730da4
 +
 +  afterEach(async () => {
 +    await db.delete(activityLog);
++    await db.delete(heartbeatRuns);
 +    await db.delete(agentWakeupRequests);
 +    await db.delete(connectionEventDeliveries);
 +    await db.delete(externalObjectMentions);
@@ -298,6 +301,78 @@ index 0000000..d730da4
 +    expect(wakes).toHaveLength(1);
 +  });
 +
++  it.each(["edited", "labeled", "unlabeled", "assigned", "unassigned", "milestoned", "unknown_action"])(
++    "updates the PR snapshot without waking for housekeeping action %s",
++    async (action) => {
++      const { companyId, grantId } = await seedBinding();
++      const agentId = await seedAgent(companyId);
++      const issueId = await seedIssue(companyId, agentId, "in_progress", 2);
++      await seedLinkedPullRequest(companyId, issueId, HEAD_SHA);
++      const event = { ...pullRequestEvent(`delivery_${action}`), action, bindingIds: [`${grantId}_101`] };
++      const wakeup = vi.fn();
++      const service = githubConnectionEventService(db, { connector: connectorFor([event]), now: () => NOW, wakeup });
++
++      await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1 });
++      expect(wakeup).not.toHaveBeenCalled();
++      const [snapshot] = await db.select().from(externalObjects).where(eq(externalObjects.companyId, companyId));
++      expect(snapshot?.lastChangedAt?.toISOString()).toBe(NOW.toISOString());
++    },
++  );
++
++  it.each(["opened", "reopened", "closed", "ready_for_review", "review_requested"])(
++    "wakes for meaningful PR action %s with coalescing enabled",
++    async (action) => {
++      const { companyId, grantId } = await seedBinding();
++      const agentId = await seedAgent(companyId);
++      const issueId = await seedIssue(companyId, agentId, "in_progress", 3);
++      await seedLinkedPullRequest(companyId, issueId, HEAD_SHA);
++      const event = { ...pullRequestEvent(`delivery_${action}`), action, bindingIds: [`${grantId}_101`] };
++      const wakeup = vi.fn();
++      const service = githubConnectionEventService(db, { connector: connectorFor([event]), now: () => NOW, wakeup });
++
++      await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1 });
++      expect(wakeup).toHaveBeenCalledTimes(1);
++      expect(wakeup.mock.calls[0]![1].allowRunCoalescing).not.toBe(false);
++    },
++  );
++
++  it("coalesces consecutive deliveries into existing queued work and deduplicates redelivery", async () => {
++    const { companyId, grantId } = await seedBinding();
++    const agentId = await seedAgent(companyId);
++    const issueId = await seedIssue(companyId, agentId, "in_progress", 4);
++    await seedLinkedPullRequest(companyId, issueId, HEAD_SHA);
++    const runId = randomUUID();
++    await db.insert(heartbeatRuns).values({
++      id: runId, companyId, agentId, status: "queued", invocationSource: "on_demand",
++      triggerDetail: "manual", contextSnapshot: { issueId },
++    });
++    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
++    const events = ["delivery_coalesce_1", "delivery_coalesce_2"].map((id) => ({
++      ...pullRequestEvent(id), bindingIds: [`${grantId}_101`],
++    }));
++    const heartbeat = heartbeatService(db);
++    let currentTime = NOW;
++    const service = githubConnectionEventService(db, {
++      connector: connectorFor(events), now: () => currentTime, wakeup: heartbeat.wakeup,
++    });
++
++    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 2 });
++    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
++    expect(wakes).toHaveLength(2);
++    expect(wakes.every((row) => row.status === "coalesced" && row.runId === runId)).toBe(true);
++    expect(wakes.map((row) => row.idempotencyKey).sort()).toEqual(
++      events.map((event) => `github-event:${event.id}:${issueId}`).sort(),
++    );
++    expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
++
++    await db.update(connectionEventDeliveries).set({ status: "failed" })
++      .where(eq(connectionEventDeliveries.providerDeliveryId, events[0]!.id));
++    currentTime = new Date(NOW.getTime() + 6_000);
++    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, duplicate: 1 });
++    expect(await db.select().from(agentWakeupRequests)).toHaveLength(2);
++    expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
++  });
++
 +  it("does not wake todo, done, or unassigned issues", async () => {
 +    const { companyId, grantId } = await seedBinding();
 +    const agentId = await seedAgent(companyId);
@@ -486,87 +561,93 @@ index 0000000..d730da4
 +  });
 +});
 diff --git a/server/src/__tests__/issue-monitor-wake-policy.test.ts b/server/src/__tests__/issue-monitor-wake-policy.test.ts
-index bd5677d..272e502 100644
+index b1c7b2f..81001d9 100644
 --- a/server/src/__tests__/issue-monitor-wake-policy.test.ts
 +++ b/server/src/__tests__/issue-monitor-wake-policy.test.ts
-@@ -80,7 +80,7 @@ describe("issueMonitorWakeExemption", () => {
-     config,
-     source: "automation" as const,
-     isProviderQuotaMonitor: false,
--    monitor: { kind: null, scheduledBy: "assignee" },
-+    monitor: { kind: null, scheduledBy: "assignee", serviceName: null },
-   };
- 
-   it("applies to an assignee-scheduled timer monitor", () => {
-@@ -92,12 +92,34 @@ describe("issueMonitorWakeExemption", () => {
-     ["policy off", { config: { ...config, mode: "off" as const } }, "policy_off"],
-     ["manual check", { source: "on_demand" as const }, "on_demand"],
-     ["provider quota", { isProviderQuotaMonitor: true }, "provider_quota"],
--    ["board scheduled", { monitor: { kind: null, scheduledBy: "board" } }, "board_scheduled"],
--    ["external service", { monitor: { kind: "external_service", scheduledBy: "assignee" } }, "external_service"],
-+    ["board scheduled", { monitor: { kind: null, scheduledBy: "board", serviceName: null } }, "board_scheduled"],
-+    ["external service", { monitor: { kind: "external_service", scheduledBy: "assignee", serviceName: "deploys" } }, "external_service"],
-   ])("exempts %s", (_label, override, reason) => {
-     expect(issueMonitorWakeExemption({ ...base, ...override })).toBe(reason);
+@@ -40,6 +40,7 @@ describe("resolveIssueMonitorWakePolicyConfig", () => {
+       mode: "enforce",
+       minIntervalMs: 2 * HOUR,
+       quietBackstopMs: 4 * HOUR,
++      githubEventsConfirmed: false,
+     });
+     expect(ISSUE_MONITOR_MIN_INTERVAL_MS).toBe(2 * HOUR);
+     expect(ISSUE_MONITOR_QUIET_BACKSTOP_MS).toBe(4 * HOUR);
+@@ -104,6 +105,23 @@ describe("issueMonitorWakeExemption", () => {
+     expect(issueMonitorWakeExemption({ ...base, monitor: { ...base.monitor, serviceName } })).toBeNull();
    });
  
-+  it.each(["github", "github-actions", "GitHub CI"])(
-+    "evaluates GitHub-named external service monitors (%s)",
-+    (serviceName) => {
-+      expect(
-+        issueMonitorWakeExemption({
-+          ...base,
-+          monitor: { kind: "external_service", scheduledBy: "assignee", serviceName },
-+        }),
-+      ).toBeNull();
-+    },
-+  );
++  it.each([undefined, "", "false", "1", "yes", "TRUE"])("keeps GitHub coverage unconfirmed for %j", (value) => {
++    expect(resolveIssueMonitorWakePolicyConfig({ PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED: value }).githubEventsConfirmed).toBe(false);
++  });
 +
-+  it("still exempts a provider quota monitor even when it names GitHub", () => {
-+    expect(
-+      issueMonitorWakeExemption({
-+        ...base,
-+        isProviderQuotaMonitor: true,
-+        monitor: { kind: "external_service", scheduledBy: "assignee", serviceName: "github" },
-+      }),
-+    ).toBe("provider_quota");
++  it.each(["github", "github-actions", "GitHub CI"])("only lifts %s exemption after explicit event confirmation", (serviceName) => {
++    const monitor = { kind: "external_service", scheduledBy: "assignee", serviceName };
++    expect(issueMonitorWakeExemption({ ...base, monitor })).toBe("external_service");
++    const confirmed = resolveIssueMonitorWakePolicyConfig({ PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED: "true" });
++    expect(confirmed.githubEventsConfirmed).toBe(true);
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor })).toBeNull();
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, kind: null } })).toBeNull();
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, serviceName: "deploys" } })).toBe("external_service");
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, kind: null, serviceName: " deploys " } })).toBe("external_service");
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, serviceName: null } })).toBe("external_service");
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor, isProviderQuotaMonitor: true })).toBe("provider_quota");
 +  });
 +
    it("still evaluates shadow mode", () => {
      expect(issueMonitorWakeExemption({ ...base, config: { ...config, mode: "shadow" } })).toBeNull();
    });
 diff --git a/server/src/__tests__/issue-monitor-wake-skip.test.ts b/server/src/__tests__/issue-monitor-wake-skip.test.ts
-index 9fe0c7d..fbef13e 100644
+index 6b891e1..8aa82b3 100644
 --- a/server/src/__tests__/issue-monitor-wake-skip.test.ts
 +++ b/server/src/__tests__/issue-monitor-wake-skip.test.ts
-@@ -502,7 +502,7 @@ describeEmbeddedPostgres("issue monitor wake policy", () => {
-   });
+@@ -43,6 +43,7 @@ const WAKE_POLICY_ENV_KEYS = [
+   "PAPERCLIP_MONITOR_WAKE_POLICY",
+   "PAPERCLIP_MONITOR_MIN_INTERVAL_MS",
+   "PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS",
++  "PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED",
+ ] as const;
  
-   it.each([
--    ["external_service monitors", { kind: "external_service", serviceName: "github-actions" }],
-+    ["non-GitHub external_service monitors", { kind: "external_service", serviceName: "deploys" }],
-     ["board-scheduled monitors", { scheduledBy: "board" }],
-   ])("leaves %s alone", async (_label, monitor) => {
-     const { issueId } = await seedFixture({ monitor });
-@@ -510,6 +510,16 @@ describeEmbeddedPostgres("issue monitor wake policy", () => {
+ const DUE_AT = new Date("2026-04-11T12:30:00.000Z");
+@@ -546,6 +547,37 @@ describeEmbeddedPostgres("issue monitor wake policy", () => {
      expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_deferred");
    });
  
-+  it("applies the quiet skip to GitHub-named external_service monitors", async () => {
-+    const { issueId } = await seedFixture({
-+      monitor: { kind: "external_service", serviceName: "github-actions" },
-+    });
-+    // The linked-PR fixture is absent and nothing landed after the last run,
-+    // so the 2h floor defers instead of dispatching.
++  it.each([
++    { kind: "external_service", serviceName: "github-actions" },
++    { serviceName: " GitHub CI " },
++  ])("only defers a confirmed GitHub monitor (%j)", async (monitor) => {
++    process.env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED = "true";
++    const { issueId } = await seedFixture({ monitor });
 +    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(0);
 +    await expectDeferred(issueId, new Date("2026-04-11T14:10:00.000Z"), "min_interval");
 +  });
 +
-   it("leaves provider quota recovery monitors alone", async () => {
-     const sourceRunId = randomUUID();
-     const { companyId, agentId, issueId } = await seedFixture({
++  it("does not defer a non-GitHub service when GitHub coverage is confirmed", async () => {
++    process.env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED = "true";
++    const { issueId } = await seedFixture({ monitor: { kind: "external_service", serviceName: "deploys" } });
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
++    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_deferred");
++  });
++
++  it("dispatches a confirmed GitHub monitor before the timeout instead of exhausting it", async () => {
++    process.env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED = "true";
++    const timeoutAt = new Date("2026-04-11T12:50:00.000Z");
++    const { issueId, agentId } = await seedFixture({ monitor: {
++      kind: "external_service", serviceName: "github-actions", timeoutAt: timeoutAt.toISOString(), recoveryPolicy: "escalate_to_board",
++    } });
++    const heartbeat = heartbeatService(db);
++    expect((await heartbeat.tickTimers(TICK_AT)).enqueued).toBe(1);
++    expect((await heartbeat.tickTimers(timeoutAt)).enqueued).toBe(0);
++    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
++    expect(wakes.map((row) => row.reason)).toEqual(["issue_monitor_due"]);
++    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_exhausted");
++  });
++
+   it("still defers timer monitors with a null service name", async () => {
+     const { issueId } = await seedFixture({ monitor: { serviceName: null } });
+     expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(0);
 diff --git a/server/src/services/github-connection-events.ts b/server/src/services/github-connection-events.ts
-index 177492e..840a20c 100644
+index 177492e..d2322d0 100644
 --- a/server/src/services/github-connection-events.ts
 +++ b/server/src/services/github-connection-events.ts
 @@ -1,12 +1,15 @@
@@ -586,7 +667,7 @@ index 177492e..840a20c 100644
  import {
    logActivity,
    publishActivity,
-@@ -40,6 +43,26 @@ export type GitHubConnectionEventPollResult = {
+@@ -40,6 +43,31 @@ export type GitHubConnectionEventPollResult = {
    failed: number;
  };
  
@@ -603,6 +684,11 @@ index 177492e..840a20c 100644
 +/** Issue statuses whose agent assignee is woken by a linked GitHub event. */
 +const GITHUB_EVENT_WAKE_ISSUE_STATUSES = ["in_progress", "in_review"] as const;
 +
++// Housekeeping still refreshes the snapshot, but does not start agent work.
++const GITHUB_PR_WAKE_ACTIONS = new Set([
++  "opened", "reopened", "synchronize", "closed", "ready_for_review", "review_requested",
++]);
++
 +/**
 + * A wake row in any other status already covers this delivery for the issue.
 + * These three are retryable terminal states: a wake that ended here never
@@ -613,7 +699,7 @@ index 177492e..840a20c 100644
  function record(value: unknown): Record<string, unknown> {
    return value && typeof value === "object" && !Array.isArray(value)
      ? value as Record<string, unknown>
-@@ -87,6 +110,17 @@ function compact(values: Record<string, unknown>): Record<string, unknown> {
+@@ -87,6 +115,17 @@ function compact(values: Record<string, unknown>): Record<string, unknown> {
    return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== null && value !== undefined));
  }
  
@@ -631,7 +717,7 @@ index 177492e..840a20c 100644
  /**
   * Treat the sealed Cloud batch as an untrusted boundary. Cloud already normalizes
   * GitHub payloads, but the instance independently allowlists and bounds the small
-@@ -137,6 +171,32 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
+@@ -137,6 +176,32 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
        repositorySelection: boundedString(payload.repositorySelection, 40),
      });
    }
@@ -664,7 +750,7 @@ index 177492e..840a20c 100644
    return compact(base);
  }
  
-@@ -269,6 +329,206 @@ export function githubConnectionEventService(
+@@ -269,6 +334,207 @@ export function githubConnectionEventService(
      }
    }
  
@@ -843,7 +929,8 @@ index 177492e..840a20c 100644
 +              mutation: "external",
 +            },
 +            idempotencyKey,
-+            allowRunCoalescing: false,
++            // Keep the heartbeat's default coalescing: an event must not
++            // force a separate session behind the assignee's current work.
 +            requestedByActorType: "system",
 +            requestedByActorId: "system:github-webhook",
 +            contextSnapshot: {
@@ -871,7 +958,7 @@ index 177492e..840a20c 100644
    async function applyInstallationEvent(database: Db, binding: GitHubBinding, event: LeasedEvent) {
      // Bindings are loaded before the Cloud request. Lock and read the grant
      // again so a refresh completed during that request cannot be overwritten.
-@@ -370,7 +630,42 @@ export function githubConnectionEventService(
+@@ -370,7 +636,42 @@ export function githubConnectionEventService(
      const postCommitPublications: ActivityPublication[] = [];
      try {
        const applyAndFinalize = async (database: Db) => {
@@ -879,7 +966,7 @@ index 177492e..840a20c 100644
 +        if (event.event === "pull_request") {
 +          await applyPullRequestEvent(companyId, normalizedEvent);
 +          const snapshot = githubSnapshotUpdate(normalizedEvent.payload);
-+          if (snapshot) {
++          if (snapshot && event.action && GITHUB_PR_WAKE_ACTIONS.has(event.action)) {
 +            await wakeLinkedIssuesForGithubEvent({
 +              companyId,
 +              externalIds: [snapshot.externalId],
@@ -915,74 +1002,66 @@ index 177492e..840a20c 100644
          if (event.event === "installation" || event.event === "installation_repositories") {
            for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
          } else {
-diff --git a/server/src/services/heartbeat.ts b/server/src/services/heartbeat.ts
-index ab7a1d5..256eeff 100644
---- a/server/src/services/heartbeat.ts
-+++ b/server/src/services/heartbeat.ts
-@@ -11975,6 +11975,7 @@ export function heartbeatService(
-           kind: input.monitor?.kind ?? null,
-           scheduledBy:
-             input.monitor?.scheduledBy ?? input.claimed.monitorScheduledBy,
-+          serviceName: input.monitor?.serviceName ?? null,
-         },
-       });
-       if (exemption) return null;
 diff --git a/server/src/services/issue-monitor-wake-policy.ts b/server/src/services/issue-monitor-wake-policy.ts
-index 41e6315..1b9342b 100644
+index 6e7685d..4929f03 100644
 --- a/server/src/services/issue-monitor-wake-policy.ts
 +++ b/server/src/services/issue-monitor-wake-policy.ts
-@@ -19,8 +19,12 @@
-  * (`timeoutAt`/`maxAttempts`), so it only moves the next look later.
+@@ -21,8 +21,9 @@
   *
   * Exempt: manual (on-demand) checks, provider-quota recovery, monitors a
-- * board user scheduled, and `external_service` monitors, whose watched state
-- * (CI, deploys) the host does not observe, so a quiet card proves nothing.
-+ * board user scheduled, and non-GitHub `external_service` monitors, whose
-+ * watched state (deploys) the host does not observe, so a quiet card proves
-+ * nothing. GitHub-named external-service monitors are evaluated: pull
-+ * request, check and review events now move the linked external snapshot
-+ * (see github-connection-events.ts), so a quiet card means CI really is
-+ * quiet.
+  * board user scheduled, and monitors with `kind: external_service` or a
+- * non-empty service name. The host does not observe what they watch (CI,
+- * deploys), so a quiet card proves nothing.
++ * non-empty service name. GitHub services only lose that exemption after
++ * PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED=true confirms check/review
++ * coverage. Normalization alone does not prove events reach the host.
   */
  
  export type IssueMonitorWakePolicyMode = "off" | "shadow" | "enforce";
-@@ -87,9 +91,20 @@ export interface IssueMonitorWakeExemptionInput {
-   monitor: {
-     kind: string | null;
-     scheduledBy: string | null;
-+    serviceName: string | null;
-   } | null;
+@@ -40,6 +41,8 @@ export interface IssueMonitorWakePolicyConfig {
+   mode: IssueMonitorWakePolicyMode;
+   minIntervalMs: number;
+   quietBackstopMs: number;
++  /** Operator-confirmed check/review delivery coverage, never inferred from normalization. */
++  githubEventsConfirmed: boolean;
  }
  
-+/**
-+ * External-service monitors that watch GitHub (service names containing
-+ * github, any case: github, github-actions, ...). The host observes
-+ * that state through bridged PR, check and review events, so the quiet-card
-+ * skip is sound for them. Every other external service stays exempt.
-+ */
-+export function isGithubMonitorServiceName(serviceName: string | null): boolean {
-+  return typeof serviceName === "string" && serviceName.toLowerCase().includes("github");
-+}
-+
- /**
-  * Cheap pre-check that needs no database reads, so the caller can skip the
-  * evidence queries entirely for monitors the policy never touches.
-@@ -101,7 +116,9 @@ export function issueMonitorWakeExemption(
+ function readBoundedMs(raw: string | undefined, fallback: number): number {
+@@ -57,6 +60,8 @@ function readBoundedMs(raw: string | undefined, fallback: number): number {
+  * - `PAPERCLIP_MONITOR_MIN_INTERVAL_MS` and
+  *   `PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS`: integers in [60000, 86400000].
+  *   The backstop never drops below the minimum interval.
++ * - `PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED`: exactly `true` lifts the
++ *   GitHub service exemption after the operator confirms delivery coverage.
+  */
+ export function resolveIssueMonitorWakePolicyConfig(
+   env: Readonly<Record<string, string | undefined>>,
+@@ -72,7 +77,8 @@ export function resolveIssueMonitorWakePolicyConfig(
+     minIntervalMs,
+     readBoundedMs(env.PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS, ISSUE_MONITOR_QUIET_BACKSTOP_MS),
+   );
+-  return { mode, minIntervalMs, quietBackstopMs };
++  const githubEventsConfirmed = env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED === "true";
++  return { mode, minIntervalMs, quietBackstopMs, githubEventsConfirmed };
+ }
+ 
+ export type IssueMonitorWakeExemptReason =
+@@ -104,7 +110,9 @@ export function issueMonitorWakeExemption(
    if (input.source === "on_demand") return "on_demand";
    if (input.isProviderQuotaMonitor) return "provider_quota";
    if (input.monitor?.scheduledBy === "board") return "board_scheduled";
--  if (input.monitor?.kind === "external_service") return "external_service";
-+  if (input.monitor?.kind === "external_service" && !isGithubMonitorServiceName(input.monitor?.serviceName ?? null)) {
-+    return "external_service";
-+  }
+-  if (input.monitor?.kind === "external_service" || input.monitor?.serviceName?.trim()) {
++  const serviceName = input.monitor?.serviceName?.trim();
++  const confirmedGithub = input.config.githubEventsConfirmed && serviceName?.toLowerCase().includes("github");
++  if ((input.monitor?.kind === "external_service" || serviceName) && !confirmedGithub) {
+     return "external_service";
+   }
    return null;
- }
- 
 diff --git a/server/src/services/issue-thread-interactions.ts b/server/src/services/issue-thread-interactions.ts
-index 4e5a9e7..f5a2423 100644
+index 897713e..08d401d 100644
 --- a/server/src/services/issue-thread-interactions.ts
 +++ b/server/src/services/issue-thread-interactions.ts
-@@ -168,7 +168,12 @@ type InteractionWakeup = (
+@@ -151,7 +151,12 @@ type InteractionWakeup = (
    options: {
      source: "automation";
      triggerDetail: "system";
