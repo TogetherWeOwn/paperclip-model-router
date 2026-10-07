@@ -42,6 +42,7 @@ type Summary = {
   byAuthor: Record<string, { prs: number; scoredPrs: number; firstPass: number; notScoredRuns: number }>;
 };
 type Mod = {
+  checkRunsPath: (repo: string, sha: string) => string;
   parseScore: (cr: Run) => number | null;
   classifyReview: (cr: Run) => { kind: string; score: number | null };
   summarizePr: (r: PrRecord) => {
@@ -58,7 +59,7 @@ type Mod = {
 };
 const spec = "../scripts/review-first-pass.mjs";
 const mod = (await import(/* @vite-ignore */ spec)) as Mod;
-const { parseScore, classifyReview, summarizePr, summarize, render, parseArgs } = mod;
+const { checkRunsPath, parseScore, classifyReview, summarizePr, summarize, render, parseArgs } = mod;
 
 const scored = (n: number, at: string): Run => ({
   status: "completed",
@@ -82,6 +83,18 @@ const running = (at: string): Run => ({
   status: "in_progress",
   started_at: at,
   output: { title: "Agent is reviewing this commit", summary: "Agent is reviewing this commit." },
+});
+
+describe("checkRunsPath", () => {
+  it("fetches every run per head, not just the newest", () => {
+    // GitHub defaults to filter=latest (one run per check name), which hides an
+    // earlier review when the same head is re-reviewed. A re-review posts a new
+    // run, so without filter=all a 4/5 followed by a 5/5 on one head reads as
+    // a first pass.
+    const path = checkRunsPath("o/a", "abc123");
+    expect(path).toContain("filter=all");
+    expect(path).toContain("check_name=Paperclip%20Review");
+  });
 });
 
 describe("parseScore", () => {
@@ -135,6 +148,22 @@ describe("summarizePr", () => {
       expect(s.firstPass).toBe(false);
       expect(s.scored).toBe(2);
     }
+  });
+
+  it("counts a same-head re-review: an earlier 4/5 is not erased by a later 5/5", () => {
+    // One commit, two runs (filter=all returns both): the first scored review
+    // decides, so this PR did not pass the first time and took two rounds.
+    const s = summarizePr({ number: 5, reviews: [scored(5, "2026-10-07T01:07:47Z"), scored(4, "2026-10-07T01:02:38Z")] });
+    expect(s.firstScore).toBe(4);
+    expect(s.firstPass).toBe(false);
+    expect(s.scored).toBe(2);
+  });
+
+  it("sees through a same-head manual-required check to the scored re-review", () => {
+    const s = summarizePr({ number: 6, reviews: [scored(5, "t2"), manual("t1")] });
+    expect(s.firstScore).toBe(5);
+    expect(s.firstPass).toBe(true);
+    expect(s.notScored).toBe(1);
   });
 
   it("passes when the first scored review is 5/5 even if later reviews are lower", () => {

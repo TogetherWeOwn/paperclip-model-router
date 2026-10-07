@@ -9,9 +9,12 @@
  *
  * DEFINITIONS (they decide what the number means, so they are fixed here)
  *
- *   review       one completed "Paperclip Review" check run. One head normally
- *                has one; the check is updated in place when the same head is
- *                reassessed, so a same-head reassessment is NOT counted twice.
+ *   review       one completed "Paperclip Review" check run. Re-reviewing the
+ *                same head posts a NEW run rather than updating the old one,
+ *                so every completed run is fetched (`filter=all`: GitHub's
+ *                default `filter=latest` hides all but the newest run per
+ *                head) and every completed run counts, including same-head
+ *                re-reviews.
  *   scored       a review whose title or summary carries `N/5`.
  *   not scored   a completed check with no score: "Authorized manual review
  *                required" (the bot was not authorised to review that author's
@@ -23,7 +26,8 @@
  *                look like an author quality problem.
  *   first pass   the first SCORED review of the PR is 5/5.
  *   rounds       scored reviews per PR (1 means it passed or failed once and
- *                the PR merged without a second scored review).
+ *                the PR merged without a second scored review). A same-head
+ *                re-review is a real second review, so it counts as a round.
  *
  * The alternative reading (first COMPLETED review, scored or not, is 5/5) is
  * printed beside it as `naive`, so the two can be compared with any figure
@@ -33,7 +37,9 @@
  * A review that landed on a head the author later amended or force-pushed away
  * sits on a commit that is no longer in the PR, so it is not seen. For such a PR
  * the first-pass rate reads high and the rounds read low. Fix commits pushed on
- * top (what the fleet does) are all seen.
+ * top (what the fleet does) are all seen. Same-head re-reviews are NOT part of
+ * this blind spot: they post new runs on the same commit and are all fetched
+ * with `filter=all`, earliest by start time deciding the first pass.
  *
  * Read-only. It shells out to `gh api`, so it uses whatever GitHub access the
  * calling session already has and never reads, prints or exports a token.
@@ -222,6 +228,16 @@ async function mergedPrs(repo, limit, since) {
   return prs.slice(0, limit);
 }
 
+/**
+ * Check runs for one commit. `filter=all` matters: GitHub's default
+ * `filter=latest` returns only the newest run per check name, which hides an
+ * earlier review whenever the same head was re-reviewed (a re-review posts a
+ * new run, it does not update the old one).
+ */
+export function checkRunsPath(repo, sha) {
+  return `repos/${repo}/commits/${sha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}&filter=all`;
+}
+
 /** Collect one repository's PR records from GitHub. */
 export async function collect(repo, { limit = 50, since = null } = {}) {
   const prs = await mergedPrs(repo, limit, since);
@@ -229,9 +245,7 @@ export async function collect(repo, { limit = 50, since = null } = {}) {
     prs.map(async (pr) => {
       const commits = await ghAll(`repos/${repo}/pulls/${pr.number}/commits`);
       const perCommit = await Promise.all(
-        commits.map((c) =>
-          ghAll(`repos/${repo}/commits/${c.sha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}`, (b) => b.check_runs ?? []),
-        ),
+        commits.map((c) => ghAll(checkRunsPath(repo, c.sha), (b) => b.check_runs ?? [])),
       );
       const reviews = perCommit.flat().filter((cr) => cr.name === CHECK_NAME);
       return { repo, number: pr.number, author: pr.user?.login ?? null, commits: commits.length, reviews };
