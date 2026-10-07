@@ -49,7 +49,11 @@ function asVerdict(value: unknown): ModelHealthEntry["verdict"] {
     : "unknown";
 }
 
-/** Normalize the outcome ring written by newer workers; anything else reads as no evidence. */
+/**
+ * Normalize the outcome ring written by newer workers; anything else reads as
+ * no evidence. An oversized ring keeps its newest entries, the same ones
+ * reconcileInvocation keeps.
+ */
 function normalizeRecentOutcomes(value: unknown): Array<{ at: string; succeeded: boolean }> {
   if (!Array.isArray(value)) return [];
   const out: Array<{ at: string; succeeded: boolean }> = [];
@@ -59,9 +63,8 @@ function normalizeRecentOutcomes(value: unknown): Array<{ at: string; succeeded:
     if (typeof row.at !== "string" || !Number.isFinite(Date.parse(row.at))) continue;
     if (typeof row.succeeded !== "boolean") continue;
     out.push({ at: row.at, succeeded: row.succeeded });
-    if (out.length >= MAX_RECENT_OUTCOMES) break;
   }
-  return out;
+  return out.slice(-MAX_RECENT_OUTCOMES);
 }
 
 /** Keep only outcomes inside (now - window, now]; the future-dated and the aged-out carry no rate. */
@@ -265,8 +268,8 @@ export function reconcileInvocation(input: {
   // Rolling error-rate circuit breaker. The streak above catches a hard-down
   // lane; the rate catches a flaky one whose interleaved successes would keep
   // resetting the streak while every Nth call still burns the caller. The
-  // observation joins the ring first, so the call that crosses the threshold
-  // is the call that trips.
+  // observation joins the ring first, so the failure that crosses the
+  // threshold is the call that trips.
   const nowMs = Date.parse(input.now);
   const ring = pruneToWindow(before.recentOutcomes, nowMs)
     .concat({ at: input.now, succeeded: input.succeeded })
@@ -275,14 +278,17 @@ export function reconcileInvocation(input: {
   if (ring.length >= ERROR_RATE_MIN_SAMPLES) {
     const errors = ring.filter((entry) => !entry.succeeded).length;
     const rate = errors / ring.length;
-    if (rate >= ERROR_RATE_THRESHOLD) {
+    // Only a failure opens the breaker or restarts its avoid window, so the
+    // cooldown stays anchored at the last failure. A success never trips a
+    // lane (the call that merely completes the sample minimum cannot), and on
+    // an already-avoided lane it only holds the verdict: recovery waits for
+    // the half-open probation or for the failures to age out of the window.
+    if (rate >= ERROR_RATE_THRESHOLD && (!input.succeeded || before.verdict === "degraded")) {
       after = {
         ...after,
         verdict: "degraded",
-        reason: `${errors} of ${ring.length} routed calls failed in the last 15 minutes (${Math.round(rate * 100)}% error rate >= 20% threshold)`,
-        // A still-failing lane slides its avoid window forward, exactly like
-        // the streak path's cooldown restart above.
-        degradedAt: input.now,
+        reason: `${errors} of the last ${ring.length} routed calls failed (${Math.round(rate * 100)}% error rate >= 20% threshold over the 15-minute / ${MAX_RECENT_OUTCOMES}-call window)`,
+        degradedAt: input.succeeded ? (before.degradedAt ?? input.now) : input.now,
       };
     }
   }

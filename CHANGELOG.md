@@ -12,21 +12,24 @@ version is not present here.
 
 ### Added
 
-- **Rolling error-rate circuit breaker (TOG-17362).**
-  `src/health/` gains a per-model outcome ring: when 10+ routed calls land
-  inside a rolling 15-minute window with a failure rate at or above 20%, the
+- **Rolling error-rate circuit breaker.**
+  `src/health/` gains a per-model outcome ring: when a failed routed call
+  leaves 10+ calls in the window with a failure rate at or above 20%, the
   model degrades exactly like the consecutive-failure path (deprioritized to
   last resort, avoided for the existing 30-minute probation, then half-open).
-  Consecutive streaks still catch hard-down lanes on their own; the rate
-  catches flaky lanes whose interleaved successes kept resetting the streak.
-  A still-failing lane slides its avoid window forward; probation starts with
-  a fresh ring so one trial failure cannot re-trip on old evidence.
+  The window is the last 15 minutes or the last 100 calls, whichever is
+  shorter. Consecutive streaks still catch hard-down lanes on their own; the
+  rate catches flaky lanes whose interleaved successes kept resetting the
+  streak. Only a failure opens the breaker or restarts the avoid window, so
+  the cooldown ends 30 minutes after the last failure; a success never trips
+  a lane and, on an avoided lane, only holds the verdict until probation or
+  until the failures age out of the window. Probation starts with a fresh
+  ring so one trial failure cannot re-trip on old evidence.
   Compatibility: stored state from older versions normalizes to an empty
   ring (streak behavior unchanged); no config keys change. `tests/health.spec.ts`
-  gains 9 circuit-breaker tests (trip, 20% boundary, sub-threshold hold,
-  minimum samples, window slide, avoid slide, half-open, ring clearing, and
-  malformed-ring normalization) and the streak-replay expectation now holds
-  degraded under a 40% window rate.
+  pins the trip, the 20% and 10-sample boundaries, window edges, avoid-window
+  slide, success handling, half-open, ring clearing, and ring bounds; the
+  streak-replay expectation now holds degraded under a 40% window rate.
 
 - **Invocation-derived model health (TOG-7160, port of TOG-930).**
   `src/health/` (types, reconcile, catalogue probe) tracks per-model health
