@@ -80,10 +80,16 @@ const mutations = [
     to: "  issueRows = issueRows ?? [];",
   },
   {
+    name: "a checkout release uses the in-run status instead of pre-checkout status",
+    file: share,
+    from: "  return statusBeforeCheckout !== finalStatus;",
+    to: "  return statuses[0].from !== finalStatus;",
+  },
+  {
     name: "a status change that sticks is treated as checkout churn",
     file: share,
-    from: "  const statusNetChanged = statuses.length > 0 && statuses[0].from !== statuses.at(-1).to;",
-    to: "  const statusNetChanged = false;",
+    from: "  return statusBeforeCheckout !== finalStatus;",
+    to: "  return false;",
   },
   {
     name: "deferral counters ignore the window",

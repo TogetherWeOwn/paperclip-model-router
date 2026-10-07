@@ -13,16 +13,10 @@
         }
       }
     },
-    "checkoutOut": {
-      "changes": {
-        "status": { "to": "in_progress", "from": "in_review" },
-        "startedAt": { "to": "2026-10-07T03:00:05.000Z", "from": null },
-        "checkoutRunId": { "to": "RUN", "from": null },
-        "executionRunId": { "to": "RUN", "from": null },
-        "executionLockedAt": { "to": "2026-10-07T03:00:05.000Z", "from": null },
-        "executionAgentNameKey": { "to": "agent", "from": null }
-      }
+    "statusBeforeCheckout": {
+      "changes": { "status": { "to": "in_review", "from": "todo" } }
     },
+    "checkoutEvent": { "action": "issue.checked_out" },
     "checkoutBack": {
       "changes": {
         "status": { "to": "in_review", "from": "in_progress" },

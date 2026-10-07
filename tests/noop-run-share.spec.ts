@@ -111,6 +111,12 @@ function monitorRun(id: string, over: Partial<Run> = {}, snapshot: Record<string
     ...over,
   };
 }
+const checkoutAction = (fixture.checkoutEvent as { action: string }).action;
+const checkedOut = (runId: string) => [
+  row("issue.updated", "previous-run", fixture.statusBeforeCheckout, { createdAt: iso(-1) }),
+  row(checkoutAction, runId, null, { createdAt: iso(1) }),
+];
+const checkoutRelease = (runId: string) => row("issue.updated", runId, fixture.checkoutBack);
 const rearm = (runId: string) => [row("issue.monitor_scheduled", runId), row("issue.updated", runId, fixture.monitorRearmOnly)];
 const comment = (runId: string) => row("issue.comment_added", runId, { commentId: "c1", bodySnippet: "note" });
 
@@ -304,24 +310,19 @@ describe("classifyRun", () => {
     expect(S.classifyRun(monitorRun("r"), [...rearm("r"), comment("r")])).toBe(O.COMMENT_ONLY);
   });
 
-  it("calls a comment plus a checkout round trip idle, since the status nets to zero", () => {
-    const rows = [
-      row("issue.updated", "r", fixture.checkoutOut),
-      comment("r"),
-      row("issue.updated", "r", fixture.checkoutBack),
-      ...rearm("r"),
-    ];
-    expect(S.classifyRun(monitorRun("r"), rows)).toBe(O.CHURN_ONLY);
+  it("calls a checkout release back to the pre-run status idle", () => {
+    const rows = [...checkedOut("r"), comment("r"), checkoutRelease("r"), ...rearm("r")];
+    expect(S.classifyRun(monitorRun("r"), S.compactIssueRows(rows))).toBe(O.CHURN_ONLY);
   });
 
   it("calls a comment plus a status change that sticks progress", () => {
-    const rows = [row("issue.updated", "r", fixture.checkoutOut), comment("r"), row("issue.updated", "r", fixture.closeIssue)];
-    expect(S.classifyRun(monitorRun("r"), rows)).toBe(O.PROGRESS);
+    const rows = [...checkedOut("r"), comment("r"), row("issue.updated", "r", fixture.closeIssue)];
+    expect(S.classifyRun(monitorRun("r"), S.compactIssueRows(rows))).toBe(O.PROGRESS);
   });
 
-  it("calls a checkout round trip plus a work product progress", () => {
-    const rows = [row("issue.updated", "r", fixture.checkoutOut), row("issue.work_product_created", "r"), row("issue.updated", "r", fixture.checkoutBack)];
-    expect(S.classifyRun(monitorRun("r"), rows)).toBe(O.PROGRESS);
+  it("calls a checkout release plus a work product progress", () => {
+    const rows = [...checkedOut("r"), row("issue.work_product_created", "r"), checkoutRelease("r")];
+    expect(S.classifyRun(monitorRun("r"), S.compactIssueRows(rows))).toBe(O.PROGRESS);
   });
 });
 
@@ -336,10 +337,11 @@ describe("compactIssueRows and issuesNeedingActivity", () => {
       null,
       { details: {} },
     ]);
-    expect(kept.map((r) => r.action)).toEqual(["issue.comment_added", "issue.updated", "issue.monitor_deferred"]);
+    expect(kept.map((r) => r.action)).toEqual(["issue.checked_out", "issue.comment_added", "issue.updated", "issue.monitor_deferred"]);
     expect(kept[0]?.details).toBeNull();
-    expect(kept[1]?.details).toEqual(fixture.closeIssue);
-    expect(kept[2]?.details).toEqual(fixture.deferred);
+    expect(kept[1]?.details).toBeNull();
+    expect(kept[2]?.details).toEqual(fixture.closeIssue);
+    expect(kept[3]?.details).toEqual(fixture.deferred);
   });
 
   it("asks only for issues a succeeded no-event run touched", () => {
@@ -374,9 +376,9 @@ describe("buildReport", () => {
       ...rearm("noop-2"),
       ...rearm("note-1"),
       comment("note-1"),
-      row("issue.updated", "churn-1", fixture.checkoutOut),
+      ...checkedOut("churn-1"),
       comment("churn-1"),
-      row("issue.updated", "churn-1", fixture.checkoutBack),
+      checkoutRelease("churn-1"),
       row("issue.work_product_created", "work-1"),
       row("issue.monitor_triggered", null, null, { createdAt: iso(5) }),
       row("issue.monitor_deferred", null, fixture.deferred, { createdAt: iso(6) }),

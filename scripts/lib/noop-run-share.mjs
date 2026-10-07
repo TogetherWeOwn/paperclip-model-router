@@ -51,6 +51,7 @@ const IDLE_OUTCOMES = new Set([...NOOP_OUTCOMES, OUTCOMES.COMMENT_ONLY, OUTCOMES
 // checks the issue out and releases it (lock, start time, run ids). The host
 // counts these as progress, so a monitor check that checks out, comments and
 // re-arms never looks idle to it.
+const CHECKOUT_EVENT_ACTION = "issue.checked_out";
 const CHECKOUT_CHURN_KEYS = new Set([
   "startedAt",
   "executionRunId",
@@ -98,7 +99,7 @@ export function compactIssueRows(rows) {
   const out = [];
   for (const row of rows ?? []) {
     if (!row || typeof row.action !== "string") continue;
-    if (!KEPT_ACTIONS.has(row.action) && !ISSUE_PROGRESS_ACTIVITY_ACTIONS.has(row.action)) continue;
+    if (!KEPT_ACTIONS.has(row.action) && !ISSUE_PROGRESS_ACTIVITY_ACTIONS.has(row.action) && row.action !== CHECKOUT_EVENT_ACTION) continue;
     out.push({
       action: row.action,
       entityType: row.entityType ?? null,
@@ -133,15 +134,59 @@ function isChurnOnlyUpdate(details, statusNetChanged) {
   return isMonitorOnlyIssueUpdateDetails({ changes: remaining });
 }
 
-/** Progress rows that are more than a note or checkout churn. */
-function substantiveRows(progress) {
+function statusChangeOf(row) {
+  const change = row?.details?.changes?.status;
+  return change !== null && typeof change === "object" && !Array.isArray(change) ? change : null;
+}
+
+/** Whether the run left the issue in a different status than it had before checkout. */
+function runStatusNetChanged(progress, issueRows, runId, issueId) {
   const byTime = (a, b) => Date.parse(a.createdAt ?? "") - Date.parse(b.createdAt ?? "");
   const statuses = progress
     .filter((row) => row.action === "issue.updated")
     .sort(byTime)
-    .map((row) => row.details?.changes?.status)
-    .filter((change) => change !== null && typeof change === "object");
-  const statusNetChanged = statuses.length > 0 && statuses[0].from !== statuses.at(-1).to;
+    .map(statusChangeOf)
+    .filter(Boolean);
+  if (statuses.length === 0) return false;
+
+  const finalStatus = statuses.at(-1).to;
+  if (finalStatus === undefined) return true;
+
+  const checkout = issueRows
+    .filter(
+      (row) =>
+        row.action === CHECKOUT_EVENT_ACTION &&
+        row.runId === runId &&
+        row.entityType === "issue" &&
+        row.entityId === issueId,
+    )
+    .sort(byTime)[0];
+  if (!checkout) return statuses[0].from !== finalStatus;
+
+  const checkoutAt = Date.parse(checkout.createdAt ?? "");
+  if (!Number.isFinite(checkoutAt)) return true;
+  const statusBeforeCheckout = issueRows
+    .filter(
+      (row) =>
+        row.action === "issue.updated" &&
+        row.entityType === "issue" &&
+        row.entityId === issueId &&
+        Date.parse(row.createdAt ?? "") < checkoutAt,
+    )
+    .sort(byTime)
+    .map(statusChangeOf)
+    .filter(Boolean)
+    .at(-1)?.to;
+
+  // Unknown starting status is progress: only suppress a release whose return
+  // to the pre-checkout status can be proven from issue activity.
+  if (statusBeforeCheckout === undefined) return true;
+  return statusBeforeCheckout !== finalStatus;
+}
+
+/** Progress rows that are more than a note or checkout churn. */
+function substantiveRows(progress, issueRows, runId, issueId) {
+  const statusNetChanged = runStatusNetChanged(progress, issueRows, runId, issueId);
   return progress.filter((row) => {
     if (row.action === "issue.comment_added") return false;
     if (row.action === "issue.updated") return !isChurnOnlyUpdate(row.details, statusNetChanged);
@@ -165,7 +210,7 @@ export function classifyRun(run, issueRows) {
   if (progress.length === 0) {
     return attributed.length === 0 ? OUTCOMES.NOOP_NOTHING : OUTCOMES.NOOP_HOUSEKEEPING;
   }
-  if (substantiveRows(progress).length > 0) return OUTCOMES.PROGRESS;
+  if (substantiveRows(progress, issueRows, run.id, issueId).length > 0) return OUTCOMES.PROGRESS;
   return progress.every((row) => row.action === "issue.comment_added") ? OUTCOMES.COMMENT_ONLY : OUTCOMES.CHURN_ONLY;
 }
 
