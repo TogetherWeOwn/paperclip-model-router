@@ -51,6 +51,13 @@ describe("TOG-2993: every packaged path exists", () => {
     }
   });
 
+  it("ships the nested checkout sweep documented in the README", () => {
+    const script = "docs/operator/nested-non-git-sweep.mjs";
+    expect(pkg.files, `${script} is documented but not packaged`).toContain(script);
+    const readme = readFileSync(path.join(ROOT, "README.md"), "utf8");
+    expect(readme).toContain(`node ${script}`);
+  });
+
   it("ships the operator runbook for async invoke (TOG-3419), matching the current version", () => {
     const runbook = pkg.files.find((entry) => entry.endsWith("TOG-3419-async-invoke.md"));
     expect(runbook, "the TOG-3419 runbook is not in package.json files").toBeDefined();
