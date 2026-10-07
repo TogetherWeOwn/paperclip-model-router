@@ -1,0 +1,998 @@
+diff --git a/server/src/__tests__/github-event-wakes.test.ts b/server/src/__tests__/github-event-wakes.test.ts
+new file mode 100644
+index 0000000..d730da4
+--- /dev/null
++++ b/server/src/__tests__/github-event-wakes.test.ts
+@@ -0,0 +1,481 @@
++import { randomUUID } from "node:crypto";
++import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
++import {
++  activityLog,
++  agentWakeupRequests,
++  agents,
++  companies,
++  connectionEventDeliveries,
++  connectionGrants,
++  createDb,
++  externalObjectMentions,
++  externalObjects,
++  issues,
++  toolApplications,
++  toolConnections,
++} from "@paperclipai/db";
++import { eq } from "drizzle-orm";
++import {
++  GITHUB_CHECK_EVENT_WAKE_REASON,
++  GITHUB_PR_EVENT_WAKE_REASON,
++  GITHUB_REVIEW_EVENT_WAKE_REASON,
++  githubConnectionEventService,
++} from "../services/github-connection-events.js";
++import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
++import {
++  getEmbeddedPostgresTestSupport,
++  startEmbeddedPostgresTestDatabase,
++} from "./helpers/embedded-postgres.js";
++
++const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
++const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
++
++const HEAD_SHA = "a".repeat(40);
++const OTHER_SHA = "c".repeat(40);
++const NOW = new Date("2026-09-04T12:00:05.000Z");
++
++type WakeCall = { agentId: string; options: Record<string, unknown> };
++
++describeEmbeddedPostgres.sequential("GitHub event issue wakes", () => {
++  let db!: ReturnType<typeof createDb>;
++  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
++
++  beforeAll(async () => {
++    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-event-wakes-");
++    db = createDb(tempDb.connectionString);
++  }, 20_000);
++
++  afterEach(async () => {
++    await db.delete(activityLog);
++    await db.delete(agentWakeupRequests);
++    await db.delete(connectionEventDeliveries);
++    await db.delete(externalObjectMentions);
++    await db.delete(externalObjects);
++    await db.delete(issues);
++    await db.delete(connectionGrants);
++    await db.delete(toolConnections);
++    await db.delete(toolApplications);
++    await db.delete(agents);
++    await db.delete(companies);
++  });
++
++  afterAll(async () => {
++    await tempDb?.cleanup();
++  });
++
++  async function seedBinding() {
++    const companyId = randomUUID();
++    const userId = `github-owner-${randomUUID()}`;
++    const applicationId = randomUUID();
++    const connectionId = randomUUID();
++    const grantId = randomUUID();
++    await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "GHW" });
++    await db.insert(toolApplications).values({
++      id: applicationId,
++      companyId,
++      applicationKey: `github-${randomUUID()}`,
++      name: "GitHub",
++      type: "mcp_server",
++      status: "active",
++    });
++    await db.insert(toolConnections).values({
++      id: connectionId,
++      companyId,
++      applicationId,
++      name: "GitHub",
++      uid: `github-${randomUUID()}`,
++      transport: "mcp_remote",
++      authKind: "oauth",
++      credentialPolicy: "per_user",
++      status: "active",
++      enabled: true,
++      config: { sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } },
++      transportConfig: {},
++    });
++    await db.insert(connectionGrants).values({
++      id: grantId,
++      companyId,
++      connectionId,
++      kind: "user",
++      subjectUserId: userId,
++      status: "active",
++      isDefault: false,
++      providerTenant: {
++        oauth: { strategy: "paperclip_cloud_connector", accessTokenExpiresAt: null },
++        github: {
++          userId: "42",
++          login: "octocat",
++          installationCount: 1,
++          repositoryCount: 1,
++          repositorySelection: "selected",
++          installationIds: ["101"],
++          installationOwnerLogins: ["acme"],
++          repositories: [{ id: "99", fullName: "acme/widgets", installationId: "101" }],
++          webhookHealth: "pending",
++        },
++      },
++    });
++    return { companyId, grantId };
++  }
++
++  async function seedAgent(companyId: string) {
++    const agentId = randomUUID();
++    await db.insert(agents).values({
++      id: agentId,
++      companyId,
++      name: "Event Bot",
++      role: "engineer",
++      status: "active",
++      adapterType: "process",
++      adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
++      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
++      permissions: {},
++    });
++    return agentId;
++  }
++
++  async function seedIssue(companyId: string, agentId: string | null, status: string, n: number) {
++    const issueId = randomUUID();
++    await db.insert(issues).values({
++      id: issueId,
++      companyId,
++      title: `Watch PR ${n}`,
++      status,
++      priority: "medium",
++      assigneeAgentId: agentId,
++      issueNumber: n,
++      identifier: `GHW-${n}`,
++      executionPolicy: { mode: "normal", commentRequired: true, stages: [] },
++      executionState: { status: "idle", currentStageId: null },
++    });
++    return issueId;
++  }
++
++  async function seedPullRequestObject(companyId: string, headSha: string) {
++    const [object] = await db
++      .insert(externalObjects)
++      .values({
++        companyId,
++        providerKey: "github",
++        objectType: "pull_request",
++        externalId: "acme/widgets#pull/7",
++        statusCategory: "open",
++        statusTone: "info",
++        data: { provider: "github", headSha },
++        lastChangedAt: new Date("2026-09-04T09:00:00.000Z"),
++      })
++      .returning();
++    return object!.id;
++  }
++
++  async function linkIssueToObject(companyId: string, issueId: string, objectId: string) {
++    await db.insert(externalObjectMentions).values({
++      companyId,
++      sourceIssueId: issueId,
++      sourceKind: "comment",
++      objectId,
++      providerKey: "github",
++      objectType: "pull_request",
++      canonicalIdentityHash: randomUUID(),
++    });
++  }
++
++  async function seedLinkedPullRequest(companyId: string, issueId: string, headSha: string) {
++    const objectId = await seedPullRequestObject(companyId, headSha);
++    await linkIssueToObject(companyId, issueId, objectId);
++    return objectId;
++  }
++
++  function connectorFor(events: Array<Record<string, unknown>>) {
++    let poll = 0;
++    return {
++      getCapabilities: vi.fn(async () => ["github.code" as const]),
++      startAuthorization: vi.fn(),
++      claim: vi.fn(),
++      refresh: vi.fn(),
++      revoke: vi.fn(),
++      setWebhookBinding: vi.fn(async () => undefined),
++      leaseEvents: vi.fn(async () => ({ leaseId: `lease-${++poll}`, events })),
++      acknowledgeEvents: vi.fn(async () => 1),
++    } as unknown as PaperclipCloudConnector;
++  }
++
++  function pullRequestEvent(deliveryId: string) {
++    return {
++      id: deliveryId,
++      provider: "github" as const,
++      event: "pull_request",
++      action: "synchronize",
++      installationId: "101",
++      repositoryId: "99",
++      createdAt: "2026-09-04T12:00:00.000Z",
++      bindingIds: [] as string[],
++      payload: {
++        repository: "acme/widgets",
++        number: 7,
++        state: "open",
++        merged: false,
++        updatedAt: "2026-09-04T12:00:01.000Z",
++        url: "https://github.com/acme/widgets/pull/7",
++        headRef: "feature",
++        headSha: HEAD_SHA,
++        baseRef: "main",
++        baseSha: "b".repeat(40),
++        body: "private pull request body",
++        accessToken: "ghu_must_not_be_persisted",
++      },
++    };
++  }
++
++  it("wakes the linked in_progress assignee on a PR event, once per delivery", async () => {
++    const { companyId, grantId } = await seedBinding();
++    const agentId = await seedAgent(companyId);
++    const issueId = await seedIssue(companyId, agentId, "in_progress", 1);
++    await seedLinkedPullRequest(companyId, issueId, HEAD_SHA);
++
++    const event = pullRequestEvent("delivery_pr_1");
++    event.bindingIds = [`${grantId}_101`];
++    const wakes: WakeCall[] = [];
++    let currentTime = NOW;
++    const service = githubConnectionEventService(db, {
++      connector: connectorFor([event]),
++      now: () => currentTime,
++      // Mirror the heartbeat contract: a wake persists a queued wakeup row
++      // carrying the idempotency key, which is what the redelivery dedup
++      // reads back.
++      wakeup: (async (wakeAgentId: string, options: Record<string, unknown>) => {
++        wakes.push({ agentId: wakeAgentId, options });
++        await db.insert(agentWakeupRequests).values({
++          companyId,
++          agentId: wakeAgentId,
++          source: "automation",
++          status: "queued",
++          idempotencyKey: options.idempotencyKey as string,
++        });
++      }) as never,
++    });
++
++    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 1 });
++    expect(wakes).toHaveLength(1);
++    expect(wakes[0]!.agentId).toBe(agentId);
++    expect(wakes[0]!.options).toMatchObject({
++      source: "automation",
++      reason: GITHUB_PR_EVENT_WAKE_REASON,
++      idempotencyKey: `github-event:delivery_pr_1:${issueId}`,
++      requestedByActorType: "system",
++    });
++    const contextSnapshot = wakes[0]!.options.contextSnapshot as Record<string, unknown>;
++    expect(contextSnapshot).toMatchObject({ issueId, wakeReason: GITHUB_PR_EVENT_WAKE_REASON });
++
++    // The snapshot moved, and the sealed secret never persisted.
++    const [snapshot] = await db.select().from(externalObjects).where(eq(externalObjects.companyId, companyId));
++    expect(snapshot?.lastChangedAt?.toISOString()).toBe(NOW.toISOString());
++    const [receipt] = await db
++      .select()
++      .from(connectionEventDeliveries)
++      .where(eq(connectionEventDeliveries.providerDeliveryId, "delivery_pr_1"));
++    expect(JSON.stringify(receipt)).not.toMatch(/private pull request|ghu_/);
++
++    // Re-leasing the same delivery is a duplicate, never a second wake.
++    currentTime = new Date(currentTime.getTime() + 6_000);
++    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 0, duplicate: 1 });
++    expect(wakes).toHaveLength(1);
++
++    // A failed receipt is reprocessed, but the wake stays pinned to the
++    // delivery: still exactly one wake.
++    await db
++      .update(connectionEventDeliveries)
++      .set({ status: "failed" })
++      .where(eq(connectionEventDeliveries.providerDeliveryId, "delivery_pr_1"));
++    currentTime = new Date(currentTime.getTime() + 6_000);
++    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 1 });
++    expect(wakes).toHaveLength(1);
++  });
++
++  it("does not wake todo, done, or unassigned issues", async () => {
++    const { companyId, grantId } = await seedBinding();
++    const agentId = await seedAgent(companyId);
++    // All four issues reference the same PR object: only the worked,
++    // assigned one may wake.
++    const objectId = await seedPullRequestObject(companyId, HEAD_SHA);
++    for (const [status, assignee, n] of [
++      ["todo", agentId, 11],
++      ["done", agentId, 12],
++      ["in_review", null, 13],
++    ] as Array<[string, string | null, number]>) {
++      const issueId = await seedIssue(companyId, assignee, status, n);
++      await linkIssueToObject(companyId, issueId, objectId);
++    }
++    // One in_review issue with an assignee still wakes.
++    const watchingId = await seedIssue(companyId, agentId, "in_review", 14);
++    await linkIssueToObject(companyId, watchingId, objectId);
++
++    const event = pullRequestEvent("delivery_pr_2");
++    event.bindingIds = [`${grantId}_101`];
++    const wakes: WakeCall[] = [];
++    const service = githubConnectionEventService(db, {
++      connector: connectorFor([event]),
++      now: () => NOW,
++      wakeup: (async (wakeAgentId: string, options: Record<string, unknown>) => {
++        wakes.push({ agentId: wakeAgentId, options });
++      }) as never,
++    });
++
++    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 1 });
++    expect(wakes).toHaveLength(1);
++    expect(wakes[0]!.options).toMatchObject({
++      reason: GITHUB_PR_EVENT_WAKE_REASON,
++      idempotencyKey: `github-event:delivery_pr_2:${watchingId}`,
++    });
++  });
++
++  it("attributes a check_suite to open PRs on the same commit and wakes them", async () => {
++    const { companyId, grantId } = await seedBinding();
++    const agentId = await seedAgent(companyId);
++    const issueId = await seedIssue(companyId, agentId, "in_progress", 21);
++    await seedLinkedPullRequest(companyId, issueId, HEAD_SHA);
++
++    // Raw GitHub shape: nested repository object and check_suite record.
++    const event = {
++      id: "delivery_check_1",
++      provider: "github" as const,
++      event: "check_suite",
++      action: "completed",
++      installationId: "101",
++      repositoryId: "99",
++      createdAt: "2026-09-04T12:00:00.000Z",
++      bindingIds: [`${grantId}_101`],
++      payload: {
++        repository: { full_name: "acme/widgets" },
++        check_suite: { head_sha: HEAD_SHA, head_branch: "feature", status: "completed", conclusion: "success" },
++      },
++    };
++    const wakes: WakeCall[] = [];
++    const service = githubConnectionEventService(db, {
++      connector: connectorFor([event]),
++      now: () => NOW,
++      wakeup: (async (wakeAgentId: string, options: Record<string, unknown>) => {
++        wakes.push({ agentId: wakeAgentId, options });
++      }) as never,
++    });
++
++    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 1 });
++    const [snapshot] = await db.select().from(externalObjects).where(eq(externalObjects.companyId, companyId));
++    expect(snapshot?.data).toMatchObject({ lastCheckConclusion: "success", lastCheckHeadSha: HEAD_SHA });
++    expect(snapshot?.lastChangedAt?.toISOString()).toBe(NOW.toISOString());
++    // The PR open/closed status is untouched by a check.
++    expect(snapshot?.statusCategory).toBe("open");
++    expect(wakes).toHaveLength(1);
++    expect(wakes[0]!.options).toMatchObject({ reason: GITHUB_CHECK_EVENT_WAKE_REASON });
++  });
++
++  it("ignores a check_suite on a commit no open PR points at", async () => {
++    const { companyId, grantId } = await seedBinding();
++    const agentId = await seedAgent(companyId);
++    const issueId = await seedIssue(companyId, agentId, "in_progress", 22);
++    await seedLinkedPullRequest(companyId, issueId, HEAD_SHA);
++
++    const event = {
++      id: "delivery_check_2",
++      provider: "github" as const,
++      event: "check_suite",
++      action: "completed",
++      installationId: "101",
++      repositoryId: "99",
++      createdAt: "2026-09-04T12:00:00.000Z",
++      bindingIds: [`${grantId}_101`],
++      payload: { repository: "acme/widgets", headSha: OTHER_SHA, status: "completed", conclusion: "failure" },
++    };
++    const wakes: WakeCall[] = [];
++    const service = githubConnectionEventService(db, {
++      connector: connectorFor([event]),
++      now: () => NOW,
++      wakeup: (async (wakeAgentId: string, options: Record<string, unknown>) => {
++        wakes.push({ agentId: wakeAgentId, options });
++      }) as never,
++    });
++
++    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 1 });
++    const [snapshot] = await db.select().from(externalObjects).where(eq(externalObjects.companyId, companyId));
++    expect(snapshot?.lastChangedAt?.toISOString()).toBe("2026-09-04T09:00:00.000Z");
++    expect(snapshot?.data).not.toMatchObject({ lastCheckConclusion: "failure" });
++    expect(wakes).toHaveLength(0);
++  });
++
++  it("records a pull_request_review on the PR snapshot and wakes the assignee", async () => {
++    const { companyId, grantId } = await seedBinding();
++    const agentId = await seedAgent(companyId);
++    const issueId = await seedIssue(companyId, agentId, "in_review", 31);
++    await seedLinkedPullRequest(companyId, issueId, HEAD_SHA);
++
++    const event = {
++      id: "delivery_review_1",
++      provider: "github" as const,
++      event: "pull_request_review",
++      action: "submitted",
++      installationId: "101",
++      repositoryId: "99",
++      createdAt: "2026-09-04T12:00:00.000Z",
++      bindingIds: [`${grantId}_101`],
++      payload: {
++        repository: "acme/widgets",
++        number: 7,
++        state: "approved",
++        submittedAt: "2026-09-04T12:00:01.000Z",
++        headSha: HEAD_SHA,
++        review: { body: "private review body" },
++      },
++    };
++    const wakes: WakeCall[] = [];
++    const service = githubConnectionEventService(db, {
++      connector: connectorFor([event]),
++      now: () => NOW,
++      wakeup: (async (wakeAgentId: string, options: Record<string, unknown>) => {
++        wakes.push({ agentId: wakeAgentId, options });
++      }) as never,
++    });
++
++    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 1 });
++    const [snapshot] = await db.select().from(externalObjects).where(eq(externalObjects.companyId, companyId));
++    expect(snapshot?.data).toMatchObject({ lastReviewState: "approved" });
++    expect(snapshot?.lastChangedAt?.toISOString()).toBe(NOW.toISOString());
++    expect(JSON.stringify(snapshot)).not.toMatch(/private review body/);
++    expect(wakes).toHaveLength(1);
++    expect(wakes[0]!.options).toMatchObject({
++      reason: GITHUB_REVIEW_EVENT_WAKE_REASON,
++      idempotencyKey: `github-event:delivery_review_1:${issueId}`,
++    });
++  });
++
++  it("processes unknown events without waking or touching snapshots", async () => {
++    const { companyId, grantId } = await seedBinding();
++    const agentId = await seedAgent(companyId);
++    const issueId = await seedIssue(companyId, agentId, "in_progress", 41);
++    await seedLinkedPullRequest(companyId, issueId, HEAD_SHA);
++
++    const event = {
++      id: "delivery_unknown_1",
++      provider: "github" as const,
++      event: "push",
++      action: null,
++      installationId: "101",
++      repositoryId: "99",
++      createdAt: "2026-09-04T12:00:00.000Z",
++      bindingIds: [`${grantId}_101`],
++      payload: { repository: "acme/widgets" },
++    };
++    const wakes: WakeCall[] = [];
++    const service = githubConnectionEventService(db, {
++      connector: connectorFor([event]),
++      now: () => NOW,
++      wakeup: (async (wakeAgentId: string, options: Record<string, unknown>) => {
++        wakes.push({ agentId: wakeAgentId, options });
++      }) as never,
++    });
++
++    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 1 });
++    const [snapshot] = await db.select().from(externalObjects).where(eq(externalObjects.companyId, companyId));
++    expect(snapshot?.lastChangedAt?.toISOString()).toBe("2026-09-04T09:00:00.000Z");
++    expect(wakes).toHaveLength(0);
++  });
++});
+diff --git a/server/src/__tests__/issue-monitor-wake-policy.test.ts b/server/src/__tests__/issue-monitor-wake-policy.test.ts
+index bd5677d..272e502 100644
+--- a/server/src/__tests__/issue-monitor-wake-policy.test.ts
++++ b/server/src/__tests__/issue-monitor-wake-policy.test.ts
+@@ -80,7 +80,7 @@ describe("issueMonitorWakeExemption", () => {
+     config,
+     source: "automation" as const,
+     isProviderQuotaMonitor: false,
+-    monitor: { kind: null, scheduledBy: "assignee" },
++    monitor: { kind: null, scheduledBy: "assignee", serviceName: null },
+   };
+ 
+   it("applies to an assignee-scheduled timer monitor", () => {
+@@ -92,12 +92,34 @@ describe("issueMonitorWakeExemption", () => {
+     ["policy off", { config: { ...config, mode: "off" as const } }, "policy_off"],
+     ["manual check", { source: "on_demand" as const }, "on_demand"],
+     ["provider quota", { isProviderQuotaMonitor: true }, "provider_quota"],
+-    ["board scheduled", { monitor: { kind: null, scheduledBy: "board" } }, "board_scheduled"],
+-    ["external service", { monitor: { kind: "external_service", scheduledBy: "assignee" } }, "external_service"],
++    ["board scheduled", { monitor: { kind: null, scheduledBy: "board", serviceName: null } }, "board_scheduled"],
++    ["external service", { monitor: { kind: "external_service", scheduledBy: "assignee", serviceName: "deploys" } }, "external_service"],
+   ])("exempts %s", (_label, override, reason) => {
+     expect(issueMonitorWakeExemption({ ...base, ...override })).toBe(reason);
+   });
+ 
++  it.each(["github", "github-actions", "GitHub CI"])(
++    "evaluates GitHub-named external service monitors (%s)",
++    (serviceName) => {
++      expect(
++        issueMonitorWakeExemption({
++          ...base,
++          monitor: { kind: "external_service", scheduledBy: "assignee", serviceName },
++        }),
++      ).toBeNull();
++    },
++  );
++
++  it("still exempts a provider quota monitor even when it names GitHub", () => {
++    expect(
++      issueMonitorWakeExemption({
++        ...base,
++        isProviderQuotaMonitor: true,
++        monitor: { kind: "external_service", scheduledBy: "assignee", serviceName: "github" },
++      }),
++    ).toBe("provider_quota");
++  });
++
+   it("still evaluates shadow mode", () => {
+     expect(issueMonitorWakeExemption({ ...base, config: { ...config, mode: "shadow" } })).toBeNull();
+   });
+diff --git a/server/src/__tests__/issue-monitor-wake-skip.test.ts b/server/src/__tests__/issue-monitor-wake-skip.test.ts
+index 9fe0c7d..fbef13e 100644
+--- a/server/src/__tests__/issue-monitor-wake-skip.test.ts
++++ b/server/src/__tests__/issue-monitor-wake-skip.test.ts
+@@ -502,7 +502,7 @@ describeEmbeddedPostgres("issue monitor wake policy", () => {
+   });
+ 
+   it.each([
+-    ["external_service monitors", { kind: "external_service", serviceName: "github-actions" }],
++    ["non-GitHub external_service monitors", { kind: "external_service", serviceName: "deploys" }],
+     ["board-scheduled monitors", { scheduledBy: "board" }],
+   ])("leaves %s alone", async (_label, monitor) => {
+     const { issueId } = await seedFixture({ monitor });
+@@ -510,6 +510,16 @@ describeEmbeddedPostgres("issue monitor wake policy", () => {
+     expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_deferred");
+   });
+ 
++  it("applies the quiet skip to GitHub-named external_service monitors", async () => {
++    const { issueId } = await seedFixture({
++      monitor: { kind: "external_service", serviceName: "github-actions" },
++    });
++    // The linked-PR fixture is absent and nothing landed after the last run,
++    // so the 2h floor defers instead of dispatching.
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(0);
++    await expectDeferred(issueId, new Date("2026-04-11T14:10:00.000Z"), "min_interval");
++  });
++
+   it("leaves provider quota recovery monitors alone", async () => {
+     const sourceRunId = randomUUID();
+     const { companyId, agentId, issueId } = await seedFixture({
+diff --git a/server/src/services/github-connection-events.ts b/server/src/services/github-connection-events.ts
+index 177492e..840a20c 100644
+--- a/server/src/services/github-connection-events.ts
++++ b/server/src/services/github-connection-events.ts
+@@ -1,12 +1,15 @@
+ import { randomUUID } from "node:crypto";
+ import {
++  agentWakeupRequests,
+   connectionEventDeliveries,
+   connectionGrants,
++  externalObjectMentions,
+   externalObjects,
++  issues,
+   toolConnections,
+   type Db,
+ } from "@paperclipai/db";
+-import { and, eq, sql } from "drizzle-orm";
++import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
+ import {
+   logActivity,
+   publishActivity,
+@@ -40,6 +43,26 @@ export type GitHubConnectionEventPollResult = {
+   failed: number;
+ };
+ 
++/**
++ * Event-shaped wake reasons for GitHub bridge wakes. None of these appear in
++ * THROTTLED_ISSUE_REWAKE_REASONS (see issue-rewake-throttle.ts), so they
++ * always bypass the no-information rewake throttle: each one carries a new
++ * external fact the assignee has not seen yet.
++ */
++export const GITHUB_PR_EVENT_WAKE_REASON = "issue_github_pr_updated";
++export const GITHUB_CHECK_EVENT_WAKE_REASON = "issue_github_check_completed";
++export const GITHUB_REVIEW_EVENT_WAKE_REASON = "issue_github_review_submitted";
++
++/** Issue statuses whose agent assignee is woken by a linked GitHub event. */
++const GITHUB_EVENT_WAKE_ISSUE_STATUSES = ["in_progress", "in_review"] as const;
++
++/**
++ * A wake row in any other status already covers this delivery for the issue.
++ * These three are retryable terminal states: a wake that ended here never
++ * reached the agent, so a redelivery may wake again.
++ */
++const GITHUB_EVENT_WAKE_RETRYABLE_STATUSES = ["skipped", "failed", "cancelled"];
++
+ function record(value: unknown): Record<string, unknown> {
+   return value && typeof value === "object" && !Array.isArray(value)
+     ? value as Record<string, unknown>
+@@ -87,6 +110,17 @@ function compact(values: Record<string, unknown>): Record<string, unknown> {
+   return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== null && value !== undefined));
+ }
+ 
++/**
++ * Cloud-normalized payloads carry the repository as a flat "owner/repo"
++ * string; raw GitHub webhook payloads nest it under `repository.full_name`.
++ * Accept both, allowlisted and bounded like every other normalized field.
++ */
++function repositoryFullName(payload: Record<string, unknown>): string | null {
++  const flat = boundedString(payload.repository, 300);
++  if (flat) return flat;
++  return boundedString(record(payload.repository).full_name ?? record(payload.repository).fullName, 300);
++}
++
+ /**
+  * Treat the sealed Cloud batch as an untrusted boundary. Cloud already normalizes
+  * GitHub payloads, but the instance independently allowlists and bounds the small
+@@ -137,6 +171,32 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
+       repositorySelection: boundedString(payload.repositorySelection, 40),
+     });
+   }
++  if (event.event === "check_suite") {
++    const suite = record(payload.check_suite ?? payload.checkSuite);
++    return compact({
++      ...base,
++      repository: repositoryFullName(payload),
++      headSha: commitSha(payload.headSha ?? suite.head_sha ?? suite.headSha),
++      headBranch: boundedString(payload.headBranch ?? suite.head_branch ?? suite.headBranch, 300),
++      status: boundedString(payload.status ?? suite.status, 40),
++      conclusion: boundedString(payload.conclusion ?? suite.conclusion, 40),
++      updatedAt: isoDate(payload.updatedAt ?? suite.updated_at ?? suite.updatedAt),
++    });
++  }
++  if (event.event === "pull_request_review") {
++    const review = record(payload.review);
++    const pullRequest = record(payload.pull_request ?? payload.pullRequest);
++    return compact({
++      ...base,
++      repository: repositoryFullName(payload),
++      number: positiveInteger(payload.number ?? pullRequest.number),
++      state: boundedString(payload.state ?? review.state, 40),
++      submittedAt: isoDate(payload.submittedAt ?? review.submitted_at ?? review.submittedAt),
++      updatedAt: isoDate(payload.updatedAt ?? review.submitted_at ?? pullRequest.updated_at),
++      headSha: commitSha(payload.headSha ?? review.commit_id ?? pullRequest.head_sha),
++      url: githubUrl(payload.url ?? review.html_url),
++    });
++  }
+   return compact(base);
+ }
+ 
+@@ -269,6 +329,206 @@ export function githubConnectionEventService(
+     }
+   }
+ 
++  function githubPullRequestExternalId(repository: string, number: number): string | null {
++    const [owner, repo, ...extra] = repository.split("/");
++    if (!owner || !repo || extra.length > 0) return null;
++    return `${repository}#pull/${number}`;
++  }
++
++  /**
++   * Merge `data` into the stored snapshot of each listed pull request and move
++   * `lastChangedAt`, so the monitor wake policy reads the external change as
++   * new information. Status fields are left alone: a check or a review never
++   * opens or closes the pull request itself.
++   */
++  async function touchPullRequestSnapshots(input: {
++    companyId: string;
++    externalIds: string[];
++    data: Record<string, unknown>;
++    remoteVersion: string | null;
++  }): Promise<string[]> {
++    if (input.externalIds.length === 0) return [];
++    const appliedAt = now();
++    const touched: string[] = [];
++    for (const externalId of input.externalIds) {
++      const updated = await db
++        .update(externalObjects)
++        .set({
++          data: sql`${externalObjects.data} || ${JSON.stringify(input.data)}::jsonb`,
++          ...(input.remoteVersion ? { remoteVersion: input.remoteVersion } : {}),
++          lastResolvedAt: appliedAt,
++          lastChangedAt: appliedAt,
++          nextRefreshAt: appliedAt,
++          updatedAt: appliedAt,
++        })
++        .where(
++          and(
++            eq(externalObjects.companyId, input.companyId),
++            eq(externalObjects.providerKey, "github"),
++            eq(externalObjects.objectType, "pull_request"),
++            sql`lower(${externalObjects.externalId}) = lower(${externalId})`,
++          ),
++        )
++        .returning({ externalId: externalObjects.externalId });
++      for (const row of updated) touched.push(row.externalId);
++    }
++    return touched;
++  }
++
++  /**
++   * A check suite names a commit, not a pull request. Attribute it to the open
++   * pull requests in the same repository that point at that commit. A suite on
++   * any other commit (a direct push, an already-merged PR) touches nothing
++   * and wakes nobody.
++   */
++  async function applyCheckSuiteEvent(companyId: string, event: LeasedEvent): Promise<string[]> {
++    const payload = record(event.payload);
++    const repository = stringValue(payload.repository);
++    const headSha = commitSha(payload.headSha);
++    if (!repository || !headSha) return [];
++    const candidates = await db
++      .select({ externalId: externalObjects.externalId, data: externalObjects.data })
++      .from(externalObjects)
++      .where(
++        and(
++          eq(externalObjects.companyId, companyId),
++          eq(externalObjects.providerKey, "github"),
++          eq(externalObjects.objectType, "pull_request"),
++          eq(externalObjects.isTerminal, false),
++          sql`lower(${externalObjects.externalId}) like lower(${repository + "#pull/"}) || '%'`,
++        ),
++      );
++    const matched = candidates
++      .filter((row) => typeof record(row.data).headSha === "string" && String(record(row.data).headSha).toLowerCase() === headSha)
++      .map((row) => row.externalId);
++    return touchPullRequestSnapshots({
++      companyId,
++      externalIds: matched,
++      data: {
++        lastCheckStatus: stringValue(payload.status) ?? "unknown",
++        ...(stringValue(payload.conclusion) ? { lastCheckConclusion: stringValue(payload.conclusion) } : {}),
++        lastCheckHeadSha: headSha,
++      },
++      remoteVersion: stringValue(payload.updatedAt),
++    });
++  }
++
++  async function applyPullRequestReviewEvent(companyId: string, event: LeasedEvent): Promise<string[]> {
++    const payload = record(event.payload);
++    const repository = stringValue(payload.repository);
++    const number = positiveInteger(payload.number);
++    if (!repository || !number) return [];
++    const externalId = githubPullRequestExternalId(repository, number);
++    if (!externalId) return [];
++    return touchPullRequestSnapshots({
++      companyId,
++      externalIds: [externalId],
++      data: {
++        lastReviewState: stringValue(payload.state) ?? "unknown",
++        ...(stringValue(payload.submittedAt) ? { lastReviewSubmittedAt: stringValue(payload.submittedAt) } : {}),
++        ...(stringValue(payload.headSha) ? { lastReviewHeadSha: stringValue(payload.headSha) } : {}),
++      },
++      remoteVersion: stringValue(payload.updatedAt),
++    });
++  }
++
++  /**
++   * Wake the agent assignee of every linked issue that is still being worked
++   * (`in_progress`/`in_review`). The wake reason is event-shaped, so the
++   * rewake throttle passes it through, and the idempotency key pins it to
++   * this delivery: re-leasing the same delivery never wakes twice, while a
++   * later delivery for the same PR wakes again. A missing wakeup channel or
++   * a failing wake never fails the receipt: the snapshot is already durable.
++   */
++  async function wakeLinkedIssuesForGithubEvent(input: {
++    companyId: string;
++    externalIds: string[];
++    deliveryId: string;
++    event: string;
++    action: string | null;
++    reason: string;
++  }): Promise<number> {
++    if (input.externalIds.length === 0 || !options.wakeup) return 0;
++    const seen = new Set<string>();
++    let woken = 0;
++    for (const externalId of input.externalIds) {
++      const linked = await db
++        .select({
++          issueId: externalObjectMentions.sourceIssueId,
++          status: issues.status,
++          assigneeAgentId: issues.assigneeAgentId,
++        })
++        .from(externalObjectMentions)
++        .innerJoin(externalObjects, eq(externalObjects.id, externalObjectMentions.objectId))
++        .innerJoin(
++          issues,
++          and(eq(issues.id, externalObjectMentions.sourceIssueId), eq(issues.companyId, input.companyId)),
++        )
++        .where(
++          and(
++            eq(externalObjectMentions.companyId, input.companyId),
++            eq(externalObjects.companyId, input.companyId),
++            eq(externalObjects.providerKey, "github"),
++            eq(externalObjects.objectType, "pull_request"),
++            sql`lower(${externalObjects.externalId}) = lower(${externalId})`,
++            inArray(issues.status, [...GITHUB_EVENT_WAKE_ISSUE_STATUSES]),
++          ),
++        );
++      for (const row of linked) {
++        if (!row.assigneeAgentId || seen.has(row.issueId)) continue;
++        seen.add(row.issueId);
++        const idempotencyKey = `github-event:${input.deliveryId}:${row.issueId}`;
++        const [existing] = await db
++          .select({ id: agentWakeupRequests.id })
++          .from(agentWakeupRequests)
++          .where(
++            and(
++              eq(agentWakeupRequests.companyId, input.companyId),
++              eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
++              notInArray(agentWakeupRequests.status, [...GITHUB_EVENT_WAKE_RETRYABLE_STATUSES]),
++            ),
++          )
++          .limit(1);
++        if (existing) continue;
++        try {
++          await options.wakeup(row.assigneeAgentId, {
++            source: "automation",
++            triggerDetail: "system",
++            reason: input.reason,
++            payload: {
++              issueId: row.issueId,
++              githubDeliveryId: input.deliveryId,
++              githubEvent: input.event,
++              githubAction: input.action,
++              githubExternalId: externalId,
++              mutation: "external",
++            },
++            idempotencyKey,
++            allowRunCoalescing: false,
++            requestedByActorType: "system",
++            requestedByActorId: "system:github-webhook",
++            contextSnapshot: {
++              issueId: row.issueId,
++              taskId: row.issueId,
++              wakeReason: input.reason,
++              source: "github.connection-event",
++              githubDeliveryId: input.deliveryId,
++              githubEvent: input.event,
++              githubAction: input.action,
++            },
++          });
++          woken += 1;
++        } catch (error) {
++          logger.warn(
++            { err: error, companyId: input.companyId, issueId: row.issueId, deliveryId: input.deliveryId },
++            "GitHub event issue wake failed; snapshot stays durable",
++          );
++        }
++      }
++    }
++    return woken;
++  }
++
+   async function applyInstallationEvent(database: Db, binding: GitHubBinding, event: LeasedEvent) {
+     // Bindings are loaded before the Cloud request. Lock and read the grant
+     // again so a refresh completed during that request cannot be overwritten.
+@@ -370,7 +630,42 @@ export function githubConnectionEventService(
+     const postCommitPublications: ActivityPublication[] = [];
+     try {
+       const applyAndFinalize = async (database: Db) => {
+-        if (event.event === "pull_request") await applyPullRequestEvent(companyId, normalizedEvent);
++        if (event.event === "pull_request") {
++          await applyPullRequestEvent(companyId, normalizedEvent);
++          const snapshot = githubSnapshotUpdate(normalizedEvent.payload);
++          if (snapshot) {
++            await wakeLinkedIssuesForGithubEvent({
++              companyId,
++              externalIds: [snapshot.externalId],
++              deliveryId: event.id,
++              event: event.event,
++              action: event.action,
++              reason: GITHUB_PR_EVENT_WAKE_REASON,
++            });
++          }
++        }
++        if (event.event === "check_suite") {
++          const touched = await applyCheckSuiteEvent(companyId, normalizedEvent);
++          await wakeLinkedIssuesForGithubEvent({
++            companyId,
++            externalIds: touched,
++            deliveryId: event.id,
++            event: event.event,
++            action: event.action,
++            reason: GITHUB_CHECK_EVENT_WAKE_REASON,
++          });
++        }
++        if (event.event === "pull_request_review") {
++          const touched = await applyPullRequestReviewEvent(companyId, normalizedEvent);
++          await wakeLinkedIssuesForGithubEvent({
++            companyId,
++            externalIds: touched,
++            deliveryId: event.id,
++            event: event.event,
++            action: event.action,
++            reason: GITHUB_REVIEW_EVENT_WAKE_REASON,
++          });
++        }
+         if (event.event === "installation" || event.event === "installation_repositories") {
+           for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
+         } else {
+diff --git a/server/src/services/heartbeat.ts b/server/src/services/heartbeat.ts
+index ab7a1d5..256eeff 100644
+--- a/server/src/services/heartbeat.ts
++++ b/server/src/services/heartbeat.ts
+@@ -11975,6 +11975,7 @@ export function heartbeatService(
+           kind: input.monitor?.kind ?? null,
+           scheduledBy:
+             input.monitor?.scheduledBy ?? input.claimed.monitorScheduledBy,
++          serviceName: input.monitor?.serviceName ?? null,
+         },
+       });
+       if (exemption) return null;
+diff --git a/server/src/services/issue-monitor-wake-policy.ts b/server/src/services/issue-monitor-wake-policy.ts
+index 41e6315..1b9342b 100644
+--- a/server/src/services/issue-monitor-wake-policy.ts
++++ b/server/src/services/issue-monitor-wake-policy.ts
+@@ -19,8 +19,12 @@
+  * (`timeoutAt`/`maxAttempts`), so it only moves the next look later.
+  *
+  * Exempt: manual (on-demand) checks, provider-quota recovery, monitors a
+- * board user scheduled, and `external_service` monitors, whose watched state
+- * (CI, deploys) the host does not observe, so a quiet card proves nothing.
++ * board user scheduled, and non-GitHub `external_service` monitors, whose
++ * watched state (deploys) the host does not observe, so a quiet card proves
++ * nothing. GitHub-named external-service monitors are evaluated: pull
++ * request, check and review events now move the linked external snapshot
++ * (see github-connection-events.ts), so a quiet card means CI really is
++ * quiet.
+  */
+ 
+ export type IssueMonitorWakePolicyMode = "off" | "shadow" | "enforce";
+@@ -87,9 +91,20 @@ export interface IssueMonitorWakeExemptionInput {
+   monitor: {
+     kind: string | null;
+     scheduledBy: string | null;
++    serviceName: string | null;
+   } | null;
+ }
+ 
++/**
++ * External-service monitors that watch GitHub (service names containing
++ * github, any case: github, github-actions, ...). The host observes
++ * that state through bridged PR, check and review events, so the quiet-card
++ * skip is sound for them. Every other external service stays exempt.
++ */
++export function isGithubMonitorServiceName(serviceName: string | null): boolean {
++  return typeof serviceName === "string" && serviceName.toLowerCase().includes("github");
++}
++
+ /**
+  * Cheap pre-check that needs no database reads, so the caller can skip the
+  * evidence queries entirely for monitors the policy never touches.
+@@ -101,7 +116,9 @@ export function issueMonitorWakeExemption(
+   if (input.source === "on_demand") return "on_demand";
+   if (input.isProviderQuotaMonitor) return "provider_quota";
+   if (input.monitor?.scheduledBy === "board") return "board_scheduled";
+-  if (input.monitor?.kind === "external_service") return "external_service";
++  if (input.monitor?.kind === "external_service" && !isGithubMonitorServiceName(input.monitor?.serviceName ?? null)) {
++    return "external_service";
++  }
+   return null;
+ }
+ 
+diff --git a/server/src/services/issue-thread-interactions.ts b/server/src/services/issue-thread-interactions.ts
+index 4e5a9e7..f5a2423 100644
+--- a/server/src/services/issue-thread-interactions.ts
++++ b/server/src/services/issue-thread-interactions.ts
+@@ -168,7 +168,12 @@ type InteractionWakeup = (
+   options: {
+     source: "automation";
+     triggerDetail: "system";
+-    reason: "issue_commented";
++    // Event-shaped reasons only. Every reason sent here must stay outside
++    // THROTTLED_ISSUE_REWAKE_REASONS (see issue-rewake-throttle.ts): the
++    // GitHub connection-event bridge wakes linked issues with
++    // issue_github_pr_updated / issue_github_check_completed /
++    // issue_github_review_submitted, each carrying a new external fact.
++    reason: string;
+     payload: Record<string, unknown>;
+     idempotencyKey: string;
+     allowRunCoalescing?: boolean;
