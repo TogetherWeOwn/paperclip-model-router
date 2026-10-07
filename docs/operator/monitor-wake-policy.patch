@@ -1,0 +1,1593 @@
+diff --git a/server/src/__tests__/issue-monitor-wake-policy.test.ts b/server/src/__tests__/issue-monitor-wake-policy.test.ts
+new file mode 100644
+index 000000000..c38d7f468
+--- /dev/null
++++ b/server/src/__tests__/issue-monitor-wake-policy.test.ts
+@@ -0,0 +1,337 @@
++import { describe, expect, it } from "vitest";
++import {
++  ISSUE_MONITOR_MIN_INTERVAL_MS,
++  ISSUE_MONITOR_QUIET_BACKSTOP_MS,
++  buildIssueMonitorDeferredPatch,
++  evaluateIssueMonitorWake,
++  issueMonitorWakeExemption,
++  resolveIssueMonitorWakePolicyConfig,
++  type IssueMonitorWakePolicyInput,
++} from "../services/issue-monitor-wake-policy.ts";
++
++const HOUR = 60 * 60_000;
++const MINUTE = 60_000;
++const NOW = new Date("2026-10-07T12:00:00.000Z");
++const config = resolveIssueMonitorWakePolicyConfig({});
++
++function input(overrides: Partial<IssueMonitorWakePolicyInput> & { finishedMinutesAgo?: number | null; status?: string } = {}): IssueMonitorWakePolicyInput {
++  const { finishedMinutesAgo = 60, status = "succeeded", ...rest } = overrides;
++  return {
++    now: NOW,
++    config,
++    lastRun:
++      finishedMinutesAgo === null
++        ? null
++        : {
++            id: "run-1",
++            status,
++            finishedAt: new Date(NOW.getTime() - finishedMinutesAgo * MINUTE),
++          },
++    hasNewIssueInputSinceLastRun: false,
++    hasExternalChangeSinceLastRun: false,
++    timeoutAt: null,
++    ...rest,
++  };
++}
++
++describe("resolveIssueMonitorWakePolicyConfig", () => {
++  it("defaults to enforce with a 2h floor and 4h backstop", () => {
++    expect(config).toEqual({
++      mode: "enforce",
++      minIntervalMs: 2 * HOUR,
++      quietBackstopMs: 4 * HOUR,
++      githubEventsConfirmed: false,
++      timeoutDispatchMarginMs: 60_000,
++    });
++    expect(ISSUE_MONITOR_MIN_INTERVAL_MS).toBe(2 * HOUR);
++    expect(ISSUE_MONITOR_QUIET_BACKSTOP_MS).toBe(4 * HOUR);
++  });
++
++  it("accepts off and shadow, and treats anything else as enforce", () => {
++    expect(resolveIssueMonitorWakePolicyConfig({ PAPERCLIP_MONITOR_WAKE_POLICY: "off" }).mode).toBe("off");
++    expect(resolveIssueMonitorWakePolicyConfig({ PAPERCLIP_MONITOR_WAKE_POLICY: " SHADOW " }).mode).toBe("shadow");
++    expect(resolveIssueMonitorWakePolicyConfig({ PAPERCLIP_MONITOR_WAKE_POLICY: "enforce" }).mode).toBe("enforce");
++    expect(resolveIssueMonitorWakePolicyConfig({ PAPERCLIP_MONITOR_WAKE_POLICY: "disabled" }).mode).toBe("enforce");
++  });
++
++  it("reads bounded integer overrides and falls back on bad values", () => {
++    const tuned = resolveIssueMonitorWakePolicyConfig({
++      PAPERCLIP_MONITOR_MIN_INTERVAL_MS: String(30 * MINUTE),
++      PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS: String(90 * MINUTE),
++    });
++    expect(tuned.minIntervalMs).toBe(30 * MINUTE);
++    expect(tuned.quietBackstopMs).toBe(90 * MINUTE);
++    for (const bad of ["abc", "1.5", "0", "-5", "59999", String(25 * HOUR), ""]) {
++      expect(
++        resolveIssueMonitorWakePolicyConfig({ PAPERCLIP_MONITOR_MIN_INTERVAL_MS: bad }).minIntervalMs,
++      ).toBe(2 * HOUR);
++    }
++  });
++
++  it("never lets the backstop drop below the minimum interval", () => {
++    const tuned = resolveIssueMonitorWakePolicyConfig({
++      PAPERCLIP_MONITOR_MIN_INTERVAL_MS: String(3 * HOUR),
++      PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS: String(HOUR),
++    });
++    expect(tuned.quietBackstopMs).toBe(3 * HOUR);
++  });
++});
++
++describe("issueMonitorWakeExemption", () => {
++  const base = {
++    config,
++    source: "automation" as const,
++    isProviderQuotaMonitor: false,
++    monitor: { kind: null, scheduledBy: "assignee" },
++  };
++
++  it("applies to an assignee-scheduled timer monitor", () => {
++    expect(issueMonitorWakeExemption(base)).toBeNull();
++    expect(issueMonitorWakeExemption({ ...base, monitor: null })).toBeNull();
++  });
++
++  it.each([
++    ["policy off", { config: { ...config, mode: "off" as const } }, "policy_off"],
++    ["manual check", { source: "on_demand" as const }, "on_demand"],
++    ["provider quota", { isProviderQuotaMonitor: true }, "provider_quota"],
++    ["board scheduled", { monitor: { kind: null, scheduledBy: "board" } }, "board_scheduled"],
++    ["external service", { monitor: { kind: "external_service", scheduledBy: "assignee" } }, "external_service"],
++    ["named service without kind", { monitor: { kind: null, scheduledBy: "assignee", serviceName: "github-actions" } }, "external_service"],
++    ["padded service without kind", { monitor: { kind: null, scheduledBy: "assignee", serviceName: " deploys " } }, "external_service"],
++  ])("exempts %s", (_label, override, reason) => {
++    expect(issueMonitorWakeExemption({ ...base, ...override })).toBe(reason);
++  });
++
++  it.each([null, "", "   "])("does not exempt an unnamed timer (%j)", (serviceName) => {
++    expect(issueMonitorWakeExemption({ ...base, monitor: { ...base.monitor, serviceName } })).toBeNull();
++  });
++
++  it.each([undefined, "", "false", "1", "yes", "TRUE"])("keeps GitHub coverage unconfirmed for %j", (value) => {
++    expect(resolveIssueMonitorWakePolicyConfig({ PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED: value }).githubEventsConfirmed).toBe(false);
++  });
++
++  it.each(["github", "github-actions", "GitHub CI"])("only lifts %s exemption after explicit event confirmation", (serviceName) => {
++    const monitor = { kind: "external_service", scheduledBy: "assignee", serviceName };
++    expect(issueMonitorWakeExemption({ ...base, monitor })).toBe("external_service");
++    const confirmed = resolveIssueMonitorWakePolicyConfig({ PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED: "true" });
++    expect(confirmed.githubEventsConfirmed).toBe(true);
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor })).toBeNull();
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, kind: null } })).toBeNull();
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, serviceName: "deploys" } })).toBe("external_service");
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, kind: null, serviceName: " deploys " } })).toBe("external_service");
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, serviceName: null } })).toBe("external_service");
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor, isProviderQuotaMonitor: true })).toBe("provider_quota");
++  });
++
++  it("still evaluates shadow mode", () => {
++    expect(issueMonitorWakeExemption({ ...base, config: { ...config, mode: "shadow" } })).toBeNull();
++  });
++});
++
++describe("evaluateIssueMonitorWake", () => {
++  it("dispatches when the agent has no recent run on the issue", () => {
++    expect(evaluateIssueMonitorWake(input({ finishedMinutesAgo: null }))).toEqual({
++      action: "dispatch",
++      reason: "no_recent_run",
++    });
++    expect(
++      evaluateIssueMonitorWake({ ...input(), lastRun: { id: "run-1", status: "succeeded", finishedAt: null } }),
++    ).toEqual({ action: "dispatch", reason: "no_recent_run" });
++  });
++
++  it.each(["failed", "cancelled", "timed_out", "interrupted"])(
++    "never delays recovery after a %s run",
++    (status) => {
++      expect(evaluateIssueMonitorWake(input({ status }))).toEqual({
++        action: "dispatch",
++        reason: "last_run_not_succeeded",
++      });
++    },
++  );
++
++  it("defers to the minimum interval when the monitor is due early and nothing changed", () => {
++    const decision = evaluateIssueMonitorWake(input({ finishedMinutesAgo: 30 }));
++    expect(decision).toMatchObject({
++      action: "defer",
++      reason: "min_interval",
++      lastRunId: "run-1",
++    });
++    if (decision.action !== "defer") throw new Error("unreachable");
++    expect(decision.deferUntil.toISOString()).toBe(
++      new Date(NOW.getTime() + 90 * MINUTE).toISOString(),
++    );
++  });
++
++  it("defers a quiet card past the floor by one interval, bounded by the backstop", () => {
++    const early = evaluateIssueMonitorWake(input({ finishedMinutesAgo: 130 }));
++    expect(early).toMatchObject({ action: "defer", reason: "no_change_since_last_run" });
++    if (early.action !== "defer") throw new Error("unreachable");
++    // 130 min since the run: now + 120 min would pass the 240 min backstop at
++    // 250 min, so the deferral stops at the backstop (110 min from now).
++    expect(early.deferUntil.toISOString()).toBe(
++      new Date(NOW.getTime() + 110 * MINUTE).toISOString(),
++    );
++
++    const later = evaluateIssueMonitorWake(input({ finishedMinutesAgo: 120 }));
++    if (later.action !== "defer") throw new Error("unreachable");
++    expect(later.deferUntil.toISOString()).toBe(
++      new Date(NOW.getTime() + 120 * MINUTE).toISOString(),
++    );
++  });
++
++  it("dispatches once the quiet backstop is reached", () => {
++    expect(evaluateIssueMonitorWake(input({ finishedMinutesAgo: 240 }))).toEqual({
++      action: "dispatch",
++      reason: "quiet_backstop_reached",
++    });
++    expect(evaluateIssueMonitorWake(input({ finishedMinutesAgo: 600 }))).toEqual({
++      action: "dispatch",
++      reason: "quiet_backstop_reached",
++    });
++  });
++
++  it("dispatches on new issue input, even inside the minimum interval", () => {
++    for (const finishedMinutesAgo of [10, 119, 180]) {
++      expect(
++        evaluateIssueMonitorWake(input({ finishedMinutesAgo, hasNewIssueInputSinceLastRun: true })),
++      ).toEqual({ action: "dispatch", reason: "changed_since_last_run" });
++    }
++  });
++
++  it("dispatches when a linked external object changed", () => {
++    expect(
++      evaluateIssueMonitorWake(input({ finishedMinutesAgo: 30, hasExternalChangeSinceLastRun: true })),
++    ).toEqual({ action: "dispatch", reason: "changed_since_last_run" });
++  });
++
++  it.each([
++    [30, 20],
++    [30, 90],
++    [130, 20],
++    [130, 110],
++  ])("dispatches before a timeout that caps the deferral (%i min since run, %i min left)", (finishedMinutesAgo, minutesLeft) => {
++    const timeoutAt = new Date(NOW.getTime() + minutesLeft * MINUTE).toISOString();
++    expect(evaluateIssueMonitorWake(input({ finishedMinutesAgo, timeoutAt }))).toEqual({
++      action: "dispatch",
++      reason: "timeout_window_reached",
++    });
++  });
++
++  it("uses two scheduler intervals as the timeout dispatch margin", () => {
++    const schedulerConfig = resolveIssueMonitorWakePolicyConfig({
++      HEARTBEAT_SCHEDULER_INTERVAL_MS: "10000",
++    });
++    const floorAt = new Date(NOW.getTime() + 90 * MINUTE);
++    const withinMargin = new Date(floorAt.getTime() + 20_000).toISOString();
++    const beyondMargin = new Date(floorAt.getTime() + 20_001).toISOString();
++
++    expect(evaluateIssueMonitorWake(input({ config: schedulerConfig, finishedMinutesAgo: 30, timeoutAt: withinMargin }))).toEqual({
++      action: "dispatch",
++      reason: "timeout_window_reached",
++    });
++    expect(evaluateIssueMonitorWake(input({ config: schedulerConfig, finishedMinutesAgo: 30, timeoutAt: beyondMargin }))).toMatchObject({
++      action: "defer",
++      reason: "min_interval",
++    });
++  });
++
++  it.each([
++    [30, 92, 90],
++    [130, 112, 110],
++  ])("still defers when the timeout is beyond the next-look margin (%i min since run)", (finishedMinutesAgo, minutesLeft, deferMinutes) => {
++    const timeoutAt = new Date(NOW.getTime() + minutesLeft * MINUTE).toISOString();
++    const decision = evaluateIssueMonitorWake(input({ finishedMinutesAgo, timeoutAt }));
++    if (decision.action !== "defer") throw new Error("expected defer");
++    expect(decision.deferUntil.toISOString()).toBe(new Date(NOW.getTime() + deferMinutes * MINUTE).toISOString());
++  });
++
++  it("dispatches when the timeout is already due so timeout handling runs", () => {
++    const timeoutAt = new Date(NOW.getTime() - MINUTE).toISOString();
++    expect(evaluateIssueMonitorWake(input({ finishedMinutesAgo: 30, timeoutAt }))).toEqual({
++      action: "dispatch",
++      reason: "timeout_window_reached",
++    });
++  });
++
++  it("ignores an unparseable timeout", () => {
++    expect(
++      evaluateIssueMonitorWake(input({ finishedMinutesAgo: 30, timeoutAt: "not-a-date" })),
++    ).toMatchObject({ action: "defer", reason: "min_interval" });
++  });
++
++  it("honors tuned intervals", () => {
++    const tuned = resolveIssueMonitorWakePolicyConfig({
++      PAPERCLIP_MONITOR_MIN_INTERVAL_MS: String(30 * MINUTE),
++      PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS: String(60 * MINUTE),
++    });
++    expect(evaluateIssueMonitorWake(input({ config: tuned, finishedMinutesAgo: 20 }))).toMatchObject({
++      action: "defer",
++      reason: "min_interval",
++    });
++    expect(evaluateIssueMonitorWake(input({ config: tuned, finishedMinutesAgo: 45 }))).toMatchObject({
++      action: "defer",
++      reason: "no_change_since_last_run",
++    });
++    expect(evaluateIssueMonitorWake(input({ config: tuned, finishedMinutesAgo: 60 }))).toEqual({
++      action: "dispatch",
++      reason: "quiet_backstop_reached",
++    });
++  });
++});
++
++describe("buildIssueMonitorDeferredPatch", () => {
++  const deferUntil = new Date("2026-10-07T14:00:00.000Z");
++  const policy = {
++    mode: "normal",
++    commentRequired: true,
++    stages: [],
++    monitor: {
++      nextCheckAt: "2026-10-07T12:00:00.000Z",
++      notes: "keep",
++      scheduledBy: "assignee",
++      externalRef: "raw-ref-not-redacted",
++      timeoutAt: "2026-10-08T00:00:00.000Z",
++      maxAttempts: 5,
++    },
++  };
++  const state = {
++    status: "idle",
++    monitor: {
++      status: "scheduled",
++      nextCheckAt: "2026-10-07T12:00:00.000Z",
++      attemptCount: 2,
++      lastTriggeredAt: "2026-10-07T10:00:00.000Z",
++    },
++  };
++
++  it("moves only the next check and keeps every other field verbatim", () => {
++    const patch = buildIssueMonitorDeferredPatch({
++      executionPolicy: policy,
++      executionState: state,
++      deferUntil,
++    });
++    expect(patch.monitorNextCheckAt).toEqual(deferUntil);
++    expect(patch.monitorWakeRequestedAt).toBeNull();
++    expect(patch.executionPolicy).toEqual({
++      ...policy,
++      monitor: { ...policy.monitor, nextCheckAt: deferUntil.toISOString() },
++    });
++    expect(patch.executionState).toEqual({
++      ...state,
++      monitor: { ...state.monitor, nextCheckAt: deferUntil.toISOString() },
++    });
++    // The input objects are not mutated.
++    expect(policy.monitor.nextCheckAt).toBe("2026-10-07T12:00:00.000Z");
++    expect(state.monitor.nextCheckAt).toBe("2026-10-07T12:00:00.000Z");
++  });
++
++  it("passes through a missing or malformed policy and state untouched", () => {
++    expect(
++      buildIssueMonitorDeferredPatch({ executionPolicy: null, executionState: null, deferUntil }),
++    ).toMatchObject({ executionPolicy: null, executionState: null });
++    const noMonitor = { mode: "normal", stages: [] };
++    expect(
++      buildIssueMonitorDeferredPatch({ executionPolicy: noMonitor, executionState: { status: "idle" }, deferUntil }),
++    ).toMatchObject({ executionPolicy: noMonitor, executionState: { status: "idle" } });
++  });
++});
+diff --git a/server/src/__tests__/issue-monitor-wake-skip.test.ts b/server/src/__tests__/issue-monitor-wake-skip.test.ts
+new file mode 100644
+index 000000000..289377ed8
+--- /dev/null
++++ b/server/src/__tests__/issue-monitor-wake-skip.test.ts
+@@ -0,0 +1,678 @@
++import { randomUUID } from "node:crypto";
++import { eq, sql } from "drizzle-orm";
++import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
++import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
++import {
++  activityLog,
++  agentRuntimeState,
++  agentWakeupRequests,
++  agents,
++  companies,
++  companySkills,
++  createDb,
++  documentRevisions,
++  documents,
++  environmentLeases,
++  externalObjectMentions,
++  externalObjects,
++  heartbeatRunEvents,
++  heartbeatRuns,
++  issueComments,
++  issueRecoveryActions,
++  issueDocuments,
++  issues,
++  workspaceRuntimeServices,
++} from "@paperclipai/db";
++import {
++  getEmbeddedPostgresTestSupport,
++  startEmbeddedPostgresTestDatabase,
++} from "./helpers/embedded-postgres.js";
++import { heartbeatService } from "../services/heartbeat.ts";
++import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
++
++const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
++const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
++
++if (!embeddedPostgresSupport.supported) {
++  console.warn(
++    `Skipping embedded Postgres issue monitor wake skip tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
++  );
++}
++
++const WAKE_POLICY_ENV_KEYS = [
++  "PAPERCLIP_MONITOR_WAKE_POLICY",
++  "PAPERCLIP_MONITOR_MIN_INTERVAL_MS",
++  "PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS",
++  "PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED",
++  "HEARTBEAT_SCHEDULER_INTERVAL_MS",
++] as const;
++
++const DUE_AT = new Date("2026-04-11T12:30:00.000Z");
++const TICK_AT = new Date("2026-04-11T12:31:00.000Z");
++const LAST_RUN_FINISHED_AT = new Date("2026-04-11T12:10:00.000Z");
++
++describeEmbeddedPostgres("issue monitor wake policy", () => {
++  let db!: ReturnType<typeof createDb>;
++  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
++  const savedEnv = new Map<string, string | undefined>();
++
++  beforeAll(async () => {
++    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-wake-policy-");
++    db = createDb(tempDb.connectionString);
++    for (const key of WAKE_POLICY_ENV_KEYS) savedEnv.set(key, process.env[key]);
++  }, 20_000);
++
++  async function heartbeatSideEffectFingerprint() {
++    const [active, events, activity, leases, runtimeServices] = await Promise.all([
++      db
++        .select({ count: sql<number>`count(*)` })
++        .from(heartbeatRuns)
++        .where(sql`${heartbeatRuns.status} in ('queued', 'running', 'scheduled_retry')`),
++      db.select({ count: sql<number>`count(*)` }).from(heartbeatRunEvents),
++      db.select({ count: sql<number>`count(*)` }).from(activityLog),
++      db.select({ count: sql<number>`count(*)` }).from(environmentLeases),
++      db.select({ count: sql<number>`count(*)` }).from(workspaceRuntimeServices),
++    ]);
++    return [
++      active[0]?.count ?? 0,
++      events[0]?.count ?? 0,
++      activity[0]?.count ?? 0,
++      leases[0]?.count ?? 0,
++      runtimeServices[0]?.count ?? 0,
++    ].join(":");
++  }
++
++  async function waitForHeartbeatSideEffectsSettled(timeoutMs = 30_000, quietMs = 500) {
++    const deadline = Date.now() + timeoutMs;
++    let previous = "";
++    let stableSince = Date.now();
++    while (Date.now() < deadline) {
++      const current = await heartbeatSideEffectFingerprint();
++      const activeCount = Number(current.split(":")[0] ?? 0);
++      if (current !== previous || activeCount > 0) {
++        previous = current;
++        stableSince = Date.now();
++      } else if (Date.now() - stableSince >= quietMs) {
++        return;
++      }
++      await new Promise((resolve) => setTimeout(resolve, 50));
++    }
++    throw new Error("Timed out waiting for issue monitor heartbeat side effects to settle");
++  }
++
++  async function cleanupRows() {
++    await waitForHeartbeatSideEffectsSettled();
++    await db.delete(heartbeatRunEvents);
++    await db.delete(issueRecoveryActions);
++    await db.delete(issueComments);
++    await db.delete(documentRevisions);
++    await db.delete(issueDocuments);
++    await db.delete(documents);
++    await db.delete(activityLog);
++    await db.delete(environmentLeases);
++    await db.delete(workspaceRuntimeServices);
++    await db.delete(externalObjectMentions);
++    await db.delete(externalObjects);
++    await db.delete(issues);
++    await db.delete(heartbeatRuns);
++    await db.delete(agentWakeupRequests);
++    await db.delete(agentRuntimeState);
++    await db.delete(agents);
++    await db.delete(companySkills);
++    await db.delete(companies);
++  }
++
++  afterEach(async () => {
++    for (const key of WAKE_POLICY_ENV_KEYS) {
++      const saved = savedEnv.get(key);
++      if (saved === undefined) delete process.env[key];
++      else process.env[key] = saved;
++    }
++    const heartbeat = heartbeatService(db);
++    await heartbeat.drainActiveRunExecutions();
++    const pending = await db
++      .select({ id: heartbeatRuns.id })
++      .from(heartbeatRuns)
++      .where(sql`${heartbeatRuns.status} in ('queued', 'running', 'scheduled_retry')`);
++    for (const run of pending) {
++      await heartbeat.cancelRun(run.id, "Monitor wake policy fixture teardown", { suppressImmediateRecovery: true });
++    }
++    await heartbeat.drainActiveRunExecutions();
++    let lastError: unknown = null;
++    for (let attempt = 0; attempt < 3; attempt += 1) {
++      try {
++        await cleanupRows();
++        return;
++      } catch (error) {
++        lastError = error;
++        await new Promise((resolve) => setTimeout(resolve, 100));
++      }
++    }
++    throw lastError;
++  });
++
++  afterAll(async () => {
++    await tempDb?.cleanup();
++  });
++
++  async function seedFixture(input?: {
++    monitor?: Record<string, unknown>;
++    lastRun?: { status?: string; finishedAt?: Date } | null;
++  }) {
++    const companyId = randomUUID();
++    const agentId = randomUUID();
++    const issueId = randomUUID();
++    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
++    const monitor = {
++      nextCheckAt: DUE_AT.toISOString(),
++      notes: "Check deploy",
++      scheduledBy: "assignee",
++      externalRef: "raw-ref-kept-verbatim",
++      ...(input?.monitor ?? {}),
++    };
++
++    await db.insert(companies).values({
++      id: companyId,
++      name: "Paperclip",
++      issuePrefix,
++      requireBoardApprovalForNewAgents: false,
++      defaultResponsibleUserId: "responsible-user",
++    });
++    await db.insert(agents).values({
++      id: agentId,
++      companyId,
++      name: "Monitor Bot",
++      role: "engineer",
++      status: "active",
++      adapterType: "process",
++      adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
++      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
++      permissions: {},
++    });
++    await db.insert(issues).values({
++      id: issueId,
++      companyId,
++      title: "Watch external deploy",
++      status: "in_progress",
++      priority: "medium",
++      assigneeAgentId: agentId,
++      issueNumber: 1,
++      identifier: `${issuePrefix}-1`,
++      executionPolicy: { mode: "normal", commentRequired: true, stages: [], monitor },
++      executionState: {
++        status: "idle",
++        currentStageId: null,
++        currentStageIndex: null,
++        currentStageType: null,
++        currentParticipant: null,
++        returnAssignee: null,
++        completedStageIds: [],
++        lastDecisionId: null,
++        lastDecisionOutcome: null,
++        monitor: {
++          status: "scheduled",
++          nextCheckAt: DUE_AT.toISOString(),
++          lastTriggeredAt: null,
++          attemptCount: 0,
++          notes: "Check deploy",
++          scheduledBy: monitor.scheduledBy,
++          serviceName: null,
++          externalRef: null,
++          timeoutAt: typeof monitor.timeoutAt === "string" ? monitor.timeoutAt : null,
++          maxAttempts: null,
++          recoveryPolicy: null,
++          clearedAt: null,
++          clearReason: null,
++        },
++      },
++      monitorNextCheckAt: DUE_AT,
++      monitorAttemptCount: 0,
++      monitorNotes: "Check deploy",
++      monitorScheduledBy: String(monitor.scheduledBy),
++    });
++
++    let lastRunId: string | null = null;
++    if (input?.lastRun !== null) {
++      lastRunId = randomUUID();
++      await db.insert(heartbeatRuns).values({
++        id: lastRunId,
++        companyId,
++        agentId,
++        status: input?.lastRun?.status ?? "succeeded",
++        startedAt: new Date((input?.lastRun?.finishedAt ?? LAST_RUN_FINISHED_AT).getTime() - 60_000),
++        finishedAt: input?.lastRun?.finishedAt ?? LAST_RUN_FINISHED_AT,
++        contextSnapshot: { issueId, wakeReason: "issue_monitor_due" },
++      });
++    }
++    return { companyId, agentId, issueId, lastRunId };
++  }
++
++  async function seedActivity(input: {
++    companyId: string;
++    issueId: string;
++    action: string;
++    createdAt: Date;
++    runId?: string | null;
++    actorType?: "user" | "agent" | "system";
++    details?: Record<string, unknown>;
++  }) {
++    await db.insert(activityLog).values({
++      companyId: input.companyId,
++      actorType: input.actorType ?? "user",
++      actorId: "someone",
++      action: input.action,
++      entityType: "issue",
++      entityId: input.issueId,
++      runId: input.runId ?? null,
++      details: input.details ?? {},
++      createdAt: input.createdAt,
++    });
++  }
++
++  async function seedLinkedPullRequest(input: {
++    companyId: string;
++    issueId: string;
++    lastChangedAt: Date | null;
++    mentionCreatedAt?: Date;
++  }) {
++    const [object] = await db
++      .insert(externalObjects)
++      .values({
++        companyId: input.companyId,
++        providerKey: "github",
++        objectType: "pull_request",
++        externalId: `acme/widgets#pull/${Math.floor(Math.random() * 100000)}`,
++        lastChangedAt: input.lastChangedAt,
++      })
++      .returning();
++    await db.insert(externalObjectMentions).values({
++      companyId: input.companyId,
++      sourceIssueId: input.issueId,
++      sourceKind: "comment",
++      objectId: object!.id,
++      providerKey: "github",
++      objectType: "pull_request",
++      canonicalIdentityHash: randomUUID(),
++      createdAt: input.mentionCreatedAt ?? new Date("2026-04-11T09:00:00.000Z"),
++    });
++  }
++
++  async function readIssue(issueId: string) {
++    return db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
++  }
++
++  async function activityActions(issueId: string) {
++    const rows = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId)).orderBy(activityLog.createdAt);
++    return rows;
++  }
++
++  async function wakeupCount() {
++    return (await db.select().from(agentWakeupRequests)).length;
++  }
++
++  async function expectDeferred(issueId: string, deferUntil: Date, reason: string) {
++    const issue = await readIssue(issueId);
++    expect(issue.monitorNextCheckAt?.toISOString()).toBe(deferUntil.toISOString());
++    expect(issue.monitorWakeRequestedAt).toBeNull();
++    expect(issue.monitorAttemptCount).toBe(0);
++    expect(issue.monitorLastTriggeredAt).toBeNull();
++    const rawPolicy = issue.executionPolicy as { monitor?: Record<string, unknown> } | null;
++    expect(rawPolicy?.monitor).toMatchObject({
++      nextCheckAt: deferUntil.toISOString(),
++      notes: "Check deploy",
++      externalRef: "raw-ref-kept-verbatim",
++    });
++    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor?.nextCheckAt).toBe(deferUntil.toISOString());
++    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
++      status: "scheduled",
++      nextCheckAt: deferUntil.toISOString(),
++      attemptCount: 0,
++    });
++    const deferred = (await activityActions(issueId)).filter((row) => row.action === "issue.monitor_deferred").at(-1);
++    expect(deferred?.details).toMatchObject({ reason, deferUntil: deferUntil.toISOString() });
++  }
++
++  it("defers a due monitor inside the minimum interval without starting a run", async () => {
++    const { issueId } = await seedFixture();
++    const result = await heartbeatService(db).tickTimers(TICK_AT);
++
++    expect(result).toMatchObject({ enqueued: 0, skipped: 1 });
++    await expectDeferred(issueId, new Date("2026-04-11T14:10:00.000Z"), "min_interval");
++    expect(await wakeupCount()).toBe(0);
++    expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
++    const actions = (await activityActions(issueId)).map((row) => row.action);
++    expect(actions).not.toContain("issue.monitor_triggered");
++  });
++
++  it("keeps deferring a quiet card, then wakes it at the quiet backstop", async () => {
++    const { issueId, agentId } = await seedFixture();
++    const heartbeat = heartbeatService(db);
++
++    await heartbeat.tickTimers(TICK_AT);
++    await expectDeferred(issueId, new Date("2026-04-11T14:10:00.000Z"), "min_interval");
++
++    // Past the floor and still quiet: one more deferral, bounded by the backstop
++    // (last run + 4h = 16:10).
++    await heartbeat.tickTimers(new Date("2026-04-11T14:11:00.000Z"));
++    await expectDeferred(issueId, new Date("2026-04-11T16:10:00.000Z"), "no_change_since_last_run");
++    expect(await wakeupCount()).toBe(0);
++
++    // Not due yet: nothing happens.
++    expect(await heartbeat.tickTimers(new Date("2026-04-11T15:00:00.000Z"))).toMatchObject({ enqueued: 0 });
++    expect(await wakeupCount()).toBe(0);
++
++    // Backstop reached: the monitor finally dispatches and consumes an attempt.
++    const result = await heartbeat.tickTimers(new Date("2026-04-11T16:11:00.000Z"));
++    expect(result.enqueued).toBe(1);
++    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
++    expect(wakeups[0]?.reason).toBe("issue_monitor_due");
++    const issue = await readIssue(issueId);
++    expect(issue.monitorAttemptCount).toBe(1);
++    expect(issue.monitorNextCheckAt).toBeNull();
++  });
++
++  it("dispatches when someone commented after the last run", async () => {
++    const { companyId, issueId } = await seedFixture();
++    await seedActivity({
++      companyId,
++      issueId,
++      action: "issue.comment_added",
++      createdAt: new Date("2026-04-11T12:20:00.000Z"),
++    });
++
++    const result = await heartbeatService(db).tickTimers(TICK_AT);
++
++    expect(result.enqueued).toBe(1);
++    expect((await readIssue(issueId)).monitorAttemptCount).toBe(1);
++    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_deferred");
++  });
++
++  it("ignores comments that predate the last run", async () => {
++    const { companyId, issueId } = await seedFixture();
++    await seedActivity({
++      companyId,
++      issueId,
++      action: "issue.comment_added",
++      createdAt: new Date("2026-04-11T12:00:00.000Z"),
++    });
++
++    const result = await heartbeatService(db).tickTimers(TICK_AT);
++
++    expect(result.enqueued).toBe(0);
++    await expectDeferred(issueId, new Date("2026-04-11T14:10:00.000Z"), "min_interval");
++  });
++
++  it("does not count monitor housekeeping or the last run's own activity as new input", async () => {
++    const { companyId, issueId, lastRunId } = await seedFixture();
++    const after = new Date("2026-04-11T12:20:00.000Z");
++    await seedActivity({ companyId, issueId, action: "issue.monitor_scheduled", createdAt: after });
++    await seedActivity({
++      companyId,
++      issueId,
++      action: "issue.updated",
++      createdAt: after,
++      details: { changes: { monitorNextCheckAt: { from: null, to: "2026-04-11T13:00:00.000Z" } } },
++    });
++    await seedActivity({
++      companyId,
++      issueId,
++      action: "issue.comment_added",
++      createdAt: after,
++      runId: lastRunId,
++      actorType: "agent",
++    });
++
++    const result = await heartbeatService(db).tickTimers(TICK_AT);
++
++    expect(result.enqueued).toBe(0);
++    await expectDeferred(issueId, new Date("2026-04-11T14:10:00.000Z"), "min_interval");
++  });
++
++  it("counts a real issue update after the last run as new input", async () => {
++    const { companyId, issueId } = await seedFixture();
++    await seedActivity({
++      companyId,
++      issueId,
++      action: "issue.updated",
++      createdAt: new Date("2026-04-11T12:20:00.000Z"),
++      details: { changes: { status: { from: "in_progress", to: "in_review" } } },
++    });
++
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
++  });
++
++  it("dispatches when a linked pull request changed after the last run", async () => {
++    const { companyId, issueId } = await seedFixture();
++    await seedLinkedPullRequest({
++      companyId,
++      issueId,
++      lastChangedAt: new Date("2026-04-11T12:20:00.000Z"),
++    });
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
++    expect((await readIssue(issueId)).monitorAttemptCount).toBe(1);
++  });
++
++  it("dispatches when a pull request was linked after the last run", async () => {
++    const { companyId, issueId } = await seedFixture();
++    await seedLinkedPullRequest({
++      companyId,
++      issueId,
++      lastChangedAt: new Date("2026-04-11T11:00:00.000Z"),
++      mentionCreatedAt: new Date("2026-04-11T12:25:00.000Z"),
++    });
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
++    expect((await readIssue(issueId)).monitorAttemptCount).toBe(1);
++  });
++
++  it("defers when the linked pull request has not changed since the last run", async () => {
++    const { companyId, issueId } = await seedFixture();
++    await seedLinkedPullRequest({
++      companyId,
++      issueId,
++      lastChangedAt: new Date("2026-04-11T11:00:00.000Z"),
++    });
++
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(0);
++    await expectDeferred(issueId, new Date("2026-04-11T14:10:00.000Z"), "min_interval");
++  });
++
++  it.each(["failed", "cancelled"])("never delays recovery after a %s last run", async (status) => {
++    await seedFixture({ lastRun: { status, finishedAt: LAST_RUN_FINISHED_AT } });
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
++  });
++
++  it("dispatches when the agent has no run on the issue", async () => {
++    const { issueId } = await seedFixture({ lastRun: null });
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
++    expect((await readIssue(issueId)).monitorAttemptCount).toBe(1);
++  });
++
++  it("dispatches when the last run is past the quiet backstop", async () => {
++    const { issueId } = await seedFixture({ lastRun: { finishedAt: new Date("2026-04-11T07:00:00.000Z") } });
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
++    expect((await readIssue(issueId)).monitorAttemptCount).toBe(1);
++  });
++
++  it.each(
++    ["wake_owner", "create_recovery_issue", "escalate_to_board"].flatMap((recoveryPolicy) => [
++      { recoveryPolicy, phase: "minimum interval", finishedAt: LAST_RUN_FINISHED_AT },
++      { recoveryPolicy, phase: "quiet window", finishedAt: new Date("2026-04-11T10:00:00.000Z") },
++    ]),
++  )("dispatches before timeout in the $phase instead of $recoveryPolicy recovery", async ({ recoveryPolicy, finishedAt }) => {
++    const timeoutAt = new Date("2026-04-11T12:50:00.000Z");
++    const { issueId, agentId } = await seedFixture({
++      monitor: { timeoutAt: timeoutAt.toISOString(), maxAttempts: 3, recoveryPolicy },
++      lastRun: { finishedAt },
++    });
++    const heartbeat = heartbeatService(db);
++
++    const firstTick = await heartbeat.tickTimers(TICK_AT);
++    const expiryTick = await heartbeat.tickTimers(timeoutAt);
++    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
++    expect(wakeups.map((row) => row.reason)).toEqual(["issue_monitor_due"]);
++    expect(firstTick.enqueued).toBe(1);
++    expect(expiryTick.enqueued).toBe(0);
++    const issue = await readIssue(issueId);
++    expect(issue.monitorNextCheckAt).toBeNull();
++    expect(issue.monitorAttemptCount).toBe(1);
++    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_exhausted");
++    expect(await db.select().from(issues)).toHaveLength(1);
++  });
++
++  it("defers safely to the floor, then dispatches before a timeout inside the quiet window", async () => {
++    const timeoutAt = new Date("2026-04-11T16:00:00.000Z");
++    const { issueId, agentId } = await seedFixture({
++      monitor: { timeoutAt: timeoutAt.toISOString(), recoveryPolicy: "escalate_to_board" },
++    });
++    const heartbeat = heartbeatService(db);
++
++    expect((await heartbeat.tickTimers(TICK_AT)).enqueued).toBe(0);
++    await expectDeferred(issueId, new Date("2026-04-11T14:10:00.000Z"), "min_interval");
++    const quietTick = await heartbeat.tickTimers(new Date("2026-04-11T14:11:00.000Z"));
++    const expiryTick = await heartbeat.tickTimers(timeoutAt);
++    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
++    expect(wakeups.map((row) => row.reason)).toEqual(["issue_monitor_due"]);
++    expect(quietTick.enqueued).toBe(1);
++    expect(expiryTick.enqueued).toBe(0);
++    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_exhausted");
++  });
++
++  it.each([
++    ["external_service monitors", { kind: "external_service", serviceName: "github-actions" }],
++    ["named-service monitors without kind", { serviceName: "github-actions" }],
++    ["padded named-service monitors without kind", { serviceName: " deploys " }],
++    ["board-scheduled monitors", { scheduledBy: "board" }],
++  ])("leaves %s alone", async (_label, monitor) => {
++    const { issueId } = await seedFixture({ monitor });
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
++    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_deferred");
++  });
++
++  it.each([
++    { kind: "external_service", serviceName: "github-actions" },
++    { serviceName: " GitHub CI " },
++  ])("only defers a confirmed GitHub monitor (%j)", async (monitor) => {
++    process.env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED = "true";
++    const { issueId } = await seedFixture({ monitor });
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(0);
++    await expectDeferred(issueId, new Date("2026-04-11T14:10:00.000Z"), "min_interval");
++  });
++
++  it("does not defer a non-GitHub service when GitHub coverage is confirmed", async () => {
++    process.env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED = "true";
++    const { issueId } = await seedFixture({ monitor: { kind: "external_service", serviceName: "deploys" } });
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
++    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_deferred");
++  });
++
++  it("dispatches a confirmed GitHub monitor before the timeout instead of exhausting it", async () => {
++    process.env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED = "true";
++    const timeoutAt = new Date("2026-04-11T12:50:00.000Z");
++    const { issueId, agentId } = await seedFixture({ monitor: {
++      kind: "external_service", serviceName: "github-actions", timeoutAt: timeoutAt.toISOString(), recoveryPolicy: "escalate_to_board",
++    } });
++    const heartbeat = heartbeatService(db);
++    expect((await heartbeat.tickTimers(TICK_AT)).enqueued).toBe(1);
++    expect((await heartbeat.tickTimers(timeoutAt)).enqueued).toBe(0);
++    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
++    expect(wakes.map((row) => row.reason)).toEqual(["issue_monitor_due"]);
++    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_exhausted");
++  });
++
++  it("dispatches before the next scheduler tick can exhaust a near-target timeout", async () => {
++    process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS = "30000";
++    const timeoutAt = new Date("2026-04-11T14:10:20.000Z");
++    const { issueId, agentId } = await seedFixture({ monitor: {
++      timeoutAt: timeoutAt.toISOString(), recoveryPolicy: "escalate_to_board",
++    } });
++    const heartbeat = heartbeatService(db);
++
++    const firstTick = await heartbeat.tickTimers(TICK_AT);
++    const secondTick = await heartbeat.tickTimers(new Date("2026-04-11T14:10:31.000Z"));
++    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
++    expect(firstTick.enqueued).toBe(1);
++    expect(secondTick.enqueued).toBe(0);
++    expect(wakes.map((row) => row.reason)).toEqual(["issue_monitor_due"]);
++    const actions = (await activityActions(issueId)).map((row) => row.action);
++    expect(actions).not.toContain("issue.monitor_deferred");
++    expect(actions).not.toContain("issue.monitor_exhausted");
++  });
++
++  it("still defers timer monitors with a null service name", async () => {
++    const { issueId } = await seedFixture({ monitor: { serviceName: null } });
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(0);
++    await expectDeferred(issueId, new Date("2026-04-11T14:10:00.000Z"), "min_interval");
++  });
++
++  it("leaves provider quota recovery monitors alone", async () => {
++    const sourceRunId = randomUUID();
++    const { companyId, agentId, issueId } = await seedFixture({
++      monitor: { serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, externalRef: sourceRunId },
++    });
++    await db.insert(heartbeatRuns).values({
++      id: sourceRunId,
++      companyId,
++      agentId,
++      status: "failed",
++      errorCode: "provider_quota",
++      finishedAt: LAST_RUN_FINISHED_AT,
++      contextSnapshot: { issueId },
++      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
++    });
++
++    await heartbeatService(db).tickTimers(TICK_AT);
++
++    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_deferred");
++  });
++
++  it("never defers a manual check", async () => {
++    const { issueId } = await seedFixture();
++    const result = await heartbeatService(db).triggerIssueMonitor(issueId, {
++      now: TICK_AT,
++      actorType: "user",
++      actorId: "local-board",
++    });
++    expect(result.outcome).toBe("triggered");
++    expect((await readIssue(issueId)).monitorAttemptCount).toBe(1);
++  });
++
++  it("records what it would defer in shadow mode and still dispatches", async () => {
++    process.env.PAPERCLIP_MONITOR_WAKE_POLICY = "shadow";
++    const { issueId } = await seedFixture();
++
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
++
++    const rows = await activityActions(issueId);
++    const actions = rows.map((row) => row.action);
++    expect(actions).toContain("issue.monitor_deferral_shadowed");
++    expect(actions).toContain("issue.monitor_triggered");
++    expect(actions).not.toContain("issue.monitor_deferred");
++    expect(rows.find((row) => row.action === "issue.monitor_deferral_shadowed")?.details).toMatchObject({
++      reason: "min_interval",
++      deferUntil: "2026-04-11T14:10:00.000Z",
++    });
++  });
++
++  it("restores legacy behavior when the policy is off", async () => {
++    process.env.PAPERCLIP_MONITOR_WAKE_POLICY = "off";
++    const { issueId } = await seedFixture();
++
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
++
++    const actions = (await activityActions(issueId)).map((row) => row.action);
++    expect(actions).not.toContain("issue.monitor_deferred");
++    expect(actions).not.toContain("issue.monitor_deferral_shadowed");
++  });
++
++  it("honors a tuned minimum interval", async () => {
++    process.env.PAPERCLIP_MONITOR_MIN_INTERVAL_MS = String(15 * 60_000);
++    process.env.PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS = String(60 * 60_000);
++    const { issueId } = await seedFixture();
++
++    // 12:10 + 15 min = 12:25 is already behind the 12:31 tick, so the quiet
++    // path defers by one interval, bounded by the 13:10 backstop.
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(0);
++    const issue = await readIssue(issueId);
++    expect(issue.monitorNextCheckAt?.toISOString()).toBe("2026-04-11T12:46:00.000Z");
++  });
++});
+diff --git a/server/src/services/heartbeat.ts b/server/src/services/heartbeat.ts
+index 73df4f745..21291abf9 100644
+--- a/server/src/services/heartbeat.ts
++++ b/server/src/services/heartbeat.ts
+@@ -137,6 +137,8 @@ import {
+   documentAnnotationThreads,
+   documentRevisions,
+   environmentLeases,
++  externalObjectMentions,
++  externalObjects,
+   issueDocuments,
+   executionWorkspaces,
+   heartbeatRunEvents,
+@@ -359,6 +361,12 @@ import {
+   evaluateIssueRewakeThrottle,
+   isThrottleCandidateIssueRewake,
+ } from "./issue-rewake-throttle.js";
++import {
++  buildIssueMonitorDeferredPatch,
++  evaluateIssueMonitorWake,
++  issueMonitorWakeExemption,
++  resolveIssueMonitorWakePolicyConfig,
++} from "./issue-monitor-wake-policy.js";
+ import {
+   logActivity,
+   publishPluginDomainEvent,
+@@ -11766,6 +11774,162 @@ export function heartbeatService(
+     return { outcome: "skipped" as const, reason: input.clearReason };
+   }
+ 
++  const ISSUE_MONITOR_WAKE_INPUT_SCAN_LIMIT = 50;
++
++  /**
++   * Deterministic evidence for the monitor wake policy: the agent's newest
++   * finished run on the issue, whether anything other than monitor
++   * housekeeping reached the issue after it, and whether a linked external
++   * object (for example a pull request) changed or was linked after it.
++   * Activity written by that run itself is excluded: a run does not count as
++   * new input for the next one.
++   */
++  async function readIssueMonitorWakeEvidence(input: {
++    claimed: IssueMonitorDispatchRow;
++    targetAgentId: string;
++    now: Date;
++    lookbackMs: number;
++  }) {
++    const { claimed } = input;
++    const [lastRun] = await db
++      .select({
++        id: heartbeatRuns.id,
++        status: heartbeatRuns.status,
++        finishedAt: heartbeatRuns.finishedAt,
++      })
++      .from(heartbeatRuns)
++      .where(
++        and(
++          eq(heartbeatRuns.companyId, claimed.companyId),
++          eq(heartbeatRuns.agentId, input.targetAgentId),
++          sql`${heartbeatRuns.finishedAt} is not null`,
++          gte(
++            heartbeatRuns.finishedAt,
++            new Date(input.now.getTime() - input.lookbackMs),
++          ),
++          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${claimed.id}`,
++        ),
++      )
++      .orderBy(desc(heartbeatRuns.finishedAt))
++      .limit(1);
++    const lastRunFinishedAt = lastRun?.finishedAt ?? null;
++    if (!lastRun || !lastRunFinishedAt) {
++      return {
++        lastRun: null,
++        hasNewIssueInputSinceLastRun: false,
++        hasExternalChangeSinceLastRun: false,
++      };
++    }
++
++    const inputRows = await db
++      .select({ action: activityLog.action, details: activityLog.details })
++      .from(activityLog)
++      .where(
++        and(
++          eq(activityLog.companyId, claimed.companyId),
++          eq(activityLog.entityType, "issue"),
++          eq(activityLog.entityId, claimed.id),
++          gt(activityLog.createdAt, lastRunFinishedAt),
++          inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
++          or(isNull(activityLog.runId), ne(activityLog.runId, lastRun.id)),
++        ),
++      )
++      .orderBy(asc(activityLog.createdAt))
++      .limit(ISSUE_MONITOR_WAKE_INPUT_SCAN_LIMIT);
++    // A full scan window of housekeeping could hide real input past the cut;
++    // treat that as changed so the policy fails toward waking the agent.
++    const hasNewIssueInputSinceLastRun =
++      inputRows.length >= ISSUE_MONITOR_WAKE_INPUT_SCAN_LIMIT ||
++      inputRows.some(
++        (row) =>
++          !PRESENTATION_MONITOR_HOUSEKEEPING_ACTIONS.has(row.action) &&
++          !(
++            row.action === "issue.updated" &&
++            isMonitorOnlyIssueUpdateDetails(row.details)
++          ),
++      );
++
++    const [changedExternalObject] = hasNewIssueInputSinceLastRun
++      ? []
++      : await db
++          .select({ id: externalObjects.id })
++          .from(externalObjectMentions)
++          .innerJoin(
++            externalObjects,
++            eq(externalObjects.id, externalObjectMentions.objectId),
++          )
++          .where(
++            and(
++              eq(externalObjectMentions.companyId, claimed.companyId),
++              eq(externalObjectMentions.sourceIssueId, claimed.id),
++              or(
++                gt(externalObjects.lastChangedAt, lastRunFinishedAt),
++                gt(externalObjectMentions.createdAt, lastRunFinishedAt),
++              ),
++            ),
++          )
++          .limit(1);
++
++    return {
++      lastRun,
++      hasNewIssueInputSinceLastRun,
++      hasExternalChangeSinceLastRun: Boolean(changedExternalObject),
++    };
++  }
++
++  /**
++   * Decide, before any run starts, whether a due monitor dispatches or is
++   * deferred (see issue-monitor-wake-policy.ts). Returns null when the policy
++   * does not apply. Evidence is only read for monitors the policy can touch.
++   * Any failure falls through to the legacy dispatch: the policy is an
++   * optimization and must never lose a wake.
++   */
++  async function evaluateClaimedIssueMonitorWakePolicy(input: {
++    claimed: IssueMonitorDispatchRow;
++    monitor: IssueExecutionMonitorPolicy | null;
++    targetAgentId: string;
++    source: "automation" | "on_demand";
++    now: Date;
++  }) {
++    try {
++      const config = resolveIssueMonitorWakePolicyConfig(runtimeEnv);
++      const exemption = issueMonitorWakeExemption({
++        config,
++        source: input.source,
++        isProviderQuotaMonitor:
++          input.monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
++        monitor: {
++          kind: input.monitor?.kind ?? null,
++          scheduledBy:
++            input.monitor?.scheduledBy ?? input.claimed.monitorScheduledBy,
++          serviceName: input.monitor?.serviceName ?? null,
++        },
++      });
++      if (exemption) return null;
++      const evidence = await readIssueMonitorWakeEvidence({
++        claimed: input.claimed,
++        targetAgentId: input.targetAgentId,
++        now: input.now,
++        lookbackMs: config.quietBackstopMs,
++      });
++      const decision = evaluateIssueMonitorWake({
++        now: input.now,
++        config,
++        lastRun: evidence.lastRun,
++        hasNewIssueInputSinceLastRun: evidence.hasNewIssueInputSinceLastRun,
++        hasExternalChangeSinceLastRun: evidence.hasExternalChangeSinceLastRun,
++        timeoutAt: input.monitor?.timeoutAt ?? null,
++      });
++      return { config, decision };
++    } catch (err) {
++      logger.warn(
++        { err, issueId: input.claimed.id },
++        "issue monitor wake policy evaluation failed; dispatching",
++      );
++      return null;
++    }
++  }
++
+   async function dispatchClaimedIssueMonitor(
+     claimed: IssueMonitorDispatchRow,
+     input: {
+@@ -11853,6 +12017,64 @@ export function heartbeatService(
+       });
+     }
+ 
++    const monitorWakePolicy = await evaluateClaimedIssueMonitorWakePolicy({
++      claimed,
++      monitor,
++      targetAgentId,
++      source: input.source,
++      now: input.now,
++    });
++    if (monitorWakePolicy?.decision.action === "defer") {
++      const { config, decision } = monitorWakePolicy;
++      const enforced = config.mode === "enforce";
++      if (enforced) {
++        // Guarded on the claim token: a monitor re-armed since the claim owns
++        // its own schedule and must not be overwritten.
++        await db
++          .update(issues)
++          .set(
++            buildIssueMonitorDeferredPatch({
++              executionPolicy: claimed.executionPolicy,
++              executionState: claimed.executionState,
++              deferUntil: decision.deferUntil,
++            }),
++          )
++          .where(
++            and(
++              eq(issues.id, claimed.id),
++              claimed.monitorWakeRequestedAt
++                ? eq(issues.monitorWakeRequestedAt, claimed.monitorWakeRequestedAt)
++                : isNull(issues.monitorWakeRequestedAt),
++            ),
++          );
++      }
++      await logActivity(db, {
++        companyId: claimed.companyId,
++        actorType: input.actorType,
++        actorId: input.actorId,
++        agentId: input.agentId,
++        runId: input.runId,
++        action: enforced
++          ? "issue.monitor_deferred"
++          : "issue.monitor_deferral_shadowed",
++        entityType: "issue",
++        entityId: claimed.id,
++        details: {
++          identifier: claimed.identifier,
++          nextCheckAt: scheduledAtIso,
++          deferUntil: decision.deferUntil.toISOString(),
++          reason: decision.reason,
++          lastRunId: decision.lastRunId,
++          lastRunFinishedAt: decision.lastRunFinishedAt.toISOString(),
++          attemptCount: claimed.monitorAttemptCount ?? 0,
++          minIntervalMs: config.minIntervalMs,
++          quietBackstopMs: config.quietBackstopMs,
++          source: input.activitySource,
++        },
++      });
++      if (enforced) return { outcome: "deferred" as const };
++    }
++
+     try {
+       if (monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
+         // Normalized monitor projections redact externalRef. Read the claimed
+@@ -12142,6 +12364,7 @@ export function heartbeatService(
+ 
+     let triggered = 0;
+     let skipped = 0;
++    let deferred = 0;
+ 
+     for (const due of dueMonitors) {
+       const claimed = await db.transaction(async (tx) => {
+@@ -12186,6 +12409,7 @@ export function heartbeatService(
+         });
+         if (result.outcome === "triggered") triggered += 1;
+         if (result.outcome === "skipped") skipped += 1;
++        if (result.outcome === "deferred") deferred += 1;
+       } catch (err) {
+         logger.error({ err, issueId: claimed.id }, "issue monitor tick failed");
+       }
+@@ -12195,6 +12419,7 @@ export function heartbeatService(
+       checked: dueMonitors.length,
+       triggered,
+       skipped,
++      deferred,
+     };
+   }
+ 
+@@ -30407,7 +30632,7 @@ export function heartbeatService(
+       return {
+         checked: checked + issueMonitors.checked,
+         enqueued: enqueued + issueMonitors.triggered,
+-        skipped: skipped + issueMonitors.skipped,
++        skipped: skipped + issueMonitors.skipped + issueMonitors.deferred,
+       };
+     },
+ 
+diff --git a/server/src/services/issue-monitor-wake-policy.ts b/server/src/services/issue-monitor-wake-policy.ts
+new file mode 100644
+index 000000000..5f39fa145
+--- /dev/null
++++ b/server/src/services/issue-monitor-wake-policy.ts
+@@ -0,0 +1,251 @@
++/**
++ * Monitor wakes are a timer, not an event. An agent arms a monitor to look at
++ * something again later, and every due monitor starts a full adapter session.
++ * When the agent re-arms for a short interval and nothing moved on the card in
++ * between, each of those sessions pays full price for zero new information.
++ *
++ * This module decides, deterministically and before any run starts, whether a
++ * due monitor should dispatch or be deferred:
++ *
++ * - Minimum interval: an unchanged timer monitor normally waits until
++ *   `minIntervalMs` after that agent's last finished run on the issue.
++ *   A timeout inside the proposed deferral dispatches immediately.
++ * - Quiet skip: past the minimum interval, a monitor is deferred again while
++ *   nothing changed since that run (no new issue input, no linked external
++ *   object change), up to `quietBackstopMs` after the run. The backstop
++ *   guarantees a look at least that often even for state the host cannot see.
++ *
++ * Deferral re-arms the same monitor at a later time. It never consumes an
++ * attempt, never clears the monitor, and never touches its bounds
++ * (`timeoutAt`/`maxAttempts`), so it only moves the next look later.
++ *
++ * Exempt: manual (on-demand) checks, provider-quota recovery, monitors a
++ * board user scheduled, and monitors with `kind: external_service` or a
++ * non-empty service name. GitHub services only lose that exemption after
++ * PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED=true confirms check/review
++ * coverage. Normalization alone does not prove events reach the host.
++ */
++
++export type IssueMonitorWakePolicyMode = "off" | "shadow" | "enforce";
++
++/** An unchanged timer monitor normally waits this long after its last run. */
++export const ISSUE_MONITOR_MIN_INTERVAL_MS = 2 * 60 * 60_000;
++
++/** A quiet monitor is still looked at once this long after the last run. */
++export const ISSUE_MONITOR_QUIET_BACKSTOP_MS = 4 * 60 * 60_000;
++
++const MIN_CONFIGURABLE_MS = 60_000;
++const MAX_CONFIGURABLE_MS = 24 * 60 * 60_000;
++
++export interface IssueMonitorWakePolicyConfig {
++  mode: IssueMonitorWakePolicyMode;
++  minIntervalMs: number;
++  quietBackstopMs: number;
++  /** Operator-confirmed check/review delivery coverage, never inferred from normalization. */
++  githubEventsConfirmed: boolean;
++  /** Dispatch early enough to beat a timeout between scheduler ticks. */
++  timeoutDispatchMarginMs: number;
++}
++
++function readBoundedMs(raw: string | undefined, fallback: number): number {
++  if (raw === undefined || raw.trim() === "") return fallback;
++  const parsed = Number(raw);
++  if (!Number.isInteger(parsed)) return fallback;
++  if (parsed < MIN_CONFIGURABLE_MS || parsed > MAX_CONFIGURABLE_MS) return fallback;
++  return parsed;
++}
++
++/**
++ * Operator controls, all optional:
++ * - `PAPERCLIP_MONITOR_WAKE_POLICY`: `off` (legacy), `shadow` (evaluate and
++ *   record, never defer) or `enforce` (default). Anything else is `enforce`.
++ * - `PAPERCLIP_MONITOR_MIN_INTERVAL_MS` and
++ *   `PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS`: integers in [60000, 86400000].
++ *   The backstop never drops below the minimum interval.
++ * - `PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED`: exactly `true` lifts the
++ *   GitHub service exemption after the operator confirms delivery coverage.
++ */
++export function resolveIssueMonitorWakePolicyConfig(
++  env: Readonly<Record<string, string | undefined>>,
++): IssueMonitorWakePolicyConfig {
++  const rawMode = env.PAPERCLIP_MONITOR_WAKE_POLICY?.trim().toLowerCase();
++  const mode: IssueMonitorWakePolicyMode =
++    rawMode === "off" || rawMode === "shadow" ? rawMode : "enforce";
++  const minIntervalMs = readBoundedMs(
++    env.PAPERCLIP_MONITOR_MIN_INTERVAL_MS,
++    ISSUE_MONITOR_MIN_INTERVAL_MS,
++  );
++  const quietBackstopMs = Math.max(
++    minIntervalMs,
++    readBoundedMs(env.PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS, ISSUE_MONITOR_QUIET_BACKSTOP_MS),
++  );
++  const githubEventsConfirmed = env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED === "true";
++  const schedulerIntervalMs = Math.max(
++    10_000,
++    Number(env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30_000,
++  );
++  const timeoutDispatchMarginMs = 2 * schedulerIntervalMs;
++  return { mode, minIntervalMs, quietBackstopMs, githubEventsConfirmed, timeoutDispatchMarginMs };
++}
++
++export type IssueMonitorWakeExemptReason =
++  | "policy_off"
++  | "on_demand"
++  | "provider_quota"
++  | "board_scheduled"
++  | "external_service";
++
++export interface IssueMonitorWakeExemptionInput {
++  config: IssueMonitorWakePolicyConfig;
++  source: "automation" | "on_demand";
++  isProviderQuotaMonitor: boolean;
++  monitor: {
++    kind: string | null;
++    scheduledBy: string | null;
++    serviceName?: string | null;
++  } | null;
++}
++
++/**
++ * Cheap pre-check that needs no database reads, so the caller can skip the
++ * evidence queries entirely for monitors the policy never touches.
++ */
++export function issueMonitorWakeExemption(
++  input: IssueMonitorWakeExemptionInput,
++): IssueMonitorWakeExemptReason | null {
++  if (input.config.mode === "off") return "policy_off";
++  if (input.source === "on_demand") return "on_demand";
++  if (input.isProviderQuotaMonitor) return "provider_quota";
++  if (input.monitor?.scheduledBy === "board") return "board_scheduled";
++  const serviceName = input.monitor?.serviceName?.trim();
++  const confirmedGithub = input.config.githubEventsConfirmed && serviceName?.toLowerCase().includes("github");
++  if ((input.monitor?.kind === "external_service" || serviceName) && !confirmedGithub) {
++    return "external_service";
++  }
++  return null;
++}
++
++export interface IssueMonitorWakeRunSample {
++  id: string;
++  status: string;
++  finishedAt: Date | null;
++}
++
++export interface IssueMonitorWakePolicyInput {
++  now: Date;
++  config: IssueMonitorWakePolicyConfig;
++  /** Newest finished run of the target agent on this issue, if any. */
++  lastRun: IssueMonitorWakeRunSample | null;
++  /** Issue input landed after the last run finished (housekeeping excluded). */
++  hasNewIssueInputSinceLastRun: boolean;
++  /** A linked external object (such as a pull request) changed since then. */
++  hasExternalChangeSinceLastRun: boolean;
++  /** Dispatch now if this bound would cap the proposed deferral. */
++  timeoutAt: string | null;
++}
++
++export type IssueMonitorWakeDispatchReason =
++  | "no_recent_run"
++  | "last_run_not_succeeded"
++  | "changed_since_last_run"
++  | "quiet_backstop_reached"
++  | "timeout_window_reached";
++
++export type IssueMonitorWakeDeferReason = "min_interval" | "no_change_since_last_run";
++
++export type IssueMonitorWakePolicyDecision =
++  | { action: "dispatch"; reason: IssueMonitorWakeDispatchReason }
++  | {
++      action: "defer";
++      reason: IssueMonitorWakeDeferReason;
++      deferUntil: Date;
++      lastRunId: string;
++      lastRunFinishedAt: Date;
++    };
++
++function parseDate(value: string | null): Date | null {
++  if (!value) return null;
++  const date = new Date(value);
++  return Number.isNaN(date.getTime()) ? null : date;
++}
++
++export function evaluateIssueMonitorWake(
++  input: IssueMonitorWakePolicyInput,
++): IssueMonitorWakePolicyDecision {
++  const { now, config, lastRun } = input;
++  const lastFinishedAt = lastRun?.finishedAt ?? null;
++  if (!lastRun || !lastFinishedAt) return { action: "dispatch", reason: "no_recent_run" };
++  // A failed, cancelled or interrupted run makes this wake recovery, not a
++  // redundant re-poll; it must never be delayed.
++  if (lastRun.status !== "succeeded") {
++    return { action: "dispatch", reason: "last_run_not_succeeded" };
++  }
++  const sinceLastRunMs = now.getTime() - lastFinishedAt.getTime();
++  if (sinceLastRunMs >= config.quietBackstopMs) {
++    return { action: "dispatch", reason: "quiet_backstop_reached" };
++  }
++  // New information is never a no-op candidate, even inside the minimum
++  // interval: whatever changed has not yet produced a run.
++  if (input.hasNewIssueInputSinceLastRun || input.hasExternalChangeSinceLastRun) {
++    return { action: "dispatch", reason: "changed_since_last_run" };
++  }
++
++  const floorAt = lastFinishedAt.getTime() + config.minIntervalMs;
++  const backstopAt = lastFinishedAt.getTime() + config.quietBackstopMs;
++  const withinMinInterval = now.getTime() < floorAt;
++  const deferUntilMs = withinMinInterval
++    ? floorAt
++    : Math.min(now.getTime() + config.minIntervalMs, backstopAt);
++
++  const timeoutAt = parseDate(input.timeoutAt);
++  // The scheduler exhausts a monitor at now >= timeoutAt before this policy
++  // runs. A due time can land just after the target and still be passed by the
++  // next scheduler tick, so include two ticks of margin before deferring.
++  if (timeoutAt && timeoutAt.getTime() <= deferUntilMs + config.timeoutDispatchMarginMs) {
++    return { action: "dispatch", reason: "timeout_window_reached" };
++  }
++
++  return {
++    action: "defer",
++    reason: withinMinInterval ? "min_interval" : "no_change_since_last_run",
++    deferUntil: new Date(deferUntilMs),
++    lastRunId: lastRun.id,
++    lastRunFinishedAt: lastFinishedAt,
++  };
++}
++
++function plainObject(value: unknown): Record<string, unknown> | null {
++  return value && typeof value === "object" && !Array.isArray(value)
++    ? (value as Record<string, unknown>)
++    : null;
++}
++
++/**
++ * Column and JSON writes that re-arm a claimed monitor at `deferUntil`. Works
++ * on the persisted raw policy and state so fields the normalized projection
++ * redacts (such as the external reference) survive unchanged. Attempt count,
++ * last-trigger time, notes and bounds are left exactly as they were.
++ */
++export function buildIssueMonitorDeferredPatch(input: {
++  executionPolicy: unknown;
++  executionState: unknown;
++  deferUntil: Date;
++}) {
++  const deferUntilIso = input.deferUntil.toISOString();
++  const policy = plainObject(input.executionPolicy);
++  const policyMonitor = plainObject(policy?.monitor);
++  const state = plainObject(input.executionState);
++  const stateMonitor = plainObject(state?.monitor);
++  return {
++    monitorNextCheckAt: input.deferUntil,
++    monitorWakeRequestedAt: null,
++    executionPolicy:
++      policy && policyMonitor
++        ? { ...policy, monitor: { ...policyMonitor, nextCheckAt: deferUntilIso } }
++        : (input.executionPolicy as Record<string, unknown> | null),
++    executionState:
++      state && stateMonitor
++        ? { ...state, monitor: { ...stateMonitor, nextCheckAt: deferUntilIso } }
++        : (input.executionState as Record<string, unknown> | null),
++  };
++}
+diff --git a/ui/src/lib/activity-format.ts b/ui/src/lib/activity-format.ts
+index a898b1dc3..154aa14d3 100644
+--- a/ui/src/lib/activity-format.ts
++++ b/ui/src/lib/activity-format.ts
+@@ -46,6 +46,8 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
+   "issue.monitor_triggered": "triggered monitor for",
+   "issue.monitor_cleared": "cleared monitor on",
+   "issue.monitor_skipped": "skipped monitor for",
++  "issue.monitor_deferred": "deferred monitor for",
++  "issue.monitor_deferral_shadowed": "would have deferred monitor for",
+   "issue.monitor_exhausted": "exhausted monitor on",
+   "issue.monitor_recovery_wake_queued": "queued monitor recovery for",
+   "issue.monitor_recovery_issue_created": "created monitor recovery for",
+@@ -145,6 +147,8 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
+   "issue.monitor_triggered": "triggered a monitor",
+   "issue.monitor_cleared": "cleared a monitor",
+   "issue.monitor_skipped": "skipped a monitor",
++  "issue.monitor_deferred": "deferred a monitor",
++  "issue.monitor_deferral_shadowed": "would have deferred a monitor",
+   "issue.monitor_exhausted": "exhausted a monitor",
+   "issue.monitor_recovery_wake_queued": "queued a monitor recovery wake",
+   "issue.monitor_recovery_issue_created": "created a monitor recovery issue",

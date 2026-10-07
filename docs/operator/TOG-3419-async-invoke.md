@@ -7,6 +7,9 @@ The same async protocol applies to v0.7.1; its tool-name validation fix is
 recorded in the changelog. v0.8.0 keeps the protocol and adds the TOG-7417
 run-end reap (`cancel-run-invocations`), an authoritative host-injected
 budget fraction, and per-request abort — see the v0.8.0 changelog entry.
+v0.9.0 keeps the protocol unchanged and also reaps a run's pending invocations
+when the host emits `agent.run.finished` (`events.subscribe`); that release is
+capability-escalating, see its changelog entry.
 This compatibility note is not install approval.
 
 ## Scope
