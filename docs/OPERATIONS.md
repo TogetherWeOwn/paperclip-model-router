@@ -164,10 +164,14 @@ checkout of the tag where `npm run verify` just passed, because gate 8 reads
 that run's receipt:
 
 ```sh
-npm run check:pin -- --tag v0.8.0 \
-  --expect-sha256 4339a5968a0ad9e3cf3c45e08d4c50c4187c746366544501154d5d913b000339 \
-  --for-card
+VERSION=0.9.0
+SHA256=<digest from the release card>
+npm run check:pin -- --tag "v$VERSION" --expect-sha256 "$SHA256" --for-card
 ```
+
+`SHA256` is only known once the release asset is published, so the card records
+it and this block does not. The transcript below is the recorded `v0.8.0` run
+(digest `4339a5968a0ad9e3cf3c45e08d4c50c4187c746366544501154d5d913b000339`).
 
 Transcript from the `v0.8.0` checkout above (exit 0, build output elided):
 
@@ -215,16 +219,15 @@ answer for shipping `main` is to cut a new tag. Never reword the runbook around
 the mismatch.
 
 **Download.** Checkout command. The repository is public, so no token is
-needed.
-
-Transcript from the `v0.8.0` run (exit 0; the `v0.9.0` run is on its release card):
+needed. Use the same `VERSION` and `SHA256` as the pin check above; the
+last line prints `<tarball>: OK` when the digest matches:
 
 ```sh
-VERSION=0.8.0
+VERSION=0.9.0
+SHA256=<digest from the release card>
 TGZ="togetherweown-paperclip-model-router-$VERSION.tgz"
 curl -fsSLO "https://github.com/TogetherWeOwn/paperclip-model-router/releases/download/v$VERSION/$TGZ"
-echo "4339a5968a0ad9e3cf3c45e08d4c50c4187c746366544501154d5d913b000339  $TGZ" | sha256sum -c -
-# togetherweown-paperclip-model-router-0.8.0.tgz: OK
+echo "$SHA256  $TGZ" | sha256sum -c -
 ```
 
 `gh release download "v$VERSION" --repo TogetherWeOwn/paperclip-model-router
