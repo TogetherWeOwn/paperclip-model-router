@@ -215,7 +215,9 @@ answer for shipping `main` is to cut a new tag. Never reword the runbook around
 the mismatch.
 
 **Download.** Checkout command. The repository is public, so no token is
-needed. Transcript (exit 0):
+needed.
+
+Transcript from the `v0.8.0` run (exit 0; the `v0.9.0` run is on its release card):
 
 ```sh
 VERSION=0.8.0
