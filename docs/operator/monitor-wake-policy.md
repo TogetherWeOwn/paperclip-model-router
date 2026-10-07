@@ -100,6 +100,9 @@ To see the effect before enforcing, start with `shadow` for a day and count
 `issue.monitor_deferral_shadowed` rows. Rollback without a rebuild: set
 `PAPERCLIP_MONITOR_WAKE_POLICY=off` and restart.
 
+To measure the effect on the live fleet, re-run `scripts/noop-run-share.mjs`
+(see [`noop-run-share.md`](./noop-run-share.md)) before and after the swap.
+
 ## Artifact
 
 Apply [`monitor-wake-policy.patch`](./monitor-wake-policy.patch) at the

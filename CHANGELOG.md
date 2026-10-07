@@ -12,6 +12,14 @@ version is not present here.
 
 ### Added
 
+- **No-op run share measurement.** `scripts/noop-run-share.mjs` reads heartbeat
+  runs per agent and each touched issue's activity, classifies no-event wakes
+  with a port of the host's progress rule, and reports the no-op and idle share
+  of runs by wake reason plus the monitor deferral counters, as JSON and a short
+  markdown table. `tests/noop-run-share.spec.ts` and
+  `scripts/noop-run-share-mutation-gate.mjs` (`npm run check:noop-share-mutants`)
+  pin the classifier. See `docs/operator/noop-run-share.md`.
+
 - **Invocation-derived model health (TOG-7160, port of TOG-930).**
   `src/health/` (types, reconcile, catalogue probe) tracks per-model health
   in company-scoped plugin state: catalogue presence keeps a model unknown
