@@ -129,11 +129,14 @@ describe("invocation health has hysteresis in both directions", () => {
       verdicts.push(state["qwen3-coder"]!.verdict);
       flips.push(...result.flips.map((flip) => `${flip.from}->${flip.to}`));
     }
+    // The closing two successes would recover on streaks alone, but the ten
+    // observations carry 4 failures (40% >= 20%), so the error-rate breaker
+    // holds the lane degraded until the window slides.
     expect(verdicts).toEqual([
       "healthy", "healthy", "healthy", "degraded",
-      "degraded", "degraded", "degraded", "healthy",
+      "degraded", "degraded", "degraded", "degraded",
     ]);
-    expect(flips).toEqual(["healthy->degraded", "degraded->healthy"]);
+    expect(flips).toEqual(["healthy->degraded"]);
   });
 
   it("restarts the probation cooldown on every fresh failure", () => {
@@ -159,6 +162,149 @@ describe("invocation health has hysteresis in both directions", () => {
     expect(first.next["qwen3-coder"]?.verdict).toBe("unknown");
     const second = observe(first.next, "qwen3-coder", true, probationAt);
     expect(second.next["qwen3-coder"]).toMatchObject({ verdict: "healthy", successStreak: 2 });
+  });
+});
+
+describe("rolling error-rate circuit breaker (15 min / 20% / 30 min avoid)", () => {
+  const atMinute = (offset: number): string =>
+    new Date(Date.parse(NOW) + offset * 60_000).toISOString();
+
+  function drive(pattern: Array<[number, boolean]>, from: ModelHealthState = {}): ModelHealthState {
+    let state = from;
+    for (const [offset, succeeded] of pattern) {
+      state = reconcileInvocation({
+        modelId: "qwen3-coder",
+        succeeded,
+        previous: state,
+        now: atMinute(offset),
+      }).next;
+    }
+    return state;
+  }
+
+  /** Alternating failures never trip the consecutive streak, by construction. */
+  const flaky = (count: number, start = 0): Array<[number, boolean]> =>
+    Array.from({ length: count }, (_, index) => [start + index, index % 2 === 0] as [number, boolean]);
+
+  it("trips a flaky lane the streak logic would keep serving", () => {
+    const nine = drive(flaky(9));
+    expect(nine["qwen3-coder"]?.verdict).toBe("unknown");
+    const ten = drive([[9, false]], nine);
+    expect(ten["qwen3-coder"]).toMatchObject({ verdict: "degraded" });
+    expect(ten["qwen3-coder"]?.reason).toContain("5 of 10 routed calls failed");
+    expect(ten["qwen3-coder"]?.degradedAt).toBe(atMinute(9));
+  });
+
+  it("trips exactly at the 20% boundary", () => {
+    // Two separated failures in ten: never consecutive, exactly 20%.
+    const pattern: Array<[number, boolean]> = [
+      [0, false], [1, true], [2, true], [3, true], [4, true],
+      [5, false], [6, true], [7, true], [8, true], [9, true],
+    ];
+    const state = drive(pattern);
+    expect(state["qwen3-coder"]).toMatchObject({ verdict: "degraded" });
+    expect(state["qwen3-coder"]?.reason).toContain("2 of 10 routed calls failed");
+  });
+
+  it("holds a 10% lane on streaks alone", () => {
+    const pattern: Array<[number, boolean]> = [
+      [0, false], [1, true], [2, true], [3, true], [4, true],
+      [5, true], [6, true], [7, true], [8, true], [9, true],
+    ];
+    const state = drive(pattern);
+    expect(state["qwen3-coder"]?.verdict).toBe("healthy");
+  });
+
+  it("ignores a high rate on too few samples", () => {
+    // 1 failure in 4 is a 25% rate, but 4 samples are below the minimum, so
+    // streaks alone decide — and three straight successes heal to healthy.
+    const state = drive([[0, false], [1, true], [2, true], [3, true]]);
+    expect(state["qwen3-coder"]?.verdict).toBe("healthy");
+    // Two samples at a 50% rate still trip nothing: below the minimum, streaks rule.
+    expect(drive([[0, false], [1, true]])["qwen3-coder"]?.verdict).toBe("unknown");
+  });
+
+  it("lets aged-out failures slide out of the window", () => {
+    let state = drive(flaky(10));
+    expect(state["qwen3-coder"]?.verdict).toBe("degraded");
+    // Sixteen minutes later the tripping evidence has left the 15-minute
+    // window; two successes recover on streaks with no rate to override them.
+    state = drive([[25, true], [26, true]], state);
+    expect(state["qwen3-coder"]?.verdict).toBe("healthy");
+  });
+
+  it("slides the avoid window forward while the lane keeps failing", () => {
+    let state = drive(flaky(10));
+    expect(state["qwen3-coder"]?.degradedAt).toBe(atMinute(9));
+    state = drive(
+      [[10, false], [11, false], [12, false], [13, false], [14, false], [15, false]],
+      state,
+    );
+    expect(state["qwen3-coder"]?.verdict).toBe("degraded");
+    expect(state["qwen3-coder"]?.degradedAt).toBe(atMinute(15));
+  });
+
+  it("half-opens with a fresh ring after the 30-minute avoid", () => {
+    const tripped = drive(flaky(10));
+    expect(tripped["qwen3-coder"]?.verdict).toBe("degraded");
+    const probationAt = atMinute(39);
+    const probation = reconcileHealth({
+      models,
+      probe: catalogue(ALL),
+      previous: tripped,
+      now: probationAt,
+    });
+    expect(probation.next["qwen3-coder"]?.verdict).toBe("unknown");
+    expect(probation.next["qwen3-coder"]?.recentOutcomes).toEqual([]);
+    // One probationary failure must not re-trip on pre-probation evidence.
+    const trial = observe(probation.next, "qwen3-coder", false, probationAt);
+    expect(trial.next["qwen3-coder"]?.verdict).toBe("unknown");
+  });
+
+  it("clears the ring when probation starts even inside the window", () => {
+    const previous: ModelHealthState = {
+      "qwen3-coder": {
+        verdict: "degraded",
+        checkedAt: NOW,
+        reason: "rate trip",
+        strikes: 0,
+        failureStreak: 1,
+        successStreak: 0,
+        lastInvocationAt: NOW,
+        degradedAt: NOW,
+        recentOutcomes: Array.from({ length: 10 }, () => ({ at: atMinute(30), succeeded: false })),
+      },
+    };
+    const probation = reconcileHealth({
+      models,
+      probe: catalogue(ALL),
+      previous,
+      now: atMinute(31),
+    });
+    expect(probation.next["qwen3-coder"]).toMatchObject({ verdict: "unknown" });
+    expect(probation.next["qwen3-coder"]?.recentOutcomes).toEqual([]);
+  });
+
+  it("normalizes a malformed ring to no evidence", () => {
+    const state = normalizeHealthState({
+      "qwen3-coder": {
+        verdict: "unknown",
+        checkedAt: NOW,
+        reason: "x",
+        strikes: 0,
+        failureStreak: 0,
+        successStreak: 0,
+        lastInvocationAt: null,
+        degradedAt: null,
+        recentOutcomes: [
+          { at: NOW, succeeded: true },
+          { at: "not-a-date", succeeded: false },
+          { at: NOW, succeeded: "yes" },
+          null,
+        ],
+      },
+    });
+    expect(state["qwen3-coder"]?.recentOutcomes).toEqual([{ at: NOW, succeeded: true }]);
   });
 });
 

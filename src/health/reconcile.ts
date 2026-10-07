@@ -11,6 +11,17 @@ export const RECOVERY_STRIKES = 2;
 export const HEALTH_EVIDENCE_MAX_AGE_MS = 60 * 60 * 1_000;
 /** A degraded model becomes probationary so real traffic can test recovery. */
 export const DEGRADED_PROBATION_MS = 30 * 60 * 1_000;
+/**
+ * Rolling error-rate circuit breaker. A lane whose routed calls fail at or
+ * above this rate inside the window is avoided (degraded) for the probation
+ * period above, then half-opens. Consecutive streaks catch hard-down lanes;
+ * the rate catches flaky ones a success would otherwise keep resetting.
+ */
+export const ERROR_RATE_WINDOW_MS = 15 * 60 * 1_000;
+export const ERROR_RATE_THRESHOLD = 0.2;
+export const ERROR_RATE_MIN_SAMPLES = 10;
+/** Cap on the stored outcome ring so the state row stays bounded. */
+export const MAX_RECENT_OUTCOMES = 100;
 
 const UNKNOWN_ENTRY: ModelHealthEntry = {
   verdict: "unknown",
@@ -21,6 +32,7 @@ const UNKNOWN_ENTRY: ModelHealthEntry = {
   successStreak: 0,
   lastInvocationAt: null,
   degradedAt: null,
+  recentOutcomes: [],
 };
 
 function finiteCounter(value: unknown): number {
@@ -35,6 +47,33 @@ function asVerdict(value: unknown): ModelHealthEntry["verdict"] {
   return value === "healthy" || value === "degraded" || value === "dead" || value === "unknown"
     ? value
     : "unknown";
+}
+
+/** Normalize the outcome ring written by newer workers; anything else reads as no evidence. */
+function normalizeRecentOutcomes(value: unknown): Array<{ at: string; succeeded: boolean }> {
+  if (!Array.isArray(value)) return [];
+  const out: Array<{ at: string; succeeded: boolean }> = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const row = entry as Record<string, unknown>;
+    if (typeof row.at !== "string" || !Number.isFinite(Date.parse(row.at))) continue;
+    if (typeof row.succeeded !== "boolean") continue;
+    out.push({ at: row.at, succeeded: row.succeeded });
+    if (out.length >= MAX_RECENT_OUTCOMES) break;
+  }
+  return out;
+}
+
+/** Keep only outcomes inside (now - window, now]; the future-dated and the aged-out carry no rate. */
+function pruneToWindow(
+  outcomes: Array<{ at: string; succeeded: boolean }>,
+  nowMs: number,
+): Array<{ at: string; succeeded: boolean }> {
+  const floor = nowMs - ERROR_RATE_WINDOW_MS;
+  return outcomes.filter((entry) => {
+    const at = Date.parse(entry.at);
+    return Number.isFinite(at) && at > floor && at <= nowMs;
+  });
 }
 
 /** Normalize state written by older plugin versions before it affects routing. */
@@ -60,6 +99,7 @@ export function normalizeHealthState(value: unknown): ModelHealthState {
       successStreak: finiteCounter(row.successStreak),
       lastInvocationAt,
       degradedAt: isoOrNull(row.degradedAt),
+      recentOutcomes: normalizeRecentOutcomes(row.recentOutcomes),
     };
   }
   return next;
@@ -121,6 +161,10 @@ export function reconcileHealth(input: {
           failureStreak: 0,
           successStreak: 0,
           degradedAt: null,
+          // A fresh trial means a fresh outcome ring: carrying the old
+          // window would let one probationary failure re-trip the breaker
+          // on pre-probation evidence.
+          recentOutcomes: [],
         };
       } else if (
         before.verdict === "degraded" &&
@@ -133,6 +177,7 @@ export function reconcileHealth(input: {
           failureStreak: 0,
           successStreak: 0,
           degradedAt: null,
+          recentOutcomes: [],
         };
       } else if (
         before.verdict === "healthy" &&
@@ -145,6 +190,7 @@ export function reconcileHealth(input: {
           failureStreak: 0,
           successStreak: 0,
           degradedAt: null,
+          recentOutcomes: [],
         };
       } else if (before.verdict === "unknown") {
         after.reason = before.lastInvocationAt
@@ -214,6 +260,31 @@ export function reconcileInvocation(input: {
       // the old incident had gone quiet.
       degradedAt: degraded ? input.now : before.degradedAt,
     };
+  }
+
+  // Rolling error-rate circuit breaker. The streak above catches a hard-down
+  // lane; the rate catches a flaky one whose interleaved successes would keep
+  // resetting the streak while every Nth call still burns the caller. The
+  // observation joins the ring first, so the call that crosses the threshold
+  // is the call that trips.
+  const nowMs = Date.parse(input.now);
+  const ring = pruneToWindow(before.recentOutcomes, nowMs)
+    .concat({ at: input.now, succeeded: input.succeeded })
+    .slice(-MAX_RECENT_OUTCOMES);
+  after = { ...after, recentOutcomes: ring };
+  if (ring.length >= ERROR_RATE_MIN_SAMPLES) {
+    const errors = ring.filter((entry) => !entry.succeeded).length;
+    const rate = errors / ring.length;
+    if (rate >= ERROR_RATE_THRESHOLD) {
+      after = {
+        ...after,
+        verdict: "degraded",
+        reason: `${errors} of ${ring.length} routed calls failed in the last 15 minutes (${Math.round(rate * 100)}% error rate >= 20% threshold)`,
+        // A still-failing lane slides its avoid window forward, exactly like
+        // the streak path's cooldown restart above.
+        degradedAt: input.now,
+      };
+    }
   }
 
   next[input.modelId] = after;
