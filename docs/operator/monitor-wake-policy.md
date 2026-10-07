@@ -1,10 +1,11 @@
 # Monitor wake policy: a minimum interval and a quiet-card skip
 
-**Result:** a host patch that stops a due monitor from starting a full agent
-session when nothing changed since that agent's last run. A monitor never wakes
-an agent sooner than 2 hours after its last run on the issue, and a quiet card
-is deferred again up to 4 hours after that run. Replayed over 24 hours of real
-runs, about half of all monitor wakes disappear (13% of all runs).
+**Result:** a host patch that avoids a full agent session for an unchanged
+timer monitor. It normally waits at least 2 hours after the agent's last run,
+then defers a quiet card up to 4 hours after that run. New input and a timeout
+inside the proposed deferral dispatch immediately. The initial 24-hour replay
+estimated a 13% reduction in all runs; that estimate predates the timeout fix
+below. The revised policy's live savings are not yet measured.
 
 This repository does not own the Paperclip host source, so this is the smallest
 exact patch plus executable verification. It has not been published to a
@@ -12,8 +13,11 @@ third-party repository. Base: host fork commit
 `ee341c9b1` (`fix(heartbeat): ignore monitor re-arm when measuring run progress
 for comment suppression`), which the patch reuses. It applies cleanly to that
 commit and to the live host tree. Patch sha256
-`304575f0dc570a5a7d3bbd4727ff7c4eec642ade916e5051ada1b3b08b5336b6`.
-Tracked for the next host build after the current cutover packet.
+`4c6f8f8e7d0a2761a155c4571ad90fb68933a0d8f4746282ae92745563e46f6d`.
+Tracked for the next host build after the current cutover packet. Dependent
+patch packets must be rebased and checked against this revised checksum before
+stacking; the event-wake packet written against the initial version no longer
+applies cleanly.
 
 ## Problem
 
@@ -50,6 +54,7 @@ Rules, in order:
 | No finished run in the last 4 hours, or the last run did not succeed | dispatch (recovery is never delayed) |
 | Last run ended 4 or more hours ago | dispatch (quiet backstop) |
 | New issue input or a linked external change since the run | dispatch |
+| `timeoutAt` is at or before the proposed next check | dispatch now, before timeout exhaustion |
 | Due less than 2 hours after the run | defer to run end + 2 hours |
 | Quiet, past 2 hours | defer 2 hours, never past run end + 4 hours |
 
@@ -60,10 +65,18 @@ the external reference) verbatim. The write is guarded on the claim token, so a
 monitor an agent re-armed in the meantime is not overwritten.
 
 Not touched: manual `monitor/check-now` checks, provider-quota recovery
-monitors, monitors a board user scheduled, and `external_service` monitors. The
-host does not observe what those watch (CI, deploys), so a quiet card proves
-nothing. Lifting that last exemption per service is the job of the event-wake
-follow-up, once check and review events reach the host.
+monitors, monitors a board user scheduled, and monitors with either
+`kind: "external_service"` or a non-empty, trimmed `serviceName`. The host does
+not observe what those watch (CI, deploys), so a quiet card proves nothing.
+A missing or blank service name does not exempt a timer. Lifting the exemption
+per service is the job of the event-wake follow-up, once check and review events
+reach the host.
+
+A timeout is not a useful next-check time: the existing scheduler checks
+`now >= timeoutAt` before evaluating this policy and starts recovery instead
+of dispatching. If the timeout would cap the proposed deferral, the policy
+dispatches immediately with `timeout_window_reached`. It does not change the
+existing exhaustion behavior for monitors already expired at the current tick.
 
 Failure mode: any error while reading evidence logs a warning and falls through
 to the legacy dispatch. The policy is an optimization and cannot lose a wake.
@@ -108,8 +121,8 @@ cd server
 cd ../ui && node_modules/.bin/vitest run src/lib/activity-format.test.ts
 ```
 
-Results, run against the live host tree with the patch applied and restored
-byte-identical afterwards:
+Initial packet results, before the review fixes below, run against the live
+host source tree with the patch applied and restored byte-identical afterwards:
 
 - Mutation control: with only the two new test files installed on the
   unpatched tree, 8 of the 21 database-backed tests failed (the 13 that passed
@@ -133,16 +146,55 @@ Known gap: the claim-token guard on the deferral write is not mutation-tested,
 because a re-arm between the claim and the write cannot be staged without
 hooking the database.
 
+### Review-fix verification
+
+The revised packet was reconstructed in an isolated export of host fork
+`ee341c9b1`; no running platform files were changed. Tests use embedded
+Postgres, not production data. From the exported repository root:
+
+```bash
+env -u NODE_ENV pnpm install --frozen-lockfile
+env -u NODE_ENV pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+env -u NODE_ENV pnpm --filter @paperclipai/plugin-sdk build
+env -u NODE_ENV pnpm --filter @paperclipai/paperclip-runner build:typescript
+node_modules/.bin/vitest run server/src/__tests__/issue-monitor-wake-policy.test.ts server/src/__tests__/issue-monitor-wake-skip.test.ts
+node_modules/.bin/tsc -p server/tsconfig.json --noEmit --pretty false
+```
+
+- Before the fixes, 15 regression cases fail: timeout dispatch, equality,
+  all three recovery policies, and service-named monitors without `kind`.
+  The database cases execute both the due tick and the expiry tick before
+  asserting: the old implementation produces a recovery wake, a recovery
+  issue, or no wake instead of `issue_monitor_due`.
+- Final packet: 37 policy unit tests and 30 database-backed dispatch tests pass
+  (67 total). The tests also cover a safe first deferral followed by an
+  immediate check when the quiet window would cross the timeout.
+- Nine pure-policy mutants are killed: compare timeout to now; allow timeout
+  equality; dispatch every bounded monitor; remove the named-service or typed
+  exemption; exempt blank service names; defer failed runs; ignore external
+  changes; ignore new issue input.
+- The intermediate implementation omitted `serviceName` from the scheduler's
+  projection into the policy. Both named-service database tests failed despite
+  green unit tests. The final packet forwards that field and passes both.
+- Server typecheck exits 0 after building the runner's TypeScript declarations.
+  Before that build, typecheck failed on missing runner exports, not the patch.
+- Reapplying the exported patch to a fresh base reproduces the tested files
+  byte-for-byte. `git apply --check` succeeds on the fork base and the live
+  source tree; the live source was only checked, never patched.
+- Repository checks: `npm run typecheck`, `npm test` (1,259 tests), and
+  `npm run build` all pass.
+
 ## Replay estimate
 
-The 24-hour run list and per-issue activity were replayed through the same
-rules. Of 746 monitor wakes, 417 fell inside the 2-hour floor and 106 more hit
-a quiet card, so 523 (70%) would have been deferred. A deferred monitor still
-fires once at the end of its chain, so collapsing 145 chains leaves 378 runs
-avoided: 51% of monitor wakes and 13% of all runs. This is an estimate, not a
-measurement. It treats a named service as the `external_service` exemption, sees
-only the 24-hour window, and assumes agents keep re-arming at the same cadence.
-The weekly no-op share measurement is a separate follow-up.
+The initial 24-hour run list and per-issue activity replay estimated 523 of 746
+monitor wakes deferred (417 inside the 2-hour floor, 106 on quiet cards).
+Collapsing 145 deferral chains estimated 378 runs avoided: 51% of monitor wakes
+and 13% of all runs. This is a historical estimate, not a measurement of the
+revised policy. It treats a named service as the `external_service` exemption,
+sees only the 24-hour window, assumes the same re-arm cadence, and does not model
+the timeout-window dispatch added after review. Those monitors now dispatch
+rather than defer, so the revised savings must be recomputed. The weekly no-op
+share measurement is a separate follow-up; the under-10% target is unproven.
 
 ## Upstream route
 
