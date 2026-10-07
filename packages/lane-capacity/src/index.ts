@@ -45,6 +45,7 @@ export {
   proposeFleetAdmission,
 } from "./fleet-admission.js";
 export type {
+  FleetAdmissionBackstop,
   FleetAdmissionInventory,
   FleetAdmissionLaneInput,
   FleetAdmissionLevel,

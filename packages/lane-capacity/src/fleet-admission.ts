@@ -74,6 +74,15 @@ export interface FleetAdmissionPolicy {
   minAdmission?: number;
   /** Clamp ceiling for the admission fraction. Defaults to 1.5. */
   maxAdmission?: number;
+  /**
+   * Share of the fleet's accounted weight that must sit behind a five-hour
+   * serviceability trip before the backstop caps the fleet at `hold`. Below
+   * this share the weekly level stands: the tripped lanes are already withheld
+   * from the spend order, so a minority trip must not throttle healthy lanes
+   * whose weekly allowance would otherwise go unspent. Defaults to 0.5. Zero
+   * restores "any trip holds the fleet"; above 1 disables the cap.
+   */
+  backstopHoldShare?: number;
 }
 
 export interface FleetLaneRate {
@@ -85,9 +94,9 @@ export interface FleetLaneRate {
   hoursToReset: number | null;
   /**
    * Allowance fraction per hour the lane may still burn to land exactly on
-   * `targetLow` at reset. Null when the window length or reset is unknown, or
-   * the lane already meets/exceeds the target (floored reporting: 0 means
-   * "no room left", null means "unknown").
+   * `targetLow` at reset. Null when the window length, reset or as-of clock
+   * is unknown. Floored reporting: 0 means the lane already meets or exceeds
+   * the target ("no room left"), null means "unknown".
    */
   targetRatePerHour: number | null;
   /**
@@ -113,7 +122,23 @@ export interface FleetAdmissionInventory {
   }>;
 }
 
+/** How much of the fleet sits behind a five-hour serviceability trip, and whether that capped the level. */
+export interface FleetAdmissionBackstop {
+  /** Lanes with a tripped five-hour serviceability window. Always withheld from the spend order. */
+  trippedLanes: string[];
+  /**
+   * Tripped lanes' share of the fleet's accounted weight (tripped lanes plus
+   * the computable weight of the rest), 0 when nothing tripped.
+   */
+  trippedShare: number;
+  /** Share at/above which the backstop caps the fleet at `hold`. */
+  holdShare: number;
+  /** True when the backstop lowered the level the weekly picture alone would propose. */
+  capped: boolean;
+}
+
 export interface FleetAdmissionProposal {
+  /** Explicit `asOf`, else the latest finite observation time across all lanes; null when neither exists. */
   asOf: string | null;
   level: FleetAdmissionLevel;
   /** Baseline wake-rate multiplier, clamped to [minAdmission, maxAdmission]. Null when unknown. */
@@ -129,6 +154,7 @@ export interface FleetAdmissionProposal {
   spendOrder: string[];
   /** Lanes excluded from spending (unserviceable or uncomputable). */
   withheld: string[];
+  backstop: FleetAdmissionBackstop;
   inventory: FleetAdmissionInventory;
   lanes: FleetLaneRate[];
 }
@@ -138,6 +164,7 @@ const DEFAULT_CONSERVE_AT = 1.5;
 const DEFAULT_HYSTERESIS = 0.05;
 const DEFAULT_MIN_ADMISSION = 0.1;
 const DEFAULT_MAX_ADMISSION = 1.5;
+const DEFAULT_BACKSTOP_HOLD_SHARE = 0.5;
 const DEFAULT_FRACTIONS: Record<Exclude<FleetAdmissionLevel, "unknown">, number> = {
   boost: 1.25,
   normal: 1.0,
@@ -154,6 +181,37 @@ function finite(value: unknown): number | null {
 function positive(value: unknown): number | null {
   const n = finite(value);
   return n !== null && n > 0 ? n : null;
+}
+
+/**
+ * The fleet clock when the caller supplies none: the latest finite observation
+ * time across every lane, so the result never depends on lane order and one
+ * stale or unavailable lane cannot shift the others' hours-to-reset.
+ */
+function latestObservedAt(lanes: FleetAdmissionLaneInput[]): string | null {
+  let latest: string | null = null;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const lane of lanes) {
+    const observedAt = lane?.verdict?.observedAt;
+    const ms = typeof observedAt === "string" ? Date.parse(observedAt) : Number.NaN;
+    if (Number.isFinite(ms) && ms > latestMs) {
+      latest = observedAt as string;
+      latestMs = ms;
+    }
+  }
+  return latest;
+}
+
+/**
+ * Weight a tripped lane carries in the backstop share: its known account
+ * weight, else the weight of the accounts it lists, else 1. A lane tripped on
+ * a window with no usable weekly reading still counts as capacity behind a trip.
+ */
+function trippedLaneWeight(verdict: LanePaceVerdict | undefined): number {
+  const known = positive(verdict?.knownWeight);
+  if (known !== null) return known;
+  const listed = (verdict?.accounts ?? []).reduce((sum, account) => sum + (positive(account?.weight) ?? 1), 0);
+  return listed > 0 ? listed : 1;
 }
 
 function levelForProjected(projected: number, holdAt: number, conserveAt: number): Exclude<FleetAdmissionLevel, "unknown"> {
@@ -224,7 +282,8 @@ export function proposeFleetAdmission(input: {
   policy?: FleetAdmissionPolicy;
   previousLevel?: FleetAdmissionLevel | null;
 }): FleetAdmissionProposal {
-  const asOf = typeof input.asOf === "string" ? input.asOf : input.lanes[0]?.verdict.observedAt ?? null;
+  const explicitAsOf = typeof input.asOf === "string" && Number.isFinite(Date.parse(input.asOf)) ? input.asOf : null;
+  const asOf = explicitAsOf ?? latestObservedAt(input.lanes ?? []);
   const asOfMs = asOf !== null ? Date.parse(asOf) : Number.NaN;
   const targetLow = finite(input.policy?.targetLow) ?? BURN_DOWN_TARGET_LOW;
   const holdAt = finite(input.policy?.holdAt) ?? DEFAULT_HOLD_AT;
@@ -232,12 +291,15 @@ export function proposeFleetAdmission(input: {
   const hysteresis = finite(input.policy?.hysteresis) ?? DEFAULT_HYSTERESIS;
   const minAdmission = finite(input.policy?.minAdmission) ?? DEFAULT_MIN_ADMISSION;
   const maxAdmission = finite(input.policy?.maxAdmission) ?? DEFAULT_MAX_ADMISSION;
+  const backstopHoldShare = Math.max(0, finite(input.policy?.backstopHoldShare) ?? DEFAULT_BACKSTOP_HOLD_SHARE);
   const fractions = { ...DEFAULT_FRACTIONS, ...input.policy?.fractions };
 
   const laneRates: FleetLaneRate[] = [];
   const spendCandidates: Array<{ laneId: string; resetMs: number; projected: number }> = [];
   const withheld: string[] = [];
-  let backstopTripped = false;
+  const trippedLanes: string[] = [];
+  let trippedWeight = 0;
+  let untrippedComputableWeight = 0;
 
   const inventoryLanes: FleetAdmissionInventory["lanes"] = [];
   let knownAccountCount = 0;
@@ -256,7 +318,11 @@ export function proposeFleetAdmission(input: {
     const burndown = lane?.burndown;
     const laneId = typeof verdict?.laneId === "string" ? verdict.laneId : "unknown";
     const blocked = verdict?.serviceable === false;
-    if (verdict?.reason === "serviceability-window-exhausted") backstopTripped = true;
+    const tripped = verdict?.reason === "serviceability-window-exhausted";
+    if (tripped) {
+      trippedLanes.push(laneId);
+      trippedWeight += trippedLaneWeight(verdict);
+    }
     knownAccountCount += verdict?.knownAccountCount ?? 0;
     knownWeight += verdict?.knownWeight ?? 0;
     serviceableAccountCount += verdict?.serviceableAccountCount ?? 0;
@@ -286,8 +352,9 @@ export function proposeFleetAdmission(input: {
       laneProjected += projected * weight;
       laneProjectedWeight += weight;
       if (laneUtilization === null || utilization > laneUtilization) laneUtilization = utilization;
+      // Reset order compares reset times only; it must not need a fleet clock.
       const resetMs = Date.parse(account?.governingResetAt ?? "");
-      if (Number.isFinite(resetMs) && Number.isFinite(asOfMs)) {
+      if (Number.isFinite(resetMs)) {
         if (laneResetMs === null || resetMs < laneResetMs) laneResetMs = resetMs;
         if (soonestResetMs === null || resetMs < soonestResetMs) {
           soonestResetMs = resetMs;
@@ -297,6 +364,7 @@ export function proposeFleetAdmission(input: {
     }
 
     computableAccountCount += laneComputable;
+    if (!tripped) untrippedComputableWeight += laneProjectedWeight;
     inventoryLanes.push({
       laneId,
       knownAccountCount: verdict?.knownAccountCount ?? 0,
@@ -353,6 +421,14 @@ export function proposeFleetAdmission(input: {
 
   const fleetRemainingFraction = fleetRemainingWeight > 0 ? fleetRemaining / fleetRemainingWeight : null;
   const fleetProjectedValue = fleetProjectedWeight > 0 ? fleetProjected / fleetProjectedWeight : null;
+  const trippedShare = trippedWeight > 0 ? trippedWeight / (trippedWeight + untrippedComputableWeight) : 0;
+  const backstopCapsFleet = trippedLanes.length > 0 && trippedShare >= backstopHoldShare;
+  const backstop = (capped: boolean): FleetAdmissionBackstop => ({
+    trippedLanes,
+    trippedShare,
+    holdShare: backstopHoldShare,
+    capped,
+  });
 
   if (fleetProjectedValue === null) {
     const anyBlocked = laneRates.some((lane) => lane.blocked);
@@ -366,6 +442,7 @@ export function proposeFleetAdmission(input: {
       soonestResetAt,
       spendOrder: [],
       withheld,
+      backstop: backstop(false),
       inventory: { knownAccountCount, knownWeight, serviceableAccountCount, computableAccountCount, lanes: inventoryLanes },
       lanes: laneRates,
     };
@@ -386,21 +463,26 @@ export function proposeFleetAdmission(input: {
   });
 
   // The five-hour serviceability backstop caps but never sets the weekly
-  // level: while any lane trips it, the fleet holds at most — it never boosts
-  // into a hot lane, and it never conserves on weekly grounds alone.
-  const capped = backstopTripped && (leveled === "boost" || leveled === "normal") ? "hold" as const : leveled;
+  // level, and it is sized by how much of the fleet it covers. A tripped lane
+  // is already withheld from the spend order, so a minority trip leaves the
+  // weekly level alone — holding every healthy lane would strand their weekly
+  // allowance. Once tripped lanes carry `backstopHoldShare` of the fleet's
+  // accounted weight, the fleet holds at most: no boost into a mostly hot
+  // fleet, and never a conserve on five-hour grounds alone.
+  const capped = backstopCapsFleet && (leveled === "boost" || leveled === "normal") ? "hold" as const : leveled;
   const fraction = Math.min(maxAdmission, Math.max(minAdmission, fractions[capped] ?? DEFAULT_FRACTIONS[capped]));
 
   return {
     asOf,
     level: capped,
     admissionFraction: minAdmission <= maxAdmission ? fraction : null,
-    reason: backstopTripped && capped !== leveled ? "capped-by-serviceability-backstop" : reasonFor(capped),
+    reason: capped !== leveled ? "capped-by-serviceability-backstop" : reasonFor(capped),
     remainingFraction: fleetRemainingFraction,
     projected: fleetProjectedValue,
     soonestResetAt,
     spendOrder,
     withheld,
+    backstop: backstop(capped !== leveled),
     inventory: { knownAccountCount, knownWeight, serviceableAccountCount, computableAccountCount, lanes: inventoryLanes },
     lanes: laneRates,
   };

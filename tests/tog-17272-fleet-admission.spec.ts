@@ -147,7 +147,7 @@ describe("fleet admission from total remaining weekly allowance (offline)", () =
     expect(tied.spendOrder).toEqual(["muse", "codex"]);
   });
 
-  it("withholds a serviceability-tripped lane and caps the fleet at hold", () => {
+  it("withholds a tripped lane and caps the fleet at hold once half the fleet sits behind trips", () => {
     const proposal = proposeFleetAdmission({
       lanes: [
         laneInput("muse", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.3 }]),
@@ -158,8 +158,142 @@ describe("fleet admission from total remaining weekly allowance (offline)", () =
     // The weekly picture alone would boost; the five-hour backstop caps it.
     expect(proposal.level).toBe("hold");
     expect(proposal.reason).toBe("capped-by-serviceability-backstop");
+    expect(proposal.backstop).toEqual({ trippedLanes: ["codex"], trippedShare: 0.5, holdShare: 0.5, capped: true });
     expect(proposal.withheld).toEqual(["codex"]);
     expect(proposal.spendOrder).toEqual(["muse"]);
+  });
+
+  it("does not throttle healthy lanes for a minority trip: the weekly level stands", () => {
+    // Four lanes at 0.2 utilization (fleet projected 0.4, well under target),
+    // one of them over its five-hour limit. Its weekly allowance is withheld
+    // from the spend order; the other three must keep boosting.
+    const lanes = [
+      laneInput("a", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.2, fiveHourUtilization: 0.95 }]),
+      laneInput("b", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.2 }]),
+      laneInput("c", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.2 }]),
+      laneInput("d", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.2 }]),
+    ];
+    const proposal = proposeFleetAdmission({ lanes, asOf: HALFWAY });
+    expect(lanes[0]!.verdict.reason).toBe("serviceability-window-exhausted");
+    expect(proposal.projected).toBeCloseTo(0.4, 5);
+    expect(proposal.level).toBe("boost");
+    expect(proposal.reason).toBe("fleet-under-use-boost");
+    expect(proposal.admissionFraction).toBe(1.25);
+    expect(proposal.backstop.trippedLanes).toEqual(["a"]);
+    expect(proposal.backstop.trippedShare).toBeCloseTo(0.25, 5);
+    expect(proposal.backstop.capped).toBe(false);
+    // The tripped lane is still never spent.
+    expect(proposal.withheld).toEqual(["a"]);
+    expect(proposal.spendOrder).toEqual(["b", "c", "d"]);
+  });
+
+  it("sizes the backstop by tripped weight, so one heavy lane can cap a light fleet", () => {
+    const proposal = proposeFleetAdmission({
+      lanes: [
+        laneInput("heavy", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.2, fiveHourUtilization: 0.95, weight: 6 }]),
+        laneInput("light1", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.2, weight: 1 }]),
+        laneInput("light2", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.2, weight: 1 }]),
+      ],
+      asOf: HALFWAY,
+    });
+    // 6 of 8 weight units sit behind the trip.
+    expect(proposal.backstop.trippedShare).toBeCloseTo(0.75, 5);
+    expect(proposal.level).toBe("hold");
+    expect(proposal.reason).toBe("capped-by-serviceability-backstop");
+  });
+
+  it("lets policy restore the any-trip hold or disable the cap", () => {
+    const lanes = [
+      laneInput("a", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.2, fiveHourUtilization: 0.95 }]),
+      laneInput("b", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.2 }]),
+      laneInput("c", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.2 }]),
+      laneInput("d", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.2 }]),
+    ];
+    const anyTrip = proposeFleetAdmission({ lanes, asOf: HALFWAY, policy: { backstopHoldShare: 0 } });
+    expect(anyTrip.level).toBe("hold");
+    expect(anyTrip.backstop.capped).toBe(true);
+
+    const allSides = [
+      laneInput("a", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.2, fiveHourUtilization: 0.95 }]),
+      laneInput("b", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.2, fiveHourUtilization: 0.95 }]),
+    ];
+    const disabled = proposeFleetAdmission({ lanes: allSides, asOf: HALFWAY, policy: { backstopHoldShare: 2 } });
+    expect(disabled.backstop.trippedShare).toBe(1);
+    expect(disabled.backstop.capped).toBe(false);
+  });
+
+  it("never lowers a level the weekly picture already restricts", () => {
+    const proposal = proposeFleetAdmission({
+      lanes: [
+        laneInput("a", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.9, fiveHourUtilization: 0.95 }]),
+        laneInput("b", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.9 }]),
+      ],
+      asOf: HALFWAY,
+    });
+    // Half the fleet is tripped, but weekly alone already says conserve.
+    expect(proposal.level).toBe("conserve");
+    expect(proposal.reason).toBe("fleet-over-burn-conserve");
+    expect(proposal.backstop.capped).toBe(false);
+  });
+
+  describe("without an explicit asOf", () => {
+    const unavailable = (): FleetAdmissionLaneInput => {
+      const verdict: LanePaceVerdict = evaluateLanePace({
+        observation: normalizeLaneDocument({ document: null, definition: definitionFor("gone") }),
+        asOf: HALFWAY,
+      });
+      expect(verdict.reason).toBe("document-unavailable");
+      expect(verdict.observedAt).toBeNull();
+      return { verdict, burndown: laneBurnDown(verdict), windowSeconds: WEEK_SECONDS };
+    };
+
+    it("is independent of lane order and keeps the spend order when the first lane is unavailable", () => {
+      const healthy = () => [
+        laneInput("muse", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.3 }]),
+        laneInput("codex", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.4 }]),
+      ];
+      const gonePrefix = proposeFleetAdmission({ lanes: [unavailable(), ...healthy()] });
+      const goneSuffix = proposeFleetAdmission({ lanes: [...healthy(), unavailable()] });
+      expect(gonePrefix.asOf).toBe(HALFWAY);
+      expect(gonePrefix.spendOrder).toEqual(["muse", "codex"]);
+      expect(gonePrefix.withheld).toEqual(["gone"]);
+      expect(gonePrefix.lanes.filter((lane) => lane.laneId !== "gone").every((lane) => lane.hoursToReset !== null)).toBe(true);
+      // Same lanes, different order: same proposal up to lane listing order.
+      expect(goneSuffix.asOf).toBe(gonePrefix.asOf);
+      expect(goneSuffix.level).toBe(gonePrefix.level);
+      expect(goneSuffix.spendOrder).toEqual(gonePrefix.spendOrder);
+      expect(goneSuffix.soonestResetAt).toBe(gonePrefix.soonestResetAt);
+    });
+
+    it("uses the latest observation, so a stale first lane does not shift hours-to-reset", () => {
+      const staleAt = new Date(Date.parse(HALFWAY) - 5 * HOUR_MS).toISOString();
+      // The first lane's snapshot is five hours older than the second's. The
+      // old fallback took the first lane's time as the fleet clock, which
+      // shifted every other lane's hours-to-reset by that age (84 → 89).
+      const stale = laneInput("stale", staleAt, EXPIRY, [{ allowanceUtilization: 0.3 }]);
+      const fresh = laneInput("fresh", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.3 }]);
+      const derived = proposeFleetAdmission({ lanes: [stale, fresh] });
+      const explicit = proposeFleetAdmission({ lanes: [stale, fresh], asOf: HALFWAY });
+      expect(derived.asOf).toBe(HALFWAY);
+      expect(derived.lanes.find((lane) => lane.laneId === "fresh")?.hoursToReset).toBeCloseTo(84, 5);
+      expect(derived.lanes.map((lane) => lane.hoursToReset)).toEqual(explicit.lanes.map((lane) => lane.hoursToReset));
+    });
+
+    it("builds the spend order even when no clock can be derived", () => {
+      // Real verdict with only its observation time cleared: the spend order
+      // compares reset times, so it must survive a missing fleet clock.
+      const lane = laneInput("muse", HALFWAY, EXPIRY, [{ allowanceUtilization: 0.3 }]);
+      const proposal = proposeFleetAdmission({
+        lanes: [{ ...lane, verdict: { ...lane.verdict, observedAt: null } }],
+        asOf: "not-a-time",
+      });
+      expect(proposal.asOf).toBeNull();
+      expect(proposal.spendOrder).toEqual(["muse"]);
+      expect(proposal.soonestResetAt).toBe(new Date(EXPIRY).toISOString());
+      // Rates need the clock; the level and order do not.
+      expect(proposal.lanes[0]!.hoursToReset).toBeNull();
+      expect(proposal.lanes[0]!.targetRatePerHour).toBeNull();
+    });
   });
 
   it("reflects an added or cancelled subscription within one evaluation, config untouched", () => {
