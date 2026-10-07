@@ -34,3 +34,10 @@ npm run build
 npm run verify:host
 npm run rehearse
 ```
+
+Keep `build` before `verify:host`; the validator consumes the built artifact. If
+an installed host adds a UI slot, derive its capability from the host's
+`server/src/services/plugin-capability-validator.ts` before updating the mirror.
+Pin rejection without the capability and acceptance with it in a behavior test.
+Against a reachable host, a passing strict run must execute every required check
+without skips; host-contract drift is a repair, not a reason to waive the gate.
