@@ -36,13 +36,15 @@ In `packages/shared/src/types/chat-github.ts` (`GitHubReviewFinding`):
 - optional `evidence` (permalink label or quoted evidence, ≤500 chars);
 - optional `suggestion` (replacement lines, rendered as a suggestion block).
 
-In `packages/shared/src/validators/chat-github.ts`
-(`githubReviewAssessmentSchema`):
+In `packages/shared/src/validators/chat-github.ts`:
 
-- `summary` bound tightened to ≤2000 chars (was 24000);
-- finding `title` required (1–120, single line, no `|`), `evidence` ≤500,
-  `suggestion` ≤4000;
-- `line` stays a positive int, so `line: null` is rejected (pinned by test).
+- New submissions use `githubReviewAssessmentSchema`: `summary` ≤2000 chars;
+  finding `title` required (1–120, single line, no `|`), `evidence` ≤500,
+  `suggestion` ≤4000. `line: null` remains rejected.
+- Publication and retry use `githubPersistedReviewAssessmentSchema` for stored
+  assessments only. It accepts the previous 24,000-character summary bound and
+  findings without a title, normalizing a missing title to its category. New
+  submissions remain strict.
 
 New `server/src/services/chat-github-review-template.ts`:
 
@@ -66,10 +68,15 @@ New `server/src/services/chat-github-review-template.ts`:
   ceiling), cutting only on line boundaries and re-closing any open fence or
   `<details>` block.
 
-In `server/src/services/chat-github-reviews.ts`:
+In `server/src/services/chat-github-review-policy.ts` and
+`server/src/services/chat-github-reviews.ts`:
 
-- the three literals call the builders; policy gates, idempotency markers
-  and sanitizer order are unchanged (render → `projectSafeChatPublicationText`
+- `validateGitHubReviewAssessment` stays strict for fresh model submissions;
+  `validatePersistedGitHubReviewAssessment` applies the legacy-compatible schema
+  only when the publisher revalidates a stored assessment. Commit, coverage,
+  category, and path-policy checks remain shared.
+- The three literals call the builders; policy gates, idempotency markers and
+  sanitizer order are unchanged (render → `projectSafeChatPublicationText`
   → marker append; the sanitizer itself is untouched).
 
 In `server/src/services/chat-github-tools.ts` (`submit_review` description)
@@ -98,24 +105,25 @@ cd server
 
 New tests snapshot each builder: pass, issues, incomplete, 0 findings,
 300 findings → truncation; permalinks use the full SHA; `line: null` is
-rejected. Rev-2 answers three review findings: `#L` anchors are asserted in
-their published (post-sanitizer) form, pipe/newline titles are rejected by
-the schema and escaped by the renderer, and truncation is enforced on
-UTF-16 length with line-boundary cuts and re-closed blocks. Results
-(patch sha256
-`fd2ba856a3d01db50592b815a93d4af02d6caef8a3492943e322cf0a23fb6f92`):
+rejected. Rev-3 adds a publication-retry regression: a pre-deploy assessment
+with a 2,001-character summary and no finding title is rejected by the strict
+submission validator but accepted by the stored-assessment validator, which
+fills the title from the finding category. Results (patch sha256
+`cf0fe2cba3673bef830ac52e36d046d573dde05e26260c2bdc342d709ae4588d`):
 
-- v1 on the patched tree: `chat-github-review-template.test.ts` +
-  `chat-github-review-policy.test.ts` 19 passed; `tsc --noEmit` clean;
-  `git apply --check` passes against the touched host files.
-- Rev-2 delta verified without the host tree: all 10 patch hunks are
-  line-count consistent; the two new host files extracted from the patch
-  pass `tsc --strict --noEmit`; 27/27 behavioral assertions pass against
-  the bundled template plus a verbatim copy of the host sanitizer —
-  including a v1-vs-rev-2 comparison on one 300-finding emoji-heavy input
-  (v1 renders 64,464 chars, rev-2 59,899, both truncated with the suffix).
-- Host `vitest` re-run on rev-2 happens at operator port time; the port PR
-  needs Paperclip Review 5/5 on its merge head regardless.
+- `git apply --check` passed for the prior and regenerated patches against the
+  exact host source files fetched at base commit `302776c7878881970c0f37941ba8cd3bc1255138`;
+  applying the regenerated patch produced the expected eight-file tree.
+- `tsc --noEmit --strict` passed for the updated shared validator.
+- Four standalone schema assertions passed: strict input rejects legacy data,
+  stored parsing accepts it and preserves the summary, derives a title, and
+  still rejects `line: null`.
+- Host Vitest and full server typecheck were not run in this model-router
+  workspace. The operator port must rerun them against the host checkout.
+
+Earlier rev-2 evidence was 27/27 standalone behavioral assertions, with the
+host Vitest and full server typecheck deferred to the operator port. The port PR
+still needs Paperclip Review 5/5 on its merge head.
 
 Still required after deploy: one live review on a two-web-next PR matching
 the template exactly, and a Paperclip Review 5/5 on the port PR itself.

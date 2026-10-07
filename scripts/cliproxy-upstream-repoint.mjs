@@ -18,16 +18,24 @@
  *   node scripts/cliproxy-upstream-repoint.mjs \
  *     --input BACKUP.json --output PAYLOAD.json \
  *     --credential-secret-id <uuid-of-approved-cliproxy-ref> \
- *     [--remap old-id=new-id ...]
+ *     [--remap old-id=new-id ...] [--merge "target srcA srcB" ...]
+ *
+ * --merge accepts the quoted triple ("target srcA srcB", the canonical form
+ * used by --flags-file and the runbook) or three separate argv tokens
+ * (--merge target srcA srcB); both parse to the same triple and fail closed
+ * otherwise.
  *
  * --remap renames a configured model id whose verbatim form is proven absent
  * from the live CLIProxy catalogue (dynamic evidence, never static alias
  * inspection). Each remap target must already be catalogue-verified. --disable
  * sets enabled:false on a configured id with no catalogue candidate; it is the
  * reversible disposition for unserved ids (entries preserved, selection
- * stopped) and needs an explicit policy decision before use. --flags-file
- * reads bulk actions from a file (one "<flag> <value>" per line) and is the
- * operator runbook's invocation shape. The guard proves the roster is
+ * stopped) and needs an explicit policy decision before use. --merge collapses
+ * two lane-label twins onto one served id: the enabled twin wins so active
+ * coverage never silently goes dark, the loser is disabled, and the survivor
+ * keeps its entire record. --flags-file reads bulk actions from a file (one
+ * flag plus its values per line) and is the operator runbook's invocation
+ * shape. The guard proves the roster is
  * otherwise untouched.
  */
 
@@ -59,20 +67,59 @@ function same(left, right) {
 }
 
 /**
+ * Runtime liveness: a model row with no `enabled` key is enabled.
+ * Mirrors src/config/resolve.ts:146 (`pickBoolean(raw.enabled, true)`) and
+ * the schema default (`enabled: { type: "boolean", default: true }`). Only an
+ * explicit `enabled: false` is dark. Anything else (missing key, true, or a
+ * non-boolean that the resolver folds to the default) counts as live.
+ */
+function isLive(entry) {
+  return entry?.enabled !== false;
+}
+
+const FLAG_ARITY = { "--remap": 1, "--disable": 1, "--drop": 1, "--merge": 3 };
+
+/**
  * Expand --flags-file FILE mates into raw argv tokens before pair parsing.
- * Each non-empty line must be exactly one flag plus its value
- * (`--remap old=new`, `--disable id`, `--drop id`); anything else fails.
- * This is the shape the operator runbook uses, so the runbook's literal
- * command is covered by spec, not just self-parsed in tests.
+ * Each non-empty line must be a known roster flag plus its values
+ * (`--remap old=new`, `--disable id`, `--drop id`,
+ * `--merge target srcA srcB`); anything else fails. This is the shape the
+ * operator runbook uses, so the runbook's literal command is covered by
+ * spec, not just self-parsed in tests.
  */
 function expandFlagFiles(argv) {
   const expanded = [];
-  for (let index = 0; index < argv.length; index += 2) {
+  for (let index = 0; index < argv.length;) {
     const key = argv[index];
     const value = argv[index + 1];
-    if (!key?.startsWith("--") || !value) fail(`invalid argument near ${key ?? "<end>"}`);
+    if (!key?.startsWith("--") || value === undefined) fail(`invalid argument near ${key ?? "<end>"}`);
+    // --merge takes three ids: the quoted triple ("target srcA srcB", the
+    // canonical flags-file/runbook shape) or three separate argv tokens
+    // (--merge target srcA srcB). Normalize both to one triple token.
+    if (key === "--merge") {
+      const parts = value.split(" ").filter((part) => part.length > 0);
+      if (parts.length === 3) {
+        expanded.push(key, parts.join(" "));
+        index += 2;
+        continue;
+      }
+      const nextA = argv[index + 1];
+      const nextB = argv[index + 2];
+      const nextC = argv[index + 3];
+      if (
+        nextA !== undefined && !nextA.startsWith("--") && !nextA.includes(" ") &&
+        nextB !== undefined && !nextB.startsWith("--") &&
+        nextC !== undefined && !nextC.startsWith("--")
+      ) {
+        expanded.push(key, `${nextA} ${nextB} ${nextC}`);
+        index += 4;
+        continue;
+      }
+      fail(`--merge must be "target srcA srcB" (quoted) or --merge target srcA srcB, got ${JSON.stringify(value)}`);
+    }
     if (key !== "--flags-file") {
       expanded.push(key, value);
+      index += 2;
       continue;
     }
     let lines;
@@ -82,19 +129,21 @@ function expandFlagFiles(argv) {
       fail(`cannot read flags file ${JSON.stringify(value)}`);
     }
     for (const line of lines.filter((candidate) => candidate.length > 0)) {
-      const tokens = line.trim().split(/\s+/);
-      if (tokens.length !== 2 || !tokens[0].startsWith("--")) {
-        fail(`unparseable flags-file line ${JSON.stringify(line)} (expected "<flag> <value>")`);
+      const [flag, ...values] = line.trim().split(/\s+/);
+      const arity = FLAG_ARITY[flag ?? ""];
+      if (arity === undefined || values.length !== arity) {
+        fail(`unparseable flags-file line ${JSON.stringify(line)} (expected a roster flag plus ${arity ?? "?"} values)`);
       }
-      expanded.push(tokens[0], tokens[1]);
+      expanded.push(flag, values.join(" "));
     }
+    index += 2;
   }
   return expanded;
 }
 
 function parseArgs(rawArgv) {
   const argv = expandFlagFiles(rawArgv);
-  const options = { remap: [], disable: [], drop: [] };
+  const options = { remap: [], disable: [], drop: [], merge: [] };
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index];
     const value = argv[index + 1];
@@ -107,12 +156,17 @@ function parseArgs(rawArgv) {
       options.disable.push(value);
     } else if (key === "--drop") {
       options.drop.push(value);
+    } else if (key === "--merge") {
+      const parts = value.split(" ").filter((part) => part.length > 0);
+      if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) fail(`--merge must be "target srcA srcB" (quoted) or --merge target srcA srcB, got ${JSON.stringify(value)}`);
+      const [target, srcA, srcB] = parts;
+      options.merge.push({ target, srcA, srcB });
     } else {
       options[key.slice(2)] = value;
     }
   }
   if (!options.input || !options.output || !options["credential-secret-id"]) {
-    fail("usage: cliproxy-upstream-repoint.mjs --input FILE --output FILE --credential-secret-id UUID [--remap old=new ...] [--disable id ...] [--drop id ...] [--flags-file FILE ...]");
+    fail('usage: cliproxy-upstream-repoint.mjs --input FILE --output FILE --credential-secret-id UUID [--remap old=new ...] [--disable id ...] [--drop id ...] [--merge "target srcA srcB" ...] [--flags-file FILE ...]');
   }
   return options;
 }
@@ -122,13 +176,14 @@ function touchedIds(options) {
     ...options.remap.flatMap((pair) => [pair.from, pair.to]),
     ...options.disable,
     ...options.drop,
+    ...options.merge.flatMap((triple) => [triple.target, triple.srcA, triple.srcB]),
   ];
 }
 
 function assertDeclaredOnce(options) {
   const seen = new Set();
   for (const id of touchedIds(options)) {
-    if (seen.has(id)) fail(`id ${JSON.stringify(id)} is declared twice across --remap/--disable/--drop`);
+    if (seen.has(id)) fail(`id ${JSON.stringify(id)} is declared twice across --remap/--disable/--drop/--merge`);
     seen.add(id);
   }
 }
@@ -198,6 +253,52 @@ function main() {
     remappedIds.push(`${from} -> ${to}`);
   }
 
+  // Twin coalescing: two lane labels for one model collapse onto the served
+  // id. The survivor keeps its ENTIRE record (all non-id metadata); the loser
+  // is disabled, never deleted. Survivor choice is live-state driven: the
+  // live twin wins so active coverage can never silently go dark. Live means
+  // runtime-enabled (isLive): only an explicit `enabled: false` is dark; a
+  // missing `enabled` key counts as enabled, mirroring
+  // src/config/resolve.ts:146. A both-live pair is a genuine ambiguity and
+  // fails for a policy decision; a both-dark pair keeps the first-listed
+  // source (deterministic; the entry stays unselected either way, so the
+  // choice is metadata-only).
+  const merges = options.merge ?? [];
+  const mergedIds = [];
+  const restoreMerges = [];
+  for (const { target, srcA, srcB } of merges) {
+    if (target === srcA || target === srcB || srcA === srcB) {
+      fail(`--merge ${JSON.stringify(target)} ${JSON.stringify(srcA)} ${JSON.stringify(srcB)} must name three distinct ids`);
+    }
+    const hitA = config.models.filter((model) => model?.id === srcA);
+    const hitB = config.models.filter((model) => model?.id === srcB);
+    if (hitA.length !== 1 || hitB.length !== 1) {
+      fail(`--merge sources ${JSON.stringify(srcA)} (${hitA.length}) / ${JSON.stringify(srcB)} (${hitB.length}) must each match exactly 1 model`);
+    }
+    if (config.models.some((model) => model?.id === target)) {
+      fail(`--merge target ${JSON.stringify(target)} already exists in the roster`);
+    }
+    const entryA = hitA[0];
+    const entryB = hitB[0];
+    const enabledA = isLive(entryA);
+    const enabledB = isLive(entryB);
+    if (enabledA && enabledB) {
+      fail(`--merge sources ${JSON.stringify(srcA)} and ${JSON.stringify(srcB)} are both live (enabled or default-enabled): dropping either loses coverage, needs a policy decision`);
+    }
+    const winner = enabledA ? entryA : enabledB ? entryB : entryA;
+    const loser = winner === entryA ? entryB : entryA;
+    restoreMerges.push({
+      target,
+      winnerId: winner.id,
+      loserId: loser.id,
+      loserHadKey: "enabled" in loser,
+      loserValue: loser.enabled,
+    });
+    winner.id = target;
+    loser.enabled = false;
+    mergedIds.push(`${srcA} + ${srcB} -> ${target} (kept ${winner === entryA ? srcA : srcB})`);
+  }
+
   const disables = options.disable ?? [];
   const disabledIds = [];
   const restoreEnabled = [];
@@ -236,6 +337,15 @@ function main() {
     const hit = restored.models.find((model) => model?.id === to);
     if (hit) hit.id = from;
   }
+  for (const record of restoreMerges) {
+    const survivor = restored.models.find((model) => model?.id === record.target);
+    const loser = restored.models.find((model) => model?.id === record.loserId);
+    if (survivor) survivor.id = record.winnerId;
+    if (loser) {
+      if (record.loserHadKey) loser.enabled = record.loserValue;
+      else delete loser.enabled;
+    }
+  }
   for (const id of disabledIds) {
     const hit = restored.models.find((model) => model?.id === id);
     const saved = restoreEnabled.find((record) => record.id === id);
@@ -248,7 +358,7 @@ function main() {
     restored.models.splice(index, 0, entry);
   }
   if (!same(restored, before)) {
-    fail("repoint changed fields outside upstream.baseUrl, upstream.credentialSecretRef.secretId, and declared --remap/--disable/--drop actions");
+    fail("repoint changed fields outside upstream.baseUrl, upstream.credentialSecretRef.secretId, and declared --remap/--disable/--drop/--merge actions");
   }
 
   fs.writeFileSync(options.output, `${JSON.stringify({ configJson: config }, null, 2)}\n`, { mode: 0o600 });
@@ -259,8 +369,11 @@ function main() {
     protocol,
     credentialSecretRefReplaced: true,
     remaps: remappedIds,
+    merges: mergedIds,
     disabled: disabledIds,
     dropped: droppedEntries.map((record) => record.id),
+    enabledBefore: before.models.filter(isLive).map((model) => model.id),
+    enabledAfter: config.models.filter(isLive).map((model) => model.id),
     modelCount: config.models.length,
     modelIds: config.models.map((model) => model?.id ?? null),
   }, null, 2));

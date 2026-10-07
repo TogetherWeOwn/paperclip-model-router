@@ -330,6 +330,8 @@ const FEATURE_CAPABILITIES = {
 };
 
 const UI_SLOT_CAPABILITIES = {
+  appShellOverlay: "ui.action.register",
+  organizationSwitcher: "ui.sidebar.register",
   sidebar: "ui.sidebar.register",
   sidebarPanel: "ui.sidebar.register",
   projectSidebarItem: "ui.sidebar.register",
@@ -338,6 +340,8 @@ const UI_SLOT_CAPABILITIES = {
   taskDetailView: "ui.detailTab.register",
   dashboardWidget: "ui.dashboardWidget.register",
   globalToolbarButton: "ui.action.register",
+  appShellOverlay: "ui.action.register",
+  organizationSwitcher: "ui.sidebar.register",
   toolbarButton: "ui.action.register",
   contextMenuItem: "ui.action.register",
   commentAnnotation: "ui.commentAnnotation.register",

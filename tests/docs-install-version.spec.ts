@@ -59,9 +59,50 @@ const COMMANDS: ReadonlyArray<{ label: string; pattern: RegExp }> = [
   },
 ];
 
+/**
+ * A plain fenced block (no language tag) introduced by "Transcript from the
+ * `vX.Y.Z` ..." is recorded output from that older tag, not a command to run.
+ * Its tarball name and size are the evidence, so a version bump must not
+ * rewrite them. A tagged block (```sh) is a command an operator pastes, so it
+ * is never skipped, whatever introduces it.
+ */
+function withoutHistoricalTranscripts(source: string): string {
+  return source.replace(/^Transcript from the `v\d+\.\d+\.\d+`[^\n]*\n\n```\n[\s\S]*?\n```\n/gm, "");
+}
+
+describe("historical transcripts", () => {
+  const block = "```\nPASS  4  tarball x-0.1.0.tgz\n```\n";
+
+  it("drops only the plain fenced block a `Transcript from the vX.Y.Z` line introduces", () => {
+    const kept = "Download: x-9.9.9.tgz\n```sh\nVERSION=9.9.9\n```\n";
+    const doc = `Transcript from the \`v0.1.0\` checkout (exit 0):\n\n${block}\n${kept}`;
+    expect(withoutHistoricalTranscripts(doc)).toBe(`\n${kept}`);
+  });
+
+  it("keeps a block whose introduction is not a transcript of a named tag", () => {
+    for (const intro of ["Transcript (exit 0):", "Transcript from the checkout above:", "Run this:"]) {
+      const doc = `${intro}\n\n${block}`;
+      expect(withoutHistoricalTranscripts(doc)).toBe(doc);
+    }
+  });
+
+  it("never skips a command block, even under a transcript introduction", () => {
+    const doc = "Transcript from the `v0.1.0` run (exit 0):\n\n```sh\nVERSION=0.1.0\n```\n";
+    expect(withoutHistoricalTranscripts(doc)).toBe(doc);
+  });
+
+  it("leaves every `VERSION=` command in OPERATIONS.md visible to the pin check", () => {
+    const source = readFileSync(join(repo, "docs/OPERATIONS.md"), "utf8");
+    const before = [...source.matchAll(/^VERSION=(\d+\.\d+\.\d+)$/gm)].length;
+    const after = [...withoutHistoricalTranscripts(source).matchAll(/^VERSION=(\d+\.\d+\.\d+)$/gm)].length;
+    expect(before).toBeGreaterThan(0);
+    expect(after).toBe(before);
+  });
+});
+
 describe("documented install commands", () => {
   for (const doc of DOCS) {
-    const source = readFileSync(join(repo, doc), "utf8");
+    const source = withoutHistoricalTranscripts(readFileSync(join(repo, doc), "utf8"));
 
     for (const { label, pattern } of COMMANDS) {
       it(`${doc}: every \`${label}\` names the current version`, () => {
@@ -88,7 +129,7 @@ describe("documented install commands", () => {
 
   it("keeps executable install commands pinned if a future authorization adds them", () => {
     for (const doc of DOCS) {
-      const source = readFileSync(join(repo, doc), "utf8");
+      const source = withoutHistoricalTranscripts(readFileSync(join(repo, doc), "utf8"));
       for (const { pattern } of COMMANDS) {
         for (const match of source.matchAll(new RegExp(pattern))) expect(match[1]).toBe(version);
       }

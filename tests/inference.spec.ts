@@ -604,10 +604,9 @@ describe.each(["sdk", "direct"] as const)("compatible response contract through 
   it.each(["null", "[]", "{}", '{"object":"chat.completion","choices":[]}'])("refuses invalid success envelope %s", async (body) => {
     const result = await invokeFixture(body, { "content-type": "application/json" });
     expect(result.response).toBeNull();
-    expect(result.error).toMatchObject({
-      code: "invalid-upstream-response", retryable: false,
-      message: "The compatible upstream returned an invalid success envelope.",
-    });
+    expect(result.error).toMatchObject({ code: "invalid-upstream-response", retryable: false });
+    // TOG-16699: the message now names the violated check after the prefix.
+    expect(result.error?.message ?? "").toMatch(/^The compatible upstream returned an invalid success envelope/);
   });
 
   it("enforces the decoded UTF-8 byte ceiling, including the exact boundary", async () => {
