@@ -102,6 +102,19 @@ configure, verify, roll back, and the blast-radius rules.
    [`docs/OPERATIONS.md`](OPERATIONS.md) → "Applying an operator-only change" is
    the other half, written for whoever applies it.
 
+7. **Review your own diff before you request review.** Paperclip Review passes a PR
+   only at 5/5, so every minor defect it finds costs another push, another CI run and
+   another review. Before the first push, and again on each fix delta: run the fast
+   checks (`npm run typecheck`, `npm test`, `npm run build`), then review the diff in a
+   fresh context against the 0-5 rubric the check uses, fix every finding that names a
+   concrete failing scenario, and say in the PR what you covered. The independent
+   review stays the gate; this makes the first review the last one. To see whether it
+   is working, run `npm run measure:review -- --repo owner/name`: it reports how often a
+   merged PR passed on its first scored review, how many scored rounds it took, and how
+   many review checks carried no verdict at all (those say nothing about the code and are
+   kept out of the pass rate). The definitions are in the header of
+   `scripts/review-first-pass.mjs`.
+
 ## Release
 
 ```bash

@@ -24,6 +24,7 @@ Guidance for human and AI contributors working in this repository.
 ## 4. Before you implement, and before you push
 
 - Verify locally first: `npm run typecheck`, `npm test`, `npm run build` (full list in `CONTRIBUTING.md`).
+- Review your own diff before you ask for review: after the checks above pass, read the diff in a fresh context against the 0-5 Paperclip Review rubric (5 passes, 4 does not), fix every finding with a concrete failing scenario, and name what you covered in the PR (`docs/PROCESS.md`, rule 7).
 - No secrets in this repo, ever. Never export tokens on `argv`; prefer the credential broker.
 
 ## 5. Definition of done

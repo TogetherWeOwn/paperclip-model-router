@@ -12,6 +12,16 @@ version is not present here.
 
 ### Added
 
+- **`npm run measure:review` — how often a PR passes review the first time.**
+  `scripts/review-first-pass.mjs` reads the `Paperclip Review` check run on every
+  commit of recently merged PRs and reports the first-pass rate (first scored
+  review is 5/5), scored rounds per PR, and the share of checks that carried no
+  verdict (manual-review-required and incomplete runs, which say nothing about
+  the code and stay out of the rate), by repository and by PR author.
+  `tests/review-first-pass.spec.ts` (17 tests) pins the definitions.
+  `docs/PROCESS.md` rule 7 and `AGENTS.md` ask authors to review their own diff
+  against the 0-5 rubric before requesting review.
+
 - **Invocation-derived model health (TOG-7160, port of TOG-930).**
   `src/health/` (types, reconcile, catalogue probe) tracks per-model health
   in company-scoped plugin state: catalogue presence keeps a model unknown
