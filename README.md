@@ -263,6 +263,29 @@ reasoning row is deliberately conservative (it steers toward async) until a
 production measurement replaces it; operators with measured numbers for
 their own models should set `maxSyncOutputTokens` explicitly.
 
+## Operator diagnostics
+
+To find nested project checkouts the host cannot adopt, run the report-only sweep
+from the repository root:
+
+```sh
+node docs/operator/nested-non-git-sweep.mjs <worktree-root> [<worktree-root> ...]
+```
+
+Each worktree root's immediate children and grandchildren are scanned as
+workspaces. The report follows the host's adoption rule: `.git` must resolve to a
+directory. A `.git` pointer file may still reference valid Git metadata (as in a
+linked worktree), but the host rejects that layout and the report labels it
+`non-directory-git-entry`; symlinks to directories are followed. Missing entries
+are `missing`, dangling symlinks are `dead-gitdir`, and other stat failures are
+`unverifiable-gitdir`. The summary's `nested-not-adoptable` count is the number
+of nested checkout entries that are not adoptable.
+
+The script reads filesystem metadata and uses `du` only to measure size; it never
+repairs, moves, or deletes candidates. It exits nonzero if it cannot scan a
+requested root or workspace, and reports `size-unknown` if `du` is unavailable.
+Review the output before taking any separate repair action.
+
 ## Development
 
 ```sh

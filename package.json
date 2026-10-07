@@ -26,7 +26,8 @@
     "scripts/tog-2922-prerequisite-refresh-gate.mjs",
     "docs/operator/tog-2922-pace-prerequisites.json",
     "docs/operator/TOG-2922-pace-ordering.md",
-    "docs/operator/TOG-3419-async-invoke.md"
+    "docs/operator/TOG-3419-async-invoke.md",
+    "docs/operator/nested-non-git-sweep.mjs"
   ],
   "scripts": {
     "build": "node esbuild.config.mjs",
