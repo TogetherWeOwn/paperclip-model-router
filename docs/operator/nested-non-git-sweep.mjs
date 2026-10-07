@@ -27,11 +27,6 @@ import path from "node:path";
 
 const NESTED_ROOT = ".paperclip-repositories";
 
-function dirSizeEstimate() {
-  // Sizes are computed with du when available; the fallback walks the tree.
-  return null;
-}
-
 async function duBytes(target) {
   const { execFile } = await import("node:child_process");
   try {
@@ -143,5 +138,4 @@ async function main() {
   console.log(`SUMMARY workspaces=${workspaces} nested-without-git=${hits}`);
 }
 
-void dirSizeEstimate;
 await main();
