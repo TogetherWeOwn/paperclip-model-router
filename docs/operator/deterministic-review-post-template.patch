@@ -266,7 +266,7 @@ new file mode 100644
 index 0000000..3052fa0
 --- /dev/null
 +++ b/server/src/services/chat-github-review-template.test.ts
-@@ -0,0 +1,410 @@
+@@ -0,0 +1,414 @@
 +import { describe, expect, it } from "vitest";
 +import type {
 +  GitHubReviewAssessment,
@@ -493,7 +493,10 @@ index 0000000..3052fa0
 +        title: `Nit ${i} with a fairly long title to consume table space`,
 +        body: "Body text ".repeat(50),
 +        evidence: "e".repeat(100),
-+        suggestion: "s".repeat(200),
++        suggestion:
++          i === 0
++            ? `</details>\n${"s".repeat(3989)}`
++            : "s".repeat(4000),
 +      }),
 +    );
 +    const out = renderReviewSummary({
@@ -508,9 +511,10 @@ index 0000000..3052fa0
 +    expect(out.endsWith(REVIEW_POST_TRUNCATION_SUFFIX)).toBe(true);
 +    // The cut lands on a line boundary with every opened block re-closed.
 +    expect((out.match(/```/g) ?? []).length % 2).toBe(0);
-+    expect((out.match(/<\/details>/g) ?? []).length).toBeGreaterThanOrEqual(
-+      (out.match(/<details>/g) ?? []).length,
-+    );
++    // A tag-shaped string in the suggestion is not a structural closer.
++    expect(
++      out.slice(0, -REVIEW_POST_TRUNCATION_SUFFIX.length),
++    ).toMatch(/\n<\/details>$/);
 +  });
 +
 +  it("holds the ceiling for astral-emoji-heavy posts", () => {
@@ -682,7 +686,7 @@ new file mode 100644
 index 0000000..9cfa93e
 --- /dev/null
 +++ b/server/src/services/chat-github-review-template.ts
-@@ -0,0 +1,318 @@
+@@ -0,0 +1,333 @@
 +import type {
 +  GitHubReviewAssessment,
 +  GitHubReviewFinding,
@@ -768,6 +772,22 @@ index 0000000..9cfa93e
 +  return haystack.split(needle).length - 1;
 +}
 +
++/** Ignore tag-shaped text inside fenced suggestions when tracking details blocks. */
++function hasOpenDetailsBlock(text: string): boolean {
++  let openDetails = 0;
++  let insideFence = false;
++  for (const line of text.split("\n")) {
++    if (line.trimStart().startsWith("```")) {
++      insideFence = !insideFence;
++      continue;
++    }
++    if (insideFence) continue;
++    openDetails += countOccurrences(line, "<details>");
++    openDetails -= countOccurrences(line, "</details>");
++  }
++  return openDetails > 0;
++}
++
 +function truncatePost(text: string): string {
 +  if (text.length <= REVIEW_POST_MAX_CHARS) return text;
 +  const keep =
@@ -781,8 +801,7 @@ index 0000000..9cfa93e
 +  if (lastNewline > 0) cut = cut.slice(0, lastNewline);
 +  // Re-close any block left open by the cut so the published post renders.
 +  if (countOccurrences(cut, "```") % 2 === 1) cut += "\n```";
-+  if (countOccurrences(cut, "<details>") > countOccurrences(cut, "</details>"))
-+    cut += "\n</details>";
++  if (hasOpenDetailsBlock(cut)) cut += "\n</details>";
 +  return cut + REVIEW_POST_TRUNCATION_SUFFIX;
 +}
 +
@@ -1001,24 +1020,172 @@ index 0000000..9cfa93e
 +export function renderCheckSummary(input: RenderReviewSummaryInput): string {
 +  return renderReviewSummary(input);
 +}
+diff --git a/server/src/__tests__/chat-channels.integration.test.ts b/server/src/__tests__/chat-channels.integration.test.ts
+index 85d968cbc1c55fef2d467478ef7f425d3cebd7c6..ad769179b988cb3e79bf75f998b1eb981f6741e8 100644
+--- a/server/src/__tests__/chat-channels.integration.test.ts
++++ b/server/src/__tests__/chat-channels.integration.test.ts
+@@ -2634,11 +2634,10 @@
+       expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, late.id)))[0].state).toBe("superseded");
+       expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, unrelated.id)))[0].state).toBe("queued");
+     });
+-    it("links a gated GitHub check to the current vanity review page before a task exists", async () => {
++    it("uses a public PR URL for gated GitHub checks before a task exists", async () => {
+       const publicOrigin = vi.spyOn(cloudRuntimeIdentity, "runtimePublicOrigin").mockReturnValue("https://current-vanity.example");
+       onTestFinished(() => publicOrigin.mockRestore());
+       const f = await reviewBotFixture();
+-      const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+       const head = "b".repeat(40);
+       const event = githubAutomaticReviewEvent({
+         action: "opened", installation: { id: 2468 },
+@@ -2667,15 +2666,14 @@
+       await checks.processPending();
+       expect(writes).toEqual([expect.objectContaining({
+         status: "completed", conclusion: "action_required", head_sha: head,
+-        details_url: `https://current-vanity.example/${company.issuePrefix}/apps/chat/${f.endpoint.id}/reviews`,
++        details_url: "https://github.com/paperclipai/paperclip/pull/83",
+       })]);
+       expect(await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.endpointId, f.endpoint.id))).toHaveLength(0);
+     });
+     it("uses task-bound bot tools and deterministic checks, then denies revoked people", async () => {
+       const publicOrigin = vi.spyOn(cloudRuntimeIdentity, "runtimePublicOrigin").mockReturnValue("https://current-vanity.example");
+       onTestFinished(() => publicOrigin.mockRestore());
+       const f = await reviewBotFixture();
+-      const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+       const thread = makeThread({
+         channelId: "paperclipai/paperclip",
+         id: "github:paperclipai/paperclip:91",
+@@ -2829,9 +2827,9 @@
+         url: "https://api.github.com/repos/paperclipai/paperclip/check-runs",
+         body: {
+           status: "in_progress", external_id: `${f.endpoint.id}:91:${head}`,
+-          details_url: `https://current-vanity.example/${company.issuePrefix}/issues/${conversation.issueId}`,
++          details_url: "https://github.com/paperclipai/paperclip/pull/91",
+         },
+       });
+       expect(mutations.at(-1)?.body).not.toHaveProperty("conclusion");
+       const assessment = {
+         reviewedCommit: head,
+@@ -2852,6 +2850,7 @@
+             side: "RIGHT",
+             severity: "error",
+             category: "correctness",
++            title: "Incorrect operator",
+             body: "Use addition.",
+           },
+         ],
+@@ -2873,14 +2872,15 @@
+           ),
+         );
+       expect(publication.status).toBe("processed");
+-      expect(
+-        mutations.find((m) => m.body.conclusion === "failure")?.body,
+-      ).toMatchObject({
++      const failedCheck = mutations.find(
++        (m) => m.body.conclusion === "failure",
++      )?.body;
++      expect(failedCheck).toMatchObject({
+         name: "Paperclip Review",
+         head_sha: head,
+         conclusion: "failure",
+-        details_url: `https://current-vanity.example/${company.issuePrefix}/issues/${conversation.issueId}`,
++        details_url: "https://github.com/paperclipai/paperclip/pull/91",
+       });
+       const publishedCount = mutations.length;
+       const retried = await service.execute(
+         session,
+@@ -2983,14 +2983,15 @@
+         score: 5,
+         conclusion: "success",
+       });
+-      expect(
+-        mutations.filter((m) => m.url.endsWith("/check-runs")).at(-1)?.body,
+-      ).toMatchObject({
++      const successfulCheck = mutations
++        .filter((m) => m.url.endsWith("/check-runs"))
++        .at(-1)?.body;
++      expect(successfulCheck).toMatchObject({
+         head_sha: head, conclusion: "success",
+-        details_url: `https://renamed-vanity.example/${company.issuePrefix}/issues/${conversation.issueId}`,
++        details_url: "https://github.com/paperclipai/paperclip/pull/91",
+       });
+       expect(comments.size).toBe(1);
+       expect([...comments.values()][0]?.body).toContain("Addition is correct");
+       expect(mutations.some((m) => m.url.includes("/issues/comments/"))).toBe(
+         true,
+       );
+
+diff --git a/server/src/services/chat-github-checks.ts b/server/src/services/chat-github-checks.ts
+index 54880b73cc4b54f8fb2fe82027097569582589c7..e61b4ceb8c9ee1e267f0802f456f73bf8dbd4d6b 100644
+--- a/server/src/services/chat-github-checks.ts
++++ b/server/src/services/chat-github-checks.ts
+@@ -11,12 +11,11 @@
+   chatGitHubConfigurations,
+   chatGitHubReviews,
+   chatMessageLinks,
+-  companies,
+   heartbeatRuns,
+   type Db,
+ } from "@paperclipai/db";
+ import type { GitHubReviewEventContext } from "@paperclipai/shared";
+-import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
++import { githubPullPermalink } from "./chat-github-review-template.js";
+ import {
+   githubBotRepositoryToken,
+   githubBotRequest,
+@@ -96,10 +95,8 @@
+               endpoint: chatEndpoints,
+               resource: chatEndpointResources,
+               configuration: chatGitHubConfigurations.configuration,
+-              companyPrefix: companies.issuePrefix,
+             })
+             .from(chatEndpoints)
+-            .innerJoin(companies, eq(companies.id, chatEndpoints.companyId))
+             .innerJoin(
+               chatGitHubConfigurations,
+               eq(chatGitHubConfigurations.endpointId, chatEndpoints.id),
+@@ -297,13 +294,6 @@
+             return;
+           }
+           if (fresh.result?.state !== state) {
+-            const origin = runtimePublicOrigin();
+-            const detailsPath = review
+-              ? `issues/${review.issueId}`
+-              : `apps/chat/${source.endpoint.id}/reviews`;
+-            const detailsUrl = origin
+-              ? `${origin}/${encodeURIComponent(source.companyPrefix)}/${detailsPath}`
+-              : null;
+             const externalId = `${action.endpointId}:${event.pullNumber}:${event.headSha}`;
+             const checks = await request<{
+               check_runs: Array<{
+@@ -334,7 +324,7 @@
+                   name: "Paperclip Review",
+                   head_sha: event.headSha,
+                   external_id: externalId,
+-                  ...(detailsUrl ? { details_url: detailsUrl } : {}),
++                  details_url: githubPullPermalink(event.repository, event.pullNumber),
+                   status,
+                   ...(status === "completed"
+                     ? { conclusion: "action_required" }
+
 diff --git a/server/src/services/chat-github-reviews.ts b/server/src/services/chat-github-reviews.ts
-index 68c639f..d518d64 100644
+index 68c639f..2bf10d620270246e26b58572609ad3e7272339a3 100644
 --- a/server/src/services/chat-github-reviews.ts
 +++ b/server/src/services/chat-github-reviews.ts
-@@ -2,8 +2,11 @@ import {
+@@ -2,8 +2,12 @@ import {
    GitHubPublicationLeaseLost,
    withGitHubPublicationLease,
  } from "./chat-github-publication-lease.js";
 -import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
  import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 +import {
++  githubPullPermalink,
 +  renderInlineFinding,
 +  renderReviewSummary,
 +} from "./chat-github-review-template.js";
  import { githubReviewCheckService } from "./chat-github-checks.js";
  import { createHash } from "node:crypto";
  import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
-@@ -19,7 +22,6 @@ import {
+@@ -19,7 +23,6 @@ import {
    chatGitHubConfigurations,
    chatGitHubReviews,
    chatMessageLinks,
@@ -1026,7 +1193,7 @@ index 68c639f..d518d64 100644
    heartbeatRuns,
    issues,
    projects,
-@@ -42,6 +44,7 @@ import {
+@@ -42,6 +45,7 @@ import {
    githubReviewPathIsExcluded,
    githubReviewLineIsInPatch,
    validateGitHubReviewAssessment,
@@ -1034,7 +1201,7 @@ index 68c639f..d518d64 100644
  } from "./chat-github-review-policy.js";
  import {
    isIssueWithinLowTrustBoundary,
-@@ -1123,7 +1126,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
+@@ -1123,7 +1127,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
              if (!review?.assessment)
                throw conflict("Review assessment is unavailable");
              await currentHead(review.headSha);
@@ -1043,7 +1210,7 @@ index 68c639f..d518d64 100644
                review.assessment,
                review.headSha,
                {
-@@ -1138,26 +1141,15 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
+@@ -1138,26 +1142,15 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
                assessment,
                review.policySnapshot.ratingThreshold,
              );
@@ -1065,8 +1232,8 @@ index 68c639f..d518d64 100644
 -            const historyLink = board
 -              ? ` · [Review history](${board}/apps/chat/${source.endpoint.id}/reviews)`
 -              : "";
-+            // Internal Task/Run/history links and the check-run Details URL are
-+            // never published: the template carries only public permalinks.
++            // Internal Task/Run/history links are omitted; check runs use the
++            // public PR permalink as their Details URL.
              const summary = projectSafeChatPublicationText(
 -              `## Paperclip Review — ${assessment.complete ? `${assessment.score}/5` : "Incomplete"}\n\n${assessment.summary}\n\n${assessment.rationale}\n\nReviewed commit: \`${review.headSha}\`\n\nCoverage: ${assessment.coverage.reviewedPaths.length} files.\n${assessment.coverage.limitations.join("\n")}\n\nTask: ${taskLink} · ${runLink}${historyLink}`,
 +              renderReviewSummary({
@@ -1078,7 +1245,7 @@ index 68c639f..d518d64 100644
              );
              const summaryMarker = marker(
                "review",
-@@ -1226,7 +1218,15 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
+@@ -1226,7 +1219,15 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
                      {
                        method: "POST",
                        body: {
@@ -1095,11 +1262,12 @@ index 68c639f..d518d64 100644
                          commit_id: review.headSha,
                          path: finding.path,
                          line: finding.line,
-@@ -1291,7 +1291,6 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
+@@ -1291,7 +1292,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
                  name: "Paperclip Review",
                  head_sha: review.headSha,
                  external_id: `${source.endpoint.id}:${source.number}:${review.headSha}`,
 -                ...(board ? { details_url: `${board}/issues/${source.issue.id}` } : {}),
++                details_url: githubPullPermalink(source.repository, source.number),
                  status: "completed",
                  conclusion,
                  output: {
