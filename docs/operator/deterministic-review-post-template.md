@@ -4,12 +4,13 @@
 structured model fields through deterministic server-side builders. The model
 fills fields concisely and never formats markdown; `renderReviewSummary`,
 `renderInlineFinding` and `renderCheckSummary` render the summary comment,
-inline findings and check-run summary. Model-controlled prose is flattened to
-one line and escaped as literal Markdown; suggestions containing a backtick
-fence are omitted rather than allowed to close the server-rendered block.
-Internal Task/Run
-links no longer appear in posts (dropped entirely, per upstream issue #15287's
-requested setting).
+inline findings and check-run summary. Each model-controlled field is projected
+through the existing publication sanitizer before it is flattened and escaped
+as literal Markdown; the caller retains the final whole-post sanitization.
+Suggestions containing a backtick fence are omitted rather than allowed to
+close the server-rendered block.
+Internal Task/Run/history links and the check-run Details URL are omitted
+entirely, per upstream issue #15287's requested setting.
 
 This repository does not own the Paperclip host source, so this is the
 smallest exact upstream patch plus executable verification. It has not been
@@ -27,7 +28,8 @@ Today's review text is free model prose assembled around three literals in
   `rationale`, plus internal Task/Run/history links that must never appear in
   public repos;
 - inline finding: `**{severity} · {category}**` + free `body`;
-- check run: title `X/5` / `Incomplete review`, summary = same free text.
+- check run: title `X/5` / `Incomplete review`, summary = same free text, and
+  `details_url` = an internal board issue link.
 
 Every review post looks different, low-effort prose ships verbatim, and
 internal board links leak into public repos.
@@ -42,9 +44,11 @@ In `packages/shared/src/types/chat-github.ts` (`GitHubReviewFinding`):
 
 In `packages/shared/src/validators/chat-github.ts`:
 
-- New submissions use `githubReviewAssessmentSchema`: `summary` ≤2000 chars;
+- Both validators derive from one unrefined strict Zod object shape. New
+  submissions use `githubReviewAssessmentSchema`: `summary` ≤2000 chars;
   finding `title` required (1–120, single line, no `|`), `evidence` ≤500,
-  `suggestion` ≤4000. `line: null` remains rejected.
+  `suggestion` ≤4000. `line: null` remains rejected. This avoids relying on
+  `innerType()` to unwrap a refined Zod 4 object.
 - Publication and retry use `githubPersistedReviewAssessmentSchema` for stored
   assessments only. It accepts the previous 24,000-character summary bound and
   findings without a title, normalizing a missing title to its category. New
@@ -60,9 +64,14 @@ New `server/src/services/chat-github-review-template.ts`:
   publish, so the visible `` `path:line` `` label carries the line number;
   tests assert the published (post-sanitizer) form.
 - Model-controlled titles, categories, paths, keys, body, evidence, summary,
-  rationale and limitations are flattened and escaped as literal Markdown.
-  Server-generated permalinks remain clickable; model-provided links and
-  formatting do not.
+  rationale and limitations pass through `projectSafeChatPublicationText`
+  before flattening and Markdown escaping. Suggestions are sanitized before
+  entering their code block. Server-generated permalinks remain clickable;
+  model-provided links and formatting do not.
+- The caller still sanitizes the completed rendered post before appending its
+  idempotency marker. This second pass preserves the existing publication
+  boundary, while field-first sanitization prevents escaped punctuation from
+  concealing credentials or unsafe URLs.
 - Suggestions render in a fenced block unless they contain a backtick fence;
   that unsafe suggestion is omitted with a fixed explanation so it cannot close
   the server-owned block.
@@ -85,8 +94,11 @@ In `server/src/services/chat-github-review-policy.ts` and
   only when the publisher revalidates a stored assessment. Commit, coverage,
   category, and path-policy checks remain shared.
 - The three literals call the builders; policy gates, idempotency markers and
-  sanitizer order are unchanged (render → `projectSafeChatPublicationText`
-  → marker append; the sanitizer itself is untouched).
+  the caller's final publication order remain unchanged (render →
+  `projectSafeChatPublicationText` → marker append). Builders also project each
+  raw model field through the same sanitizer before Markdown escaping; the
+  sanitizer implementation itself is untouched. The check-run request omits
+  the internal board `details_url`.
 
 In `server/src/services/chat-github-tools.ts` (`submit_review` description)
 and `githubReviewPrompt` (`chat-github-review-policy.ts`):
@@ -115,12 +127,13 @@ cd server
 New tests snapshot each builder: pass, issues, incomplete, 0 findings,
 300 findings → truncation; permalinks use the full SHA; `line: null` is
 rejected. Renderer regressions verify Markdown/HTML-shaped model text stays
-literal and a suggestion containing a backtick fence cannot close the rendered
-block. The compatibility regression verifies a pre-deploy assessment with a
+literal, credentials and non-HTTPS URLs are removed through the renderer-to-
+sanitizer path, and a suggestion containing a backtick fence cannot close the
+rendered block. The compatibility regression verifies a pre-deploy assessment with a
 2,001-character summary and no finding title is rejected by the strict
 submission validator but accepted by the stored-assessment validator, which
 fills the title from the finding category. Results (patch sha256
-`712add16b7556063be052c61446c41a1d5ff19ec31d1f034f5bcb6c9f94d8ed0`):
+`818e79b12aa82d125c69a8a0f5b33484c615ce58f7dfb7ee7aa66f493828cabe`):
 
 - `git apply --check` and application passed against the pristine host fixture
   at base commit `302776c7878881970c0f37941ba8cd3bc1255138`; the applied tree
@@ -158,4 +171,5 @@ git apply -R deterministic-review-post-template.patch
 ```
 
 After commit, use the host repository's normal `git revert <commit>` path.
-Rollback restores free-prose review posts (and internal Task/Run links).
+Rollback restores free-prose posts, internal Task/Run/history links, and the
+check-run Details URL.
