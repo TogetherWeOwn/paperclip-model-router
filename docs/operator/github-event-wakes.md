@@ -9,11 +9,11 @@ Normalization alone does not prove that CI or review signals arrive.
 
 This repository tracks the packet, not the Paperclip host source. Apply it
 in an isolated contributor checkout, never in the serving platform tree.
-It stacks on the **revised** [`monitor-wake-policy.patch`](./monitor-wake-policy.patch)
-(sha256 `4c6f8f8e7d0a2761a155c4571ad90fb68933a0d8f4746282ae92745563e46f6d`).
+It stacks on the **final** [`monitor-wake-policy.patch`](./monitor-wake-policy.patch)
+(sha256 `ae37ca5f5a54cdc0adbad2cf38c4f20e245b7a76d3b3dbe27fe6067f92368994`).
 The host base is `ee341c9b17e6d4c81eb0e54ea79806fb3f90cb31` plus that packet.
 Event patch sha256:
-`a0abf87bdbfc52a4a05962849fa2b236e087b0b35ad02f8d6c192e20c13e1ad7`.
+`611c202d7090c382360e34933d56f4cb66fb2065513b97f0e34bbb10f25ced36`.
 Host release and connector verification remain operator work after review.
 
 ## Probe and decision
@@ -83,17 +83,22 @@ unchanged.
 
 GitHub actions share an owner identity across agents. This packet does not
 invent an actor-to-agent mapping or claim to eliminate every self-authored
-`synchronize` wake after a run has ended. The regression test proves two
-consecutive deliveries coalesce into existing **queued** work through the
-real heartbeat, without another run; it does not simulate a live provider
-session or measure production savings.
+`synchronize` wake after a run has ended. Heartbeat integration tests cover
+both queued work and a live issue turn: queued deliveries coalesce without
+starting another run, while two deliveries during a seeded live run create one
+deferred follow-up (`coalescedCount: 1`) and no extra heartbeat run. The active
+run fixture is registered with the heartbeat's live-process map to avoid the
+zombie-run filter. These tests do not simulate a live provider session or
+measure production savings.
 
 ## Conditional monitor policy
 
-The revised first packet already fixes the timeout-cap defect: dispatch
-immediately with `timeout_window_reached` when a proposed deferral would
-reach or cross `timeoutAt`, before the scheduler can exhaust the monitor.
-This packet preserves that fix and the named-service-without-kind exemption.
+The revised first packet dispatches with `timeout_window_reached` when
+`timeoutAt` falls at or within two scheduler intervals after the proposed
+deferral target. This margin accounts for a scheduler tick passing the timeout
+before the policy runs; it is derived from the host scheduler interval and is
+60 seconds at the default interval. This event packet preserves that fix and
+the named-service-without-kind exemption.
 
 `PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED` is **off by default**. Only the
 exact value `true` lifts the exemption for service names containing `github`
@@ -134,38 +139,44 @@ restored byte-identical afterwards: 40 bridge/policy tests and 45 adjacent
 monitor/throttle tests passed. Its five original mutation families were
 killed. Those historical results do not prove the review revisions.
 
-Review-fix verification uses an isolated export of the host base plus the
-revised first packet; tests use embedded Postgres, never production data.
-From the exported repository root:
+Final review-fix verification uses an isolated checkout of the host base plus
+the revised first packet; tests use embedded Postgres, never production data.
+Set `HOST_CHECKOUT` to that repository root before running the commands below.
 
 ```bash
+cd "$HOST_CHECKOUT"
 env -u NODE_ENV pnpm install --frozen-lockfile
 env -u NODE_ENV pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
 env -u NODE_ENV pnpm --filter @paperclipai/plugin-sdk build
 env -u NODE_ENV pnpm --filter @paperclipai/paperclip-runner build:typescript
 node_modules/.bin/vitest run server/src/__tests__/github-event-wakes.test.ts server/src/__tests__/github-connection-events.test.ts server/src/__tests__/issue-monitor-wake-policy.test.ts server/src/__tests__/issue-monitor-wake-skip.test.ts server/src/__tests__/issue-monitor-scheduler.test.ts server/src/__tests__/issue-rewake-throttle.test.ts
-node_modules/.bin/tsc -p server/tsconfig.json --noEmit --pretty false
+pnpm --filter @paperclipai/server exec tsc -p tsconfig.json --noEmit --pretty false
 ```
 
-- BEFORE: the new regression tests against the old event-wake implementation
-  on the revised first packet produce **24 failures / 75 passes**. Failures
-  cover housekeeping wakes, forced non-coalescing and absent coverage gating.
-- AFTER: all six named host suites pass, **125/125 tests**, with server
-  typecheck exiting 0. This includes the real-heartbeat coalescing/redelivery
-  test, the enabled/disabled monitor coverage gate and pre-timeout dispatch
-  of a confirmed GitHub monitor.
-- Nine independently applied mutants are killed by assertion failures:
+- BEFORE: the earlier new regression tests against the old event-wake
+  implementation on the revised first packet produced **24 failures / 75
+  passes**. Those failures covered housekeeping wakes, forced non-coalescing
+  and absent coverage gating. The timeout-margin and running-run follow-up
+  fixes were added after that baseline.
+- AFTER: all six named host suites pass, **128/128 tests**, with server
+  typecheck exiting 0. This includes the real-heartbeat queued and running-run
+  coalescing/redelivery tests, the enabled/disabled monitor coverage gate and
+  two-scheduler-interval timeout dispatch boundary.
+- Ten independently applied mutants were killed by assertion failures:
   forced dedicated wakes; housekeeping wake filtering; delivery dedup;
   issue status gating; foreign-head attribution; coverage gating;
   non-GitHub service exemption; timeout equality; unconfirmed coverage
-  default. Each modified source file is restored after its mutant.
+  default; and removing the three GitHub reasons from the running-run
+  follow-up set (the running-turn regression fails). Each modified source
+  file was restored after its mutant.
 - Router checks: `npm run typecheck`, `npm test` (**1,259 tests**), and
-  `npm run build` all pass.
-- Reconstruction: both revised packets apply in order to read-only snapshots
-  of the live target files. The bridge source is byte-identical to the tested
-  fork export. Other live source has surrounding drift, so applicability
-  alone is not claimed as full live-runtime execution.
-- Four live target checksums remain unchanged; no serving files were edited.
+  `npm run build` all passed in the earlier router validation.
+- Reconstruction: both final packets apply in order to a fresh checkout of
+  host fork `ee341c9b1`; the resulting eight changed host files match the
+  tested isolated checkout byte-for-byte. The final packets have not been
+  executed against the serving host tree. Live-host BEFORE/AFTER verification
+  and the operator deployment handoff remain outstanding; no serving files
+  were edited.
 
 ## Rollback
 

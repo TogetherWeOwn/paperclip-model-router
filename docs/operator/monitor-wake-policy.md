@@ -3,21 +3,24 @@
 **Result:** a host patch that avoids a full agent session for an unchanged
 timer monitor. It normally waits at least 2 hours after the agent's last run,
 then defers a quiet card up to 4 hours after that run. New input and a timeout
-inside the proposed deferral dispatch immediately. The initial 24-hour replay
-estimated a 13% reduction in all runs; that estimate predates the timeout fix
-below. The revised policy's live savings are not yet measured.
+within two scheduler intervals of the proposed deferral target dispatch
+immediately. The initial 24-hour replay estimated a 13% reduction in all runs;
+that estimate predates the timeout-margin fix below. The revised policy's live
+savings are not yet measured.
 
 This repository does not own the Paperclip host source, so this is the smallest
 exact patch plus executable verification. It has not been published to a
 third-party repository. Base: host fork commit
 `ee341c9b1` (`fix(heartbeat): ignore monitor re-arm when measuring run progress
-for comment suppression`), which the patch reuses. It applies cleanly to that
-commit and to the live host tree. Patch sha256
-`4c6f8f8e7d0a2761a155c4571ad90fb68933a0d8f4746282ae92745563e46f6d`.
+for comment suppression`). The final packet applies cleanly to that base and
+reconstructs the tested isolated checkout byte-for-byte. It has not been
+rechecked or executed against the serving host tree; live-host BEFORE/AFTER
+verification remains outstanding, and no serving source was modified. Patch
+sha256
+`ae37ca5f5a54cdc0adbad2cf38c4f20e245b7a76d3b3dbe27fe6067f92368994`.
 Tracked for the next host build after the current cutover packet. Dependent
 patch packets must be rebased and checked against this revised checksum before
-stacking; the event-wake packet written against the initial version no longer
-applies cleanly.
+stacking.
 
 ## Problem
 
@@ -54,7 +57,7 @@ Rules, in order:
 | No finished run in the last 4 hours, or the last run did not succeed | dispatch (recovery is never delayed) |
 | Last run ended 4 or more hours ago | dispatch (quiet backstop) |
 | New issue input or a linked external change since the run | dispatch |
-| `timeoutAt` is at or before the proposed next check | dispatch now, before timeout exhaustion |
+| `timeoutAt` is within two scheduler intervals after the proposed next-check target | dispatch now, before timeout exhaustion |
 | Due less than 2 hours after the run | defer to run end + 2 hours |
 | Quiet, past 2 hours | defer 2 hours, never past run end + 4 hours |
 
@@ -68,15 +71,21 @@ Not touched: manual `monitor/check-now` checks, provider-quota recovery
 monitors, monitors a board user scheduled, and monitors with either
 `kind: "external_service"` or a non-empty, trimmed `serviceName`. The host does
 not observe what those watch (CI, deploys), so a quiet card proves nothing.
-A missing or blank service name does not exempt a timer. Lifting the exemption
-per service is the job of the event-wake follow-up, once check and review events
-reach the host.
+A missing or blank service name does not exempt a timer. This packet carries a
+default-off gate, `PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED`, that the
+[event-wake packet](./github-event-wakes.md) uses to lift the exemption for
+GitHub service names. Left unset, nothing changes for them: check and review
+events only reach the host through that follow-up packet, and the operator
+confirms delivery coverage before enabling the gate.
 
-A timeout is not a useful next-check time: the existing scheduler checks
-`now >= timeoutAt` before evaluating this policy and starts recovery instead
-of dispatching. If the timeout would cap the proposed deferral, the policy
-dispatches immediately with `timeout_window_reached`. It does not change the
-existing exhaustion behavior for monitors already expired at the current tick.
+The scheduler can pass a timeout that lands just after the proposed target
+before this policy runs. The policy dispatches with
+`timeout_window_reached` when `timeoutAt <= deferUntil + timeoutDispatchMarginMs`,
+where the margin is two scheduler intervals:
+`2 * Math.max(10_000, Number(HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30_000)`. With
+the default 30-second scheduler interval, the margin is 60 seconds. This does not
+change the existing exhaustion behavior for monitors already expired at the
+current tick.
 
 Failure mode: any error while reading evidence logs a warning and falls through
 to the legacy dispatch. The policy is an optimization and cannot lose a wake.
@@ -95,6 +104,14 @@ the last run and the settings. The UI activity labels cover both.
 
 Both intervals accept integers from 60000 to 86400000. A bad value falls back
 to the default.
+
+- `PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED`: default off. Only the exact value
+  `true` lifts the exemption for service names containing `github`
+  (case-insensitive), for typed and service-named monitors alike. Other
+  services, quota recovery, manual checks and board monitors stay exempt.
+- `HEARTBEAT_SCHEDULER_INTERVAL_MS`: read, never written. The timeout dispatch
+  margin is two intervals, with a 10-second floor on the interval (default 30
+  seconds, so 60 seconds).
 
 To see the effect before enforcing, start with `shadow` for a day and count
 `issue.monitor_deferral_shadowed` rows. Rollback without a rebuild: set
@@ -146,43 +163,35 @@ Known gap: the claim-token guard on the deferral write is not mutation-tested,
 because a re-arm between the claim and the write cannot be staged without
 hooking the database.
 
-### Review-fix verification
+### Final review-fix verification
 
-The revised packet was reconstructed in an isolated export of host fork
-`ee341c9b1`; no running platform files were changed. Tests use embedded
-Postgres, not production data. From the exported repository root:
+The timeout-margin fix and the default-off GitHub gate were applied and tested in
+an isolated clone of host fork `ee341c9b1`, with this packet alone applied. Tests
+use embedded Postgres, not production data. The serving host source was not
+modified. Set `HOST_CHECKOUT` to the isolated repository root:
 
 ```bash
-env -u NODE_ENV pnpm install --frozen-lockfile
-env -u NODE_ENV pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
-env -u NODE_ENV pnpm --filter @paperclipai/plugin-sdk build
-env -u NODE_ENV pnpm --filter @paperclipai/paperclip-runner build:typescript
-node_modules/.bin/vitest run server/src/__tests__/issue-monitor-wake-policy.test.ts server/src/__tests__/issue-monitor-wake-skip.test.ts
-node_modules/.bin/tsc -p server/tsconfig.json --noEmit --pretty false
+cd "$HOST_CHECKOUT"
+node_modules/.bin/vitest run server/src/__tests__/issue-monitor-wake-policy.test.ts server/src/__tests__/issue-monitor-wake-skip.test.ts server/src/__tests__/github-connection-events.test.ts server/src/__tests__/issue-monitor-scheduler.test.ts server/src/__tests__/issue-rewake-throttle.test.ts ui/src/lib/activity-format.test.ts
+pnpm --dir "$HOST_CHECKOUT" --filter @paperclipai/server exec tsc -p tsconfig.json --noEmit --pretty false
 ```
 
-- Before the fixes, 15 regression cases fail: timeout dispatch, equality,
-  all three recovery policies, and service-named monitors without `kind`.
-  The database cases execute both the due tick and the expiry tick before
-  asserting: the old implementation produces a recovery wake, a recovery
-  issue, or no wake instead of `issue_monitor_due`.
-- Final packet: 37 policy unit tests and 30 database-backed dispatch tests pass
-  (67 total). The tests also cover a safe first deferral followed by an
-  immediate check when the quiet window would cross the timeout.
-- Nine pure-policy mutants are killed: compare timeout to now; allow timeout
-  equality; dispatch every bounded monitor; remove the named-service or typed
-  exemption; exempt blank service names; defer failed runs; ignore external
-  changes; ignore new issue input.
-- The intermediate implementation omitted `serviceName` from the scheduler's
-  projection into the policy. Both named-service database tests failed despite
-  green unit tests. The final packet forwards that field and passes both.
-- Server typecheck exits 0 after building the runner's TypeScript declarations.
-  Before that build, typecheck failed on missing runner exports, not the patch.
-- Reapplying the exported patch to a fresh base reproduces the tested files
-  byte-for-byte. `git apply --check` succeeds on the fork base and the live
-  source tree; the live source was only checked, never patched.
-- Repository checks: `npm run typecheck`, `npm test` (1,259 tests), and
-  `npm run build` all pass.
+- Baseline on the unpatched base: `github-connection-events`,
+  `issue-monitor-scheduler` and `issue-rewake-throttle` pass, 26/26 tests.
+- With this packet applied: the two new suites pass **82/82**; the six files
+  above pass **123/123** (82 new, 26 adjacent, 15 UI). Server `tsc --noEmit`
+  exits 0. The patch sha256 matches the value above.
+- The timeout boundary test uses a 10-second scheduler interval: a timeout exactly
+  20,000 ms after the proposed target dispatches; one 20,001 ms after it still
+  defers. A database test ticks the scheduler once after the target, with
+  `timeoutAt` 20 seconds later, and expects one `issue_monitor_due` wake and no
+  exhaustion.
+- Mutant: restoring the old bound, `timeoutAt <= deferUntil` without the margin,
+  fails both timeout-margin tests (the unit boundary test and the database tick
+  test); the source was restored byte-identical afterwards.
+- These results are isolated-clone verification, not the requested live-host
+  BEFORE/AFTER execution. That verification and the operator deployment
+  handoff remain outstanding; no serving host files were changed.
 
 ## Replay estimate
 
