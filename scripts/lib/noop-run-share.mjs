@@ -31,6 +31,14 @@ import {
 
 export const TARGET_NOOP_SHARE = 0.1;
 
+/** Row limit of the open-issue read that finds armed monitors. */
+export const ARMED_MONITOR_LIST_LIMIT = 1000;
+
+/** A list that returns exactly its limit may have been cut short. */
+export function isArmedMonitorListCapped(rowCount) {
+  return rowCount >= ARMED_MONITOR_LIST_LIMIT;
+}
+
 export const OUTCOMES = Object.freeze({
   EVENT_WAKE: "event_wake",
   UNSCOPED: "no_event_unscoped",
@@ -51,6 +59,7 @@ const IDLE_OUTCOMES = new Set([...NOOP_OUTCOMES, OUTCOMES.COMMENT_ONLY, OUTCOMES
 // checks the issue out and releases it (lock, start time, run ids). The host
 // counts these as progress, so a monitor check that checks out, comments and
 // re-arms never looks idle to it.
+const CHECKOUT_EVENT_ACTION = "issue.checked_out";
 const CHECKOUT_CHURN_KEYS = new Set([
   "startedAt",
   "executionRunId",
@@ -98,7 +107,7 @@ export function compactIssueRows(rows) {
   const out = [];
   for (const row of rows ?? []) {
     if (!row || typeof row.action !== "string") continue;
-    if (!KEPT_ACTIONS.has(row.action) && !ISSUE_PROGRESS_ACTIVITY_ACTIONS.has(row.action)) continue;
+    if (!KEPT_ACTIONS.has(row.action) && !ISSUE_PROGRESS_ACTIVITY_ACTIONS.has(row.action) && row.action !== CHECKOUT_EVENT_ACTION) continue;
     out.push({
       action: row.action,
       entityType: row.entityType ?? null,
@@ -133,15 +142,59 @@ function isChurnOnlyUpdate(details, statusNetChanged) {
   return isMonitorOnlyIssueUpdateDetails({ changes: remaining });
 }
 
-/** Progress rows that are more than a note or checkout churn. */
-function substantiveRows(progress) {
+function statusChangeOf(row) {
+  const change = row?.details?.changes?.status;
+  return change !== null && typeof change === "object" && !Array.isArray(change) ? change : null;
+}
+
+/** Whether the run left the issue in a different status than it had before checkout. */
+function runStatusNetChanged(progress, issueRows, runId, issueId) {
   const byTime = (a, b) => Date.parse(a.createdAt ?? "") - Date.parse(b.createdAt ?? "");
   const statuses = progress
     .filter((row) => row.action === "issue.updated")
     .sort(byTime)
-    .map((row) => row.details?.changes?.status)
-    .filter((change) => change !== null && typeof change === "object");
-  const statusNetChanged = statuses.length > 0 && statuses[0].from !== statuses.at(-1).to;
+    .map(statusChangeOf)
+    .filter(Boolean);
+  if (statuses.length === 0) return false;
+
+  const finalStatus = statuses.at(-1).to;
+  if (finalStatus === undefined) return true;
+
+  const checkout = issueRows
+    .filter(
+      (row) =>
+        row.action === CHECKOUT_EVENT_ACTION &&
+        row.runId === runId &&
+        row.entityType === "issue" &&
+        row.entityId === issueId,
+    )
+    .sort(byTime)[0];
+  if (!checkout) return statuses[0].from !== finalStatus;
+
+  const checkoutAt = Date.parse(checkout.createdAt ?? "");
+  if (!Number.isFinite(checkoutAt)) return true;
+  const statusBeforeCheckout = issueRows
+    .filter(
+      (row) =>
+        row.action === "issue.updated" &&
+        row.entityType === "issue" &&
+        row.entityId === issueId &&
+        Date.parse(row.createdAt ?? "") < checkoutAt,
+    )
+    .sort(byTime)
+    .map(statusChangeOf)
+    .filter(Boolean)
+    .at(-1)?.to;
+
+  // Unknown starting status is progress: only suppress a release whose return
+  // to the pre-checkout status can be proven from issue activity.
+  if (statusBeforeCheckout === undefined) return true;
+  return statusBeforeCheckout !== finalStatus;
+}
+
+/** Progress rows that are more than a note or checkout churn. */
+function substantiveRows(progress, issueRows, runId, issueId) {
+  const statusNetChanged = runStatusNetChanged(progress, issueRows, runId, issueId);
   return progress.filter((row) => {
     if (row.action === "issue.comment_added") return false;
     if (row.action === "issue.updated") return !isChurnOnlyUpdate(row.details, statusNetChanged);
@@ -165,7 +218,7 @@ export function classifyRun(run, issueRows) {
   if (progress.length === 0) {
     return attributed.length === 0 ? OUTCOMES.NOOP_NOTHING : OUTCOMES.NOOP_HOUSEKEEPING;
   }
-  if (substantiveRows(progress).length > 0) return OUTCOMES.PROGRESS;
+  if (substantiveRows(progress, issueRows, run.id, issueId).length > 0) return OUTCOMES.PROGRESS;
   return progress.every((row) => row.action === "issue.comment_added") ? OUTCOMES.COMMENT_ONLY : OUTCOMES.CHURN_ONLY;
 }
 
@@ -215,8 +268,21 @@ export function monitorPolicyCounts(activityByIssue, sinceMs, untilMs) {
  * @param {number} input.sinceMs
  * @param {number} input.untilMs
  * @param {object[]} [input.truncatedAgents]           from collectRuns
+ * @param {number} [input.undatedRows]                 run rows with unknown window membership
+ * @param {boolean} [input.armedMonitorDiscoveryFailed] whether the armed-issue scan failed
+ * @param {boolean} [input.armedMonitorListCapped]       whether the armed-issue scan hit its row limit
  */
-export function buildReport({ runs, activityByIssue, agentNames = new Map(), sinceMs, untilMs, truncatedAgents = [] }) {
+export function buildReport({
+  runs,
+  activityByIssue,
+  agentNames = new Map(),
+  sinceMs,
+  untilMs,
+  truncatedAgents = [],
+  undatedRows = 0,
+  armedMonitorDiscoveryFailed = false,
+  armedMonitorListCapped = false,
+}) {
   const byStatus = new Map();
   const byWakeReason = new Map();
   const byAgent = new Map();
@@ -237,6 +303,7 @@ export function buildReport({ runs, activityByIssue, agentNames = new Map(), sin
 
   const total = ZERO();
   let noopWithProgressElsewhere = 0;
+  let succeededNoEventRuns = 0;
 
   for (const run of runs) {
     const issueId = issueIdOf(run);
@@ -255,6 +322,7 @@ export function buildReport({ runs, activityByIssue, agentNames = new Map(), sin
       entry.runs += 1;
       for (const [flag, on] of Object.entries(flags)) if (on) entry[flag] += 1;
     }
+    if (flags.succeeded && flags.noEvent) succeededNoEventRuns += 1;
     if (flags.noop) {
       const elsewhere = progressIssuesByRun.get(run.id);
       if (elsewhere && [...elsewhere].some((id) => id !== issueId)) noopWithProgressElsewhere += 1;
@@ -263,6 +331,7 @@ export function buildReport({ runs, activityByIssue, agentNames = new Map(), sin
 
   const totalRuns = total.runs;
   const unverified = byOutcome.get(OUTCOMES.UNVERIFIED) ?? 0;
+  const unreadableActivityIssues = [...activityByIssue.values()].filter((rows) => !Array.isArray(rows)).length;
   const caveats = [];
   if (truncatedAgents.length > 0) {
     caveats.push(
@@ -270,6 +339,14 @@ export function buildReport({ runs, activityByIssue, agentNames = new Map(), sin
     );
   }
   if (unverified > 0) caveats.push(`${unverified} no-event run(s) could not be classified because their issue activity was unreadable`);
+  if (undatedRows > 0) caveats.push(`${undatedRows} run row(s) have missing or invalid createdAt; window membership is unknown`);
+  if (armedMonitorDiscoveryFailed) caveats.push("could not discover issues with an armed monitor; monitor-policy counters may be incomplete");
+  if (armedMonitorListCapped) {
+    caveats.push(`the open-issue read returned its ${ARMED_MONITOR_LIST_LIMIT}-row limit; armed monitors beyond it are not seen and monitor-policy counters may be incomplete`);
+  }
+  if (unreadableActivityIssues > 0) {
+    caveats.push(`${unreadableActivityIssues} issue activity read(s) failed; monitor-policy counters may be incomplete`);
+  }
 
   const wakeReasons = sortedObject(byWakeReason);
   for (const entry of Object.values(wakeReasons)) {
@@ -311,7 +388,8 @@ export function buildReport({ runs, activityByIssue, agentNames = new Map(), sin
       checkoutChurnOnly: count(OUTCOMES.CHURN_ONLY),
       shareOfAllRuns: share(total.idle, totalRuns),
       shareOfSucceededRuns: share(total.idle, total.succeeded),
-      shareOfSucceededNoEventRuns: share(total.idle, total.idle + count(OUTCOMES.PROGRESS)),
+      succeededNoEventRuns,
+      shareOfSucceededNoEventRuns: share(total.idle, succeededNoEventRuns),
       noEventRunsWithProgress: count(OUTCOMES.PROGRESS),
       targetShare: TARGET_NOOP_SHARE,
       meetsTarget: totalRuns > 0 ? total.idle / totalRuns < TARGET_NOOP_SHARE : null,
@@ -342,7 +420,7 @@ export function renderMarkdown(report, { windowHours, windowUntil, generatedAt }
     `| **Idle runs** (no-op, or only a note / checkout churn) | **${idle.runs}** (${idle.noop} no-op, ${idle.commentOnly} comment-only, ${idle.checkoutChurnOnly} checkout churn) | — |`,
     `| **Idle share of all runs** | **${pct(idle.shareOfAllRuns)}** | < ${pct(idle.targetShare)} |`,
     `| Idle share of succeeded runs | ${pct(idle.shareOfSucceededRuns)} | — |`,
-    `| Idle share of succeeded no-event runs | ${pct(idle.shareOfSucceededNoEventRuns)} (${idle.noEventRunsWithProgress} left real progress) | — |`,
+    `| Idle share of succeeded no-event runs | ${pct(idle.shareOfSucceededNoEventRuns)} of ${idle.succeededNoEventRuns} (${idle.noEventRunsWithProgress} left real progress) | — |`,
     `| Host-rule no-op runs that touched another issue | ${noop.withProgressOnOtherIssues} (lower bound) | — |`,
     `| \`issue.monitor_triggered\` | ${policy.triggered} | — |`,
     `| \`issue.monitor_deferred\` | ${policy.deferred} | — |`,

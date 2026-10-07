@@ -20,6 +20,59 @@ version is not present here.
   `scripts/noop-run-share-mutation-gate.mjs` (`npm run check:noop-share-mutants`)
   pin the classifier. See `docs/operator/noop-run-share.md`.
 
+## [0.9.0] - 2026-10-07
+
+### Release notes
+
+First minor since 0.8.0: everything merged to `main` after the 0.8.0 tag
+ships here, headlined by the rolling error-rate circuit breaker and the
+invocation-derived model health it builds on. v0.8.1 was cut from the 0.8.0
+line as a one-fix patch; this release carries that fix as well.
+
+The breaker is model-keyed and observes routed invocations only. It does not
+read gateway or proxy telemetry, so it does not see failures on traffic that
+never goes through the router. A model degrades when its window holds at
+least 10 calls with a failure rate at or above 20%. The window is the last 15
+minutes or the last 100 calls, whichever is shorter. A degraded model is
+avoided for 30 minutes after its last failure, then goes half-open on
+probation.
+
+### Compatibility
+
+- **Capability-escalating: not an ordinary upgrade.** The manifest adds three
+  capabilities over 0.8.1 (`activity.log.write`, `companies.read`,
+  `events.subscribe`, which reaps a run's pending invocations on the host's
+  `agent.run.finished` event), a `model-health-probe` job (every 15 minutes)
+  and migration `002_capacity_snapshot_age.sql`. Use the "Capability-escalating
+  upgrade" path in `docs/OPERATIONS.md`; the ordinary `plugin upgrade`
+  endpoint rejects the new capabilities and leaves the router offline.
+- State written by 0.8.x reads back unchanged. Model health and the breaker
+  ring start empty, so no model starts degraded.
+- No config key is added or removed. Migration `002` is additive (two
+  nullable or defaulted columns and an index), so a rollback to 0.8.1 leaves
+  them in place and 0.8.1's inserts do not name them.
+
+### Added
+
+- **Rolling error-rate circuit breaker.**
+  `src/health/` gains a per-model outcome ring: when a failed routed call
+  leaves 10+ calls in the window with a failure rate at or above 20%, the
+  model degrades exactly like the consecutive-failure path (deprioritized to
+  last resort, avoided for the existing 30-minute probation, then half-open).
+  The window is the last 15 minutes or the last 100 calls, whichever is
+  shorter. Consecutive streaks still catch hard-down lanes on their own; the
+  rate catches flaky lanes whose interleaved successes kept resetting the
+  streak. Only a failure opens the breaker or restarts the avoid window, so
+  the cooldown ends 30 minutes after the last failure; a success never trips
+  a lane and, on an avoided lane, only holds the verdict until probation or
+  until the failures age out of the window. Probation starts with a fresh
+  ring so one trial failure cannot re-trip on old evidence.
+  Compatibility: stored state from older versions normalizes to an empty
+  ring (streak behavior unchanged); no config keys change. `tests/health.spec.ts`
+  pins the trip, the 20% and 10-sample boundaries, window edges, avoid-window
+  slide, success handling, half-open, ring clearing, and ring bounds; the
+  streak-replay expectation now holds degraded under a 40% window rate.
+
 - **Invocation-derived model health (TOG-7160, port of TOG-930).**
   `src/health/` (types, reconcile, catalogue probe) tracks per-model health
   in company-scoped plugin state: catalogue presence keeps a model unknown
@@ -127,6 +180,13 @@ version is not present here.
   its error while the healthy lanes keep their evidence.
 
 ### Fixed
+
+- **Host-validator UI slot mirror.** The local install-check mirror now requires
+  `ui.action.register` for `appShellOverlay` and `ui.sidebar.register` for
+  `organizationSwitcher`, matching the installed Paperclip capability table.
+  Behavior guards cover missing, correct and unrelated capabilities, combined
+  slots and duplicate slots. Strict host drift detection is unchanged; no plugin
+  manifest, runtime, configuration or host changes.
 
 - **MCP tools never throw on failure paths.** `model_router_invoke`
   and `model_router_invoke_async` resolve unexpected infrastructure failures
@@ -270,6 +330,20 @@ version is not present here.
 - Drop-in: no config change required, no derived budget changes for any
   model that does not set the new field. The rehearsal-only third fixture
   is not referenced by any shipped config path.
+
+## [0.8.1] - 2026-10-06
+
+### Fixed
+
+- **Explicit-null success envelopes.** The OpenAI/Anthropic normalizers
+  rejected explicit nulls (`message.tool_calls: null`, `body.usage: null`,
+  null usage counters) that null-serializing gateways emit where the
+  reference API omits the key, failing every such generation with
+  `invalid-upstream-response` while the origin returned 200. Explicit null
+  now means absent; present-but-wrong-typed values still throw. Envelope
+  errors name the violated check and keep the upstream status and request
+  id. Compatibility: protocol, capabilities, jobs, and migrations are
+  unchanged from 0.8.0 — ordinary plugin-only upgrade path.
 
 ## [0.8.0] - 2026-09-27
 

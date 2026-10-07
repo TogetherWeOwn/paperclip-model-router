@@ -30,7 +30,7 @@ and classifies it with a port of the host's progress rule
 |---|---|
 | `noop_nothing`, `noop_housekeeping` | **No-op, host rule.** Nothing, or only `issue.monitor_scheduled` and `issue.updated` rows that touch monitor fields. |
 | `no_event_comment_only` | The only visible act is a comment. The host counts a comment as progress, so these are not no-ops by the host rule. |
-| `no_event_churn_only` | A comment and/or a checkout round trip (status out and back, lock, run ids) and nothing else. |
+| `no_event_churn_only` | A comment and/or a real `issue.checked_out` event followed by a release update that restores the pre-checkout status and clears checkout locks, and nothing else. |
 | `no_event_progress` | Anything else: a status change that sticks, a work product, a document, a blocker, and so on. |
 | `no_event_unscoped`, `no_event_not_succeeded`, `no_event_unverified` | Set aside: no issue to judge, the run did not succeed, or its issue activity could not be read. |
 
@@ -38,13 +38,17 @@ Two figures follow, and they answer different questions:
 
 - **No-op (host rule)** is the population the host's no-progress suppression can
   see. On the live fleet it is almost empty: a monitor check checks the issue
-  out, comments and re-arms, and the checkout and the comment each count as
-  progress to the host.
+  out, comments and re-arms; the comment and the release `issue.updated` row
+  count as progress to the host. The `issue.checked_out` row is retained only
+  as context so the idle classifier can compare the release status with the
+  issue's last status before checkout.
 - **Idle** is no-op plus `comment_only` plus `churn_only`: runs that left only
   a note or checkout churn. It is a heuristic and an upper bound. A note such
   as "CI is green, review routed" is real information, and work done on
   GitHub is invisible in issue activity. It is the tracked figure because it is
   defined the same way every week. **Target: idle share of all runs under 10%.**
+  Its succeeded-no-event rate keeps unscoped and unverified succeeded runs in the
+  denominator rather than hiding unknown outcomes.
 
 It also reports the share of runs by wake reason, the share of runs whose wake
 carried no event, the host-rule no-ops that also moved another issue (a lower
@@ -61,6 +65,9 @@ monitor armed now, so a deferred wake with no run is still seen.
   marked `complete: false`, and its older runs are not counted. A 7-day window is
   truncated for the busiest agents; use `--hours 24` for a figure that is
   complete.
+- Missing or invalid run timestamps, unreadable issue activity, or a failed or
+  row-capped (1000) scan for currently armed monitors sets `complete: false`; counters that depend
+  on those rows must not be treated as a complete window.
 - Activity comes from `GET /api/issues/{id}/activity`, which is not capped. The
   company-wide activity list is not used: it cannot filter by run and caps at
   500 rows.
@@ -76,6 +83,10 @@ The constants and `isMonitorOnlyIssueUpdateDetails` are copied from the host
 (`heartbeat.ts`, `issue-rewake-throttle.ts`, `heartbeat-run-summary.ts`); the
 file header names each source. `tests/noop-run-share.spec.ts` pins every branch
 the host tests pin and the run attribution on top, and
-`scripts/noop-run-share-mutation-gate.mjs` applies 13 one-line mutants (a
-monitor-only update counted as progress, run attribution dropped, and so on);
-each must fail the suite.
+`scripts/noop-run-share-mutation-gate.mjs` applies 23 one-line mutants (a
+monitor-only update counted as progress, a monitor-less scheduling-only policy
+creation counted as progress (host parity), run attribution dropped, checkout
+releases compared against the wrong status, and incomplete-window guards
+removed). The gate first proves the baseline suite
+passes and counts a mutant as killed only when Vitest reports assertion failures;
+runner or setup failures are gate failures.

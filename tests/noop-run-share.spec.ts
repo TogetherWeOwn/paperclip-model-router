@@ -50,6 +50,8 @@ interface Share {
     NOOP_HOUSEKEEPING: string;
     NOOP_NOTHING: string;
   };
+  ARMED_MONITOR_LIST_LIMIT: number;
+  isArmedMonitorListCapped(rowCount: number): boolean;
   classifyRun(run: Run, rows: Row[] | null): string;
   compactIssueRows(rows: unknown[]): Row[];
   issuesNeedingActivity(runs: Run[]): string[];
@@ -60,6 +62,9 @@ interface Share {
     sinceMs: number;
     untilMs: number;
     truncatedAgents?: unknown[];
+    undatedRows?: number;
+    armedMonitorDiscoveryFailed?: boolean;
+    armedMonitorListCapped?: boolean;
   }): Report;
   renderMarkdown(report: Report, meta: { windowHours: number; windowUntil: string; generatedAt: string }): string;
 }
@@ -77,6 +82,7 @@ interface Report {
     checkoutChurnOnly: number;
     shareOfAllRuns: number | null;
     shareOfSucceededRuns: number | null;
+    succeededNoEventRuns: number;
     shareOfSucceededNoEventRuns: number | null;
     noEventRunsWithProgress: number;
     meetsTarget: boolean | null;
@@ -111,6 +117,12 @@ function monitorRun(id: string, over: Partial<Run> = {}, snapshot: Record<string
     ...over,
   };
 }
+const checkoutAction = (fixture.checkoutEvent as { action: string }).action;
+const checkedOut = (runId: string) => [
+  row("issue.updated", "previous-run", fixture.statusBeforeCheckout, { createdAt: iso(-1) }),
+  row(checkoutAction, runId, null, { createdAt: iso(1) }),
+];
+const checkoutRelease = (runId: string) => row("issue.updated", runId, fixture.checkoutBack);
 const rearm = (runId: string) => [row("issue.monitor_scheduled", runId), row("issue.updated", runId, fixture.monitorRearmOnly)];
 const comment = (runId: string) => row("issue.comment_added", runId, { commentId: "c1", bodySnippet: "note" });
 
@@ -144,10 +156,13 @@ describe("isMonitorOnlyIssueUpdateDetails (host rule parity)", () => {
     expect(only(fixture.pluginPatch)).toBe(false);
   });
 
-  it("treats a scheduling-only policy creation as monitor-only", () => {
+  it("treats a scheduling-only policy creation as housekeeping, with or without a monitor (host parity)", () => {
     expect(
       only({ changes: { executionPolicy: { to: { mode: "normal", stages: [], monitor: { nextCheckAt: "t2" }, commentRequired: true }, from: null } } }),
     ).toBe(true);
+    expect(only({ changes: { executionPolicy: { to: { mode: "normal", stages: [], commentRequired: true }, from: null } } })).toBe(true);
+    expect(only({ changes: { executionPolicy: { to: { mode: "normal", stages: [], monitor: null }, from: null } } })).toBe(true);
+    expect(only({ changes: { executionPolicy: { to: {}, from: null } } })).toBe(true);
   });
 
   it("treats a policy creation with planned stages or other keys as progress", () => {
@@ -304,24 +319,33 @@ describe("classifyRun", () => {
     expect(S.classifyRun(monitorRun("r"), [...rearm("r"), comment("r")])).toBe(O.COMMENT_ONLY);
   });
 
-  it("calls a comment plus a checkout round trip idle, since the status nets to zero", () => {
-    const rows = [
-      row("issue.updated", "r", fixture.checkoutOut),
-      comment("r"),
-      row("issue.updated", "r", fixture.checkoutBack),
-      ...rearm("r"),
+  it("calls a checkout release back to the pre-run status idle", () => {
+    const rows = [...checkedOut("r"), comment("r"), checkoutRelease("r"), ...rearm("r")];
+    expect(S.classifyRun(monitorRun("r"), S.compactIssueRows(rows))).toBe(O.CHURN_ONLY);
+  });
+
+  it("uses this run's checkout when an earlier run checked out the same issue", () => {
+    const earlierCheckout = [
+      row("issue.updated", "older-run", { changes: { status: { to: "todo", from: "backlog" } } }, { createdAt: iso(-4) }),
+      row(checkoutAction, "older-run", null, { createdAt: iso(-3) }),
     ];
-    expect(S.classifyRun(monitorRun("r"), rows)).toBe(O.CHURN_ONLY);
+    const rows = [...earlierCheckout, ...checkedOut("r"), comment("r"), checkoutRelease("r"), ...rearm("r")];
+    expect(S.classifyRun(monitorRun("r"), S.compactIssueRows(rows))).toBe(O.CHURN_ONLY);
+  });
+
+  it("treats a checkout release as progress when the pre-checkout status is unknown", () => {
+    const rows = [row(checkoutAction, "r", null, { createdAt: iso(1) }), comment("r"), checkoutRelease("r")];
+    expect(S.classifyRun(monitorRun("r"), S.compactIssueRows(rows))).toBe(O.PROGRESS);
   });
 
   it("calls a comment plus a status change that sticks progress", () => {
-    const rows = [row("issue.updated", "r", fixture.checkoutOut), comment("r"), row("issue.updated", "r", fixture.closeIssue)];
-    expect(S.classifyRun(monitorRun("r"), rows)).toBe(O.PROGRESS);
+    const rows = [...checkedOut("r"), comment("r"), row("issue.updated", "r", fixture.closeIssue)];
+    expect(S.classifyRun(monitorRun("r"), S.compactIssueRows(rows))).toBe(O.PROGRESS);
   });
 
-  it("calls a checkout round trip plus a work product progress", () => {
-    const rows = [row("issue.updated", "r", fixture.checkoutOut), row("issue.work_product_created", "r"), row("issue.updated", "r", fixture.checkoutBack)];
-    expect(S.classifyRun(monitorRun("r"), rows)).toBe(O.PROGRESS);
+  it("calls a checkout release plus a work product progress", () => {
+    const rows = [...checkedOut("r"), row("issue.work_product_created", "r"), checkoutRelease("r")];
+    expect(S.classifyRun(monitorRun("r"), S.compactIssueRows(rows))).toBe(O.PROGRESS);
   });
 });
 
@@ -336,10 +360,11 @@ describe("compactIssueRows and issuesNeedingActivity", () => {
       null,
       { details: {} },
     ]);
-    expect(kept.map((r) => r.action)).toEqual(["issue.comment_added", "issue.updated", "issue.monitor_deferred"]);
+    expect(kept.map((r) => r.action)).toEqual(["issue.checked_out", "issue.comment_added", "issue.updated", "issue.monitor_deferred"]);
     expect(kept[0]?.details).toBeNull();
-    expect(kept[1]?.details).toEqual(fixture.closeIssue);
-    expect(kept[2]?.details).toEqual(fixture.deferred);
+    expect(kept[1]?.details).toBeNull();
+    expect(kept[2]?.details).toEqual(fixture.closeIssue);
+    expect(kept[3]?.details).toEqual(fixture.deferred);
   });
 
   it("asks only for issues a succeeded no-event run touched", () => {
@@ -374,9 +399,9 @@ describe("buildReport", () => {
       ...rearm("noop-2"),
       ...rearm("note-1"),
       comment("note-1"),
-      row("issue.updated", "churn-1", fixture.checkoutOut),
+      ...checkedOut("churn-1"),
       comment("churn-1"),
-      row("issue.updated", "churn-1", fixture.checkoutBack),
+      checkoutRelease("churn-1"),
       row("issue.work_product_created", "work-1"),
       row("issue.monitor_triggered", null, null, { createdAt: iso(5) }),
       row("issue.monitor_deferred", null, fixture.deferred, { createdAt: iso(6) }),
@@ -407,6 +432,7 @@ describe("buildReport", () => {
       checkoutChurnOnly: 1,
       shareOfAllRuns: 4 / 8,
       shareOfSucceededRuns: 4 / 7,
+      succeededNoEventRuns: 5,
       shareOfSucceededNoEventRuns: 4 / 5,
       noEventRunsWithProgress: 1,
       meetsTarget: false,
@@ -415,6 +441,14 @@ describe("buildReport", () => {
     expect(report.byWakeReason.issue_monitor_due).toMatchObject({ runs: 6, noop: 2, idle: 4, shareOfRuns: 6 / 8 });
     expect(report.byWakeReason.issue_assigned).toMatchObject({ runs: 1, noop: 0, idle: 0 });
     expect(report.complete).toBe(true);
+  });
+
+  it("includes unscoped succeeded no-event runs in the denominator", () => {
+    const runs = [monitorRun("idle"), monitorRun("unscoped", { contextSnapshot: { wakeReason: "heartbeat_timer" } })];
+    const report = S.buildReport({ runs, activityByIssue: new Map([[ISSUE, rearm("idle")]]), ...window });
+    expect(report.noEvent.runs).toBe(2);
+    expect(report.idle.succeededNoEventRuns).toBe(2);
+    expect(report.idle.shareOfSucceededNoEventRuns).toBe(0.5);
   });
 
   it("meets the target only below 10% of all runs", () => {
@@ -450,10 +484,46 @@ describe("buildReport", () => {
     const truncatedAgents = [{ agentId: "B", name: "Agent B", rows: 1000, oldestFetched: iso(-60) }];
     const report = S.buildReport({ runs, activityByIssue, truncatedAgents, ...window });
     expect(report.complete).toBe(false);
-    expect(report.caveats).toHaveLength(2);
+    expect(report.caveats).toHaveLength(3);
     expect(report.caveats.join(" ")).toMatch(/1 agent\(s\).*1000-run page/);
     expect(report.caveats.join(" ")).toMatch(/5 no-event run\(s\) could not be classified/);
+    expect(report.caveats.join(" ")).toMatch(/1 issue activity read\(s\) failed/);
     expect(report.noop.runs).toBe(0);
+  });
+
+  it("marks the report incomplete when any run row is undated", () => {
+    const { runs, activityByIssue } = scenario();
+    const report = S.buildReport({ runs, activityByIssue, undatedRows: 1, ...window });
+    expect(report.complete).toBe(false);
+    expect(report.caveats.join(" ")).toMatch(/1 run row\(s\) have missing or invalid createdAt/);
+  });
+
+  it("marks the report incomplete when armed-monitor discovery fails", () => {
+    const { runs, activityByIssue } = scenario();
+    const report = S.buildReport({ runs, activityByIssue, armedMonitorDiscoveryFailed: true, ...window });
+    expect(report.complete).toBe(false);
+    expect(report.caveats.join(" ")).toMatch(/could not discover issues with an armed monitor/);
+  });
+
+  it("marks the report incomplete when the armed-monitor read hit its row limit", () => {
+    const { runs, activityByIssue } = scenario();
+    const report = S.buildReport({ runs, activityByIssue, armedMonitorListCapped: true, ...window });
+    expect(report.complete).toBe(false);
+    expect(report.caveats.join(" ")).toMatch(/open-issue read returned its 1000-row limit/);
+    expect(S.buildReport({ runs, activityByIssue, ...window }).complete).toBe(true);
+  });
+
+  it("treats a list at exactly its limit as capped, and one row fewer as complete", () => {
+    expect(S.isArmedMonitorListCapped(S.ARMED_MONITOR_LIST_LIMIT)).toBe(true);
+    expect(S.isArmedMonitorListCapped(S.ARMED_MONITOR_LIST_LIMIT - 1)).toBe(false);
+  });
+
+  it("marks the report incomplete when activity for an armed-only issue is unreadable", () => {
+    const { runs, activityByIssue } = scenario();
+    activityByIssue.set("armed-only", null);
+    const report = S.buildReport({ runs, activityByIssue, ...window });
+    expect(report.complete).toBe(false);
+    expect(report.caveats.join(" ")).toMatch(/1 issue activity read\(s\) failed/);
   });
 
   it("returns null shares for an empty window", () => {
@@ -469,6 +539,7 @@ describe("buildReport", () => {
     const md = S.renderMarkdown(report, { windowHours: 24, windowUntil: iso(3600), generatedAt: iso(3601) });
     expect(md).toContain("# No-op run share, last 24 h");
     expect(md).toContain("| **Idle share of all runs** | **50.0%** | < 10.0% |");
+    expect(md).toContain("| Idle share of succeeded no-event runs | 80.0% of 5 (1 left real progress) | — |");
     expect(md).toContain("2 (2 housekeeping, 0 nothing): 25.0% of runs");
     expect(md).toContain("| `issue.monitor_deferred` | 1 | — |");
     expect(md).toContain("| issue_monitor_due | 6 | 75.0% | 2 | 4 | 66.7% |");
@@ -486,6 +557,8 @@ describe("scripts/noop-run-share.mjs", () => {
   let server: Server;
   let baseUrl = "";
   const requested: string[] = [];
+  let armedIssueReadFails = false;
+  let includeUndatedRun = false;
 
   beforeAll(async () => {
     const now = Date.now();
@@ -524,9 +597,19 @@ describe("scripts/noop-run-share.mjs", () => {
       let body: unknown = { error: "not found" };
       if (url.pathname === `/api/companies/${COMPANY}/agents`) body = [{ id: "A", name: "Agent A" }, { id: "B", name: "Agent B" }];
       else if (url.pathname === `/api/companies/${COMPANY}/heartbeat-runs`) {
-        body = runs.filter((r) => r.agentId === url.searchParams.get("agentId"));
-      } else if (url.pathname === `/api/companies/${COMPANY}/issues`) body = [{ id: "i-armed", monitorNextCheckAt: at(-60) }, { id: "i-quiet" }];
-      else if (url.pathname.startsWith("/api/issues/") && url.pathname.endsWith("/activity")) {
+        const agentRuns = runs.filter((r) => r.agentId === url.searchParams.get("agentId"));
+        if (includeUndatedRun && url.searchParams.get("agentId") === "A") {
+          agentRuns.push({ id: "r-undated", agentId: "A", status: "succeeded", createdAt: "not-a-date", contextSnapshot: { issueId: "i-1", wakeReason: "issue_monitor_due" } });
+        }
+        body = agentRuns;
+      } else if (url.pathname === `/api/companies/${COMPANY}/issues`) {
+        if (armedIssueReadFails) {
+          res.statusCode = 500;
+          body = { error: "read failed" };
+        } else {
+          body = [{ id: "i-armed", monitorNextCheckAt: at(-60) }, { id: "i-quiet" }];
+        }
+      } else if (url.pathname.startsWith("/api/issues/") && url.pathname.endsWith("/activity")) {
         const id = url.pathname.split("/")[3] ?? "";
         if (activity[id]) body = activity[id];
         else res.statusCode = 404;
@@ -571,6 +654,32 @@ describe("scripts/noop-run-share.mjs", () => {
       ["/api/issues/i-1/activity", "/api/issues/i-2/activity", "/api/issues/i-3/activity", "/api/issues/i-armed/activity"],
     );
     expect(readFileSync(out, "utf8")).toContain("| **Idle share of all runs** | **50.0%** | < 10.0% |");
+  }, 60_000);
+
+  it("marks output incomplete when a returned run has no usable timestamp", async () => {
+    includeUndatedRun = true;
+    try {
+      const { stdout } = await exec(process.execPath, [script, "--hours", "24"], { env: env() });
+      const report = JSON.parse(stdout);
+      expect(report.undatedRows).toBe(1);
+      expect(report.complete).toBe(false);
+      expect(report.caveats.join(" ")).toMatch(/1 run row\(s\) have missing or invalid createdAt/);
+    } finally {
+      includeUndatedRun = false;
+    }
+  }, 60_000);
+
+  it("marks output incomplete when armed-monitor discovery fails", async () => {
+    armedIssueReadFails = true;
+    try {
+      const { stdout } = await exec(process.execPath, [script, "--hours", "24"], { env: env() });
+      const report = JSON.parse(stdout);
+      expect(report.issuesWithArmedMonitor).toBeNull();
+      expect(report.complete).toBe(false);
+      expect(report.caveats.join(" ")).toMatch(/could not discover issues with an armed monitor/);
+    } finally {
+      armedIssueReadFails = false;
+    }
   }, 60_000);
 
   it("rejects bad input", async () => {

@@ -1,9 +1,9 @@
 diff --git a/server/src/__tests__/github-event-wakes.test.ts b/server/src/__tests__/github-event-wakes.test.ts
 new file mode 100644
-index 0000000..eefd803
+index 000000000..3ff5ab9b8
 --- /dev/null
 +++ b/server/src/__tests__/github-event-wakes.test.ts
-@@ -0,0 +1,556 @@
+@@ -0,0 +1,623 @@
 +import { randomUUID } from "node:crypto";
 +import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 +import {
@@ -22,6 +22,7 @@ index 0000000..eefd803
 +  toolConnections,
 +} from "@paperclipai/db";
 +import { eq } from "drizzle-orm";
++import { runningProcesses } from "../adapters/index.js";
 +import {
 +  GITHUB_CHECK_EVENT_WAKE_REASON,
 +  GITHUB_PR_EVENT_WAKE_REASON,
@@ -41,6 +42,7 @@ index 0000000..eefd803
 +const HEAD_SHA = "a".repeat(40);
 +const OTHER_SHA = "c".repeat(40);
 +const NOW = new Date("2026-09-04T12:00:05.000Z");
++const liveRunIds = new Set<string>();
 +
 +type WakeCall = { agentId: string; options: Record<string, unknown> };
 +
@@ -54,6 +56,8 @@ index 0000000..eefd803
 +  }, 20_000);
 +
 +  afterEach(async () => {
++    for (const runId of liveRunIds) runningProcesses.delete(runId);
++    liveRunIds.clear();
 +    await db.delete(activityLog);
 +    await db.delete(heartbeatRuns);
 +    await db.delete(agentWakeupRequests);
@@ -373,6 +377,69 @@ index 0000000..eefd803
 +    expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
 +  });
 +
++  it.each([
++    { event: "pull_request", reason: GITHUB_PR_EVENT_WAKE_REASON, makeEvent: pullRequestEvent },
++    {
++      event: "check_suite", reason: GITHUB_CHECK_EVENT_WAKE_REASON,
++      makeEvent: (id: string) => ({
++        ...pullRequestEvent(id), event: "check_suite", action: "completed",
++        payload: {
++          repository: "acme/widgets", headSha: HEAD_SHA, headBranch: "feature",
++          status: "completed", conclusion: "success",
++        },
++      }),
++    },
++    {
++      event: "pull_request_review", reason: GITHUB_REVIEW_EVENT_WAKE_REASON,
++      makeEvent: (id: string) => ({
++        ...pullRequestEvent(id), event: "pull_request_review", action: "submitted",
++        payload: {
++          repository: "acme/widgets", number: 7, state: "approved", headSha: HEAD_SHA,
++          submittedAt: "2026-09-04T12:00:02.000Z",
++        },
++      }),
++    },
++  ])("defers one follow-up for $event during a running issue turn", async ({ event, reason, makeEvent }) => {
++    const { companyId, grantId } = await seedBinding();
++    const agentId = await seedAgent(companyId);
++    const issueId = await seedIssue(companyId, agentId, "in_progress", 5);
++    await seedLinkedPullRequest(companyId, issueId, HEAD_SHA);
++    const runId = randomUUID();
++    await db.insert(heartbeatRuns).values({
++      id: runId, companyId, agentId, status: "running", invocationSource: "on_demand",
++      triggerDetail: "manual", contextSnapshot: { issueId },
++    });
++    runningProcesses.set(runId, { child: {} as never, graceSec: 0, processGroupId: null });
++    liveRunIds.add(runId);
++    await db.update(issues).set({
++      executionRunId: runId,
++      executionAgentNameKey: "event bot",
++      executionLockedAt: NOW,
++    }).where(eq(issues.id, issueId));
++    const events = [`delivery_running_${event}_1`, `delivery_running_${event}_2`].map((id) => ({
++      ...makeEvent(id), bindingIds: [`${grantId}_101`],
++    }));
++    const heartbeat = heartbeatService(db);
++    let currentTime = NOW;
++    const service = githubConnectionEventService(db, {
++      connector: connectorFor(events), now: () => currentTime, wakeup: heartbeat.wakeup,
++    });
++
++    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 2 });
++    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
++    expect(wakes).toHaveLength(1);
++    expect(wakes[0]).toMatchObject({ status: "deferred_issue_execution", coalescedCount: 1 });
++    expect(wakes[0]!.payload).toMatchObject({ _paperclipWakeContext: { issueId, wakeReason: reason } });
++    expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
++
++    await db.update(connectionEventDeliveries).set({ status: "failed" })
++      .where(eq(connectionEventDeliveries.providerDeliveryId, events[0]!.id));
++    currentTime = new Date(NOW.getTime() + 6_000);
++    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, duplicate: 1 });
++    expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
++    expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
++  });
++
 +  it("does not wake todo, done, or unassigned issues", async () => {
 +    const { companyId, grantId } = await seedBinding();
 +    const agentId = await seedAgent(companyId);
@@ -560,94 +627,8 @@ index 0000000..eefd803
 +    expect(wakes).toHaveLength(0);
 +  });
 +});
-diff --git a/server/src/__tests__/issue-monitor-wake-policy.test.ts b/server/src/__tests__/issue-monitor-wake-policy.test.ts
-index b1c7b2f..81001d9 100644
---- a/server/src/__tests__/issue-monitor-wake-policy.test.ts
-+++ b/server/src/__tests__/issue-monitor-wake-policy.test.ts
-@@ -40,6 +40,7 @@ describe("resolveIssueMonitorWakePolicyConfig", () => {
-       mode: "enforce",
-       minIntervalMs: 2 * HOUR,
-       quietBackstopMs: 4 * HOUR,
-+      githubEventsConfirmed: false,
-     });
-     expect(ISSUE_MONITOR_MIN_INTERVAL_MS).toBe(2 * HOUR);
-     expect(ISSUE_MONITOR_QUIET_BACKSTOP_MS).toBe(4 * HOUR);
-@@ -104,6 +105,23 @@ describe("issueMonitorWakeExemption", () => {
-     expect(issueMonitorWakeExemption({ ...base, monitor: { ...base.monitor, serviceName } })).toBeNull();
-   });
- 
-+  it.each([undefined, "", "false", "1", "yes", "TRUE"])("keeps GitHub coverage unconfirmed for %j", (value) => {
-+    expect(resolveIssueMonitorWakePolicyConfig({ PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED: value }).githubEventsConfirmed).toBe(false);
-+  });
-+
-+  it.each(["github", "github-actions", "GitHub CI"])("only lifts %s exemption after explicit event confirmation", (serviceName) => {
-+    const monitor = { kind: "external_service", scheduledBy: "assignee", serviceName };
-+    expect(issueMonitorWakeExemption({ ...base, monitor })).toBe("external_service");
-+    const confirmed = resolveIssueMonitorWakePolicyConfig({ PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED: "true" });
-+    expect(confirmed.githubEventsConfirmed).toBe(true);
-+    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor })).toBeNull();
-+    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, kind: null } })).toBeNull();
-+    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, serviceName: "deploys" } })).toBe("external_service");
-+    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, kind: null, serviceName: " deploys " } })).toBe("external_service");
-+    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, serviceName: null } })).toBe("external_service");
-+    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor, isProviderQuotaMonitor: true })).toBe("provider_quota");
-+  });
-+
-   it("still evaluates shadow mode", () => {
-     expect(issueMonitorWakeExemption({ ...base, config: { ...config, mode: "shadow" } })).toBeNull();
-   });
-diff --git a/server/src/__tests__/issue-monitor-wake-skip.test.ts b/server/src/__tests__/issue-monitor-wake-skip.test.ts
-index 6b891e1..8aa82b3 100644
---- a/server/src/__tests__/issue-monitor-wake-skip.test.ts
-+++ b/server/src/__tests__/issue-monitor-wake-skip.test.ts
-@@ -43,6 +43,7 @@ const WAKE_POLICY_ENV_KEYS = [
-   "PAPERCLIP_MONITOR_WAKE_POLICY",
-   "PAPERCLIP_MONITOR_MIN_INTERVAL_MS",
-   "PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS",
-+  "PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED",
- ] as const;
- 
- const DUE_AT = new Date("2026-04-11T12:30:00.000Z");
-@@ -546,6 +547,37 @@ describeEmbeddedPostgres("issue monitor wake policy", () => {
-     expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_deferred");
-   });
- 
-+  it.each([
-+    { kind: "external_service", serviceName: "github-actions" },
-+    { serviceName: " GitHub CI " },
-+  ])("only defers a confirmed GitHub monitor (%j)", async (monitor) => {
-+    process.env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED = "true";
-+    const { issueId } = await seedFixture({ monitor });
-+    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(0);
-+    await expectDeferred(issueId, new Date("2026-04-11T14:10:00.000Z"), "min_interval");
-+  });
-+
-+  it("does not defer a non-GitHub service when GitHub coverage is confirmed", async () => {
-+    process.env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED = "true";
-+    const { issueId } = await seedFixture({ monitor: { kind: "external_service", serviceName: "deploys" } });
-+    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
-+    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_deferred");
-+  });
-+
-+  it("dispatches a confirmed GitHub monitor before the timeout instead of exhausting it", async () => {
-+    process.env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED = "true";
-+    const timeoutAt = new Date("2026-04-11T12:50:00.000Z");
-+    const { issueId, agentId } = await seedFixture({ monitor: {
-+      kind: "external_service", serviceName: "github-actions", timeoutAt: timeoutAt.toISOString(), recoveryPolicy: "escalate_to_board",
-+    } });
-+    const heartbeat = heartbeatService(db);
-+    expect((await heartbeat.tickTimers(TICK_AT)).enqueued).toBe(1);
-+    expect((await heartbeat.tickTimers(timeoutAt)).enqueued).toBe(0);
-+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
-+    expect(wakes.map((row) => row.reason)).toEqual(["issue_monitor_due"]);
-+    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_exhausted");
-+  });
-+
-   it("still defers timer monitors with a null service name", async () => {
-     const { issueId } = await seedFixture({ monitor: { serviceName: null } });
-     expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(0);
 diff --git a/server/src/services/github-connection-events.ts b/server/src/services/github-connection-events.ts
-index 177492e..d2322d0 100644
+index 177492ea6..d2322d03d 100644
 --- a/server/src/services/github-connection-events.ts
 +++ b/server/src/services/github-connection-events.ts
 @@ -1,12 +1,15 @@
@@ -1002,63 +983,22 @@ index 177492e..d2322d0 100644
          if (event.event === "installation" || event.event === "installation_repositories") {
            for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
          } else {
-diff --git a/server/src/services/issue-monitor-wake-policy.ts b/server/src/services/issue-monitor-wake-policy.ts
-index 6e7685d..4929f03 100644
---- a/server/src/services/issue-monitor-wake-policy.ts
-+++ b/server/src/services/issue-monitor-wake-policy.ts
-@@ -21,8 +21,9 @@
-  *
-  * Exempt: manual (on-demand) checks, provider-quota recovery, monitors a
-  * board user scheduled, and monitors with `kind: external_service` or a
-- * non-empty service name. The host does not observe what they watch (CI,
-- * deploys), so a quiet card proves nothing.
-+ * non-empty service name. GitHub services only lose that exemption after
-+ * PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED=true confirms check/review
-+ * coverage. Normalization alone does not prove events reach the host.
-  */
- 
- export type IssueMonitorWakePolicyMode = "off" | "shadow" | "enforce";
-@@ -40,6 +41,8 @@ export interface IssueMonitorWakePolicyConfig {
-   mode: IssueMonitorWakePolicyMode;
-   minIntervalMs: number;
-   quietBackstopMs: number;
-+  /** Operator-confirmed check/review delivery coverage, never inferred from normalization. */
-+  githubEventsConfirmed: boolean;
- }
- 
- function readBoundedMs(raw: string | undefined, fallback: number): number {
-@@ -57,6 +60,8 @@ function readBoundedMs(raw: string | undefined, fallback: number): number {
-  * - `PAPERCLIP_MONITOR_MIN_INTERVAL_MS` and
-  *   `PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS`: integers in [60000, 86400000].
-  *   The backstop never drops below the minimum interval.
-+ * - `PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED`: exactly `true` lifts the
-+ *   GitHub service exemption after the operator confirms delivery coverage.
-  */
- export function resolveIssueMonitorWakePolicyConfig(
-   env: Readonly<Record<string, string | undefined>>,
-@@ -72,7 +77,8 @@ export function resolveIssueMonitorWakePolicyConfig(
-     minIntervalMs,
-     readBoundedMs(env.PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS, ISSUE_MONITOR_QUIET_BACKSTOP_MS),
-   );
--  return { mode, minIntervalMs, quietBackstopMs };
-+  const githubEventsConfirmed = env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED === "true";
-+  return { mode, minIntervalMs, quietBackstopMs, githubEventsConfirmed };
- }
- 
- export type IssueMonitorWakeExemptReason =
-@@ -104,7 +110,9 @@ export function issueMonitorWakeExemption(
-   if (input.source === "on_demand") return "on_demand";
-   if (input.isProviderQuotaMonitor) return "provider_quota";
-   if (input.monitor?.scheduledBy === "board") return "board_scheduled";
--  if (input.monitor?.kind === "external_service" || input.monitor?.serviceName?.trim()) {
-+  const serviceName = input.monitor?.serviceName?.trim();
-+  const confirmedGithub = input.config.githubEventsConfirmed && serviceName?.toLowerCase().includes("github");
-+  if ((input.monitor?.kind === "external_service" || serviceName) && !confirmedGithub) {
-     return "external_service";
-   }
-   return null;
+diff --git a/server/src/services/heartbeat.ts b/server/src/services/heartbeat.ts
+index 21291abf9..2034fe211 100644
+--- a/server/src/services/heartbeat.ts
++++ b/server/src/services/heartbeat.ts
+@@ -1257,6 +1257,9 @@ const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
+   "approval_approved",
+   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+   "issue_recovery_action_restored",
++  "issue_github_pr_updated",
++  "issue_github_check_completed",
++  "issue_github_review_submitted",
+ ]);
+ const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
+   "issue_assigned",
 diff --git a/server/src/services/issue-thread-interactions.ts b/server/src/services/issue-thread-interactions.ts
-index 897713e..08d401d 100644
+index 897713ed5..08d401dbd 100644
 --- a/server/src/services/issue-thread-interactions.ts
 +++ b/server/src/services/issue-thread-interactions.ts
 @@ -151,7 +151,12 @@ type InteractionWakeup = (
