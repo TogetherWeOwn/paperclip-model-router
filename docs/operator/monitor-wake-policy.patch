@@ -1,9 +1,9 @@
 diff --git a/server/src/__tests__/issue-monitor-wake-policy.test.ts b/server/src/__tests__/issue-monitor-wake-policy.test.ts
 new file mode 100644
-index 0000000..b1c7b2f
+index 000000000..c38d7f468
 --- /dev/null
 +++ b/server/src/__tests__/issue-monitor-wake-policy.test.ts
-@@ -0,0 +1,300 @@
+@@ -0,0 +1,337 @@
 +import { describe, expect, it } from "vitest";
 +import {
 +  ISSUE_MONITOR_MIN_INTERVAL_MS,
@@ -46,6 +46,8 @@ index 0000000..b1c7b2f
 +      mode: "enforce",
 +      minIntervalMs: 2 * HOUR,
 +      quietBackstopMs: 4 * HOUR,
++      githubEventsConfirmed: false,
++      timeoutDispatchMarginMs: 60_000,
 +    });
 +    expect(ISSUE_MONITOR_MIN_INTERVAL_MS).toBe(2 * HOUR);
 +    expect(ISSUE_MONITOR_QUIET_BACKSTOP_MS).toBe(4 * HOUR);
@@ -108,6 +110,23 @@ index 0000000..b1c7b2f
 +
 +  it.each([null, "", "   "])("does not exempt an unnamed timer (%j)", (serviceName) => {
 +    expect(issueMonitorWakeExemption({ ...base, monitor: { ...base.monitor, serviceName } })).toBeNull();
++  });
++
++  it.each([undefined, "", "false", "1", "yes", "TRUE"])("keeps GitHub coverage unconfirmed for %j", (value) => {
++    expect(resolveIssueMonitorWakePolicyConfig({ PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED: value }).githubEventsConfirmed).toBe(false);
++  });
++
++  it.each(["github", "github-actions", "GitHub CI"])("only lifts %s exemption after explicit event confirmation", (serviceName) => {
++    const monitor = { kind: "external_service", scheduledBy: "assignee", serviceName };
++    expect(issueMonitorWakeExemption({ ...base, monitor })).toBe("external_service");
++    const confirmed = resolveIssueMonitorWakePolicyConfig({ PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED: "true" });
++    expect(confirmed.githubEventsConfirmed).toBe(true);
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor })).toBeNull();
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, kind: null } })).toBeNull();
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, serviceName: "deploys" } })).toBe("external_service");
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, kind: null, serviceName: " deploys " } })).toBe("external_service");
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor: { ...monitor, serviceName: null } })).toBe("external_service");
++    expect(issueMonitorWakeExemption({ ...base, config: confirmed, monitor, isProviderQuotaMonitor: true })).toBe("provider_quota");
 +  });
 +
 +  it("still evaluates shadow mode", () => {
@@ -204,10 +223,28 @@ index 0000000..b1c7b2f
 +    });
 +  });
 +
++  it("uses two scheduler intervals as the timeout dispatch margin", () => {
++    const schedulerConfig = resolveIssueMonitorWakePolicyConfig({
++      HEARTBEAT_SCHEDULER_INTERVAL_MS: "10000",
++    });
++    const floorAt = new Date(NOW.getTime() + 90 * MINUTE);
++    const withinMargin = new Date(floorAt.getTime() + 20_000).toISOString();
++    const beyondMargin = new Date(floorAt.getTime() + 20_001).toISOString();
++
++    expect(evaluateIssueMonitorWake(input({ config: schedulerConfig, finishedMinutesAgo: 30, timeoutAt: withinMargin }))).toEqual({
++      action: "dispatch",
++      reason: "timeout_window_reached",
++    });
++    expect(evaluateIssueMonitorWake(input({ config: schedulerConfig, finishedMinutesAgo: 30, timeoutAt: beyondMargin }))).toMatchObject({
++      action: "defer",
++      reason: "min_interval",
++    });
++  });
++
 +  it.each([
-+    [30, 91, 90],
-+    [130, 111, 110],
-+  ])("still defers when the timeout is strictly later than the next look (%i min since run)", (finishedMinutesAgo, minutesLeft, deferMinutes) => {
++    [30, 92, 90],
++    [130, 112, 110],
++  ])("still defers when the timeout is beyond the next-look margin (%i min since run)", (finishedMinutesAgo, minutesLeft, deferMinutes) => {
 +    const timeoutAt = new Date(NOW.getTime() + minutesLeft * MINUTE).toISOString();
 +    const decision = evaluateIssueMonitorWake(input({ finishedMinutesAgo, timeoutAt }));
 +    if (decision.action !== "defer") throw new Error("expected defer");
@@ -306,10 +343,10 @@ index 0000000..b1c7b2f
 +});
 diff --git a/server/src/__tests__/issue-monitor-wake-skip.test.ts b/server/src/__tests__/issue-monitor-wake-skip.test.ts
 new file mode 100644
-index 0000000..6b891e1
+index 000000000..289377ed8
 --- /dev/null
 +++ b/server/src/__tests__/issue-monitor-wake-skip.test.ts
-@@ -0,0 +1,626 @@
+@@ -0,0 +1,678 @@
 +import { randomUUID } from "node:crypto";
 +import { eq, sql } from "drizzle-orm";
 +import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -355,6 +392,8 @@ index 0000000..6b891e1
 +  "PAPERCLIP_MONITOR_WAKE_POLICY",
 +  "PAPERCLIP_MONITOR_MIN_INTERVAL_MS",
 +  "PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS",
++  "PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED",
++  "HEARTBEAT_SCHEDULER_INTERVAL_MS",
 +] as const;
 +
 +const DUE_AT = new Date("2026-04-11T12:30:00.000Z");
@@ -858,6 +897,56 @@ index 0000000..6b891e1
 +    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_deferred");
 +  });
 +
++  it.each([
++    { kind: "external_service", serviceName: "github-actions" },
++    { serviceName: " GitHub CI " },
++  ])("only defers a confirmed GitHub monitor (%j)", async (monitor) => {
++    process.env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED = "true";
++    const { issueId } = await seedFixture({ monitor });
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(0);
++    await expectDeferred(issueId, new Date("2026-04-11T14:10:00.000Z"), "min_interval");
++  });
++
++  it("does not defer a non-GitHub service when GitHub coverage is confirmed", async () => {
++    process.env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED = "true";
++    const { issueId } = await seedFixture({ monitor: { kind: "external_service", serviceName: "deploys" } });
++    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
++    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_deferred");
++  });
++
++  it("dispatches a confirmed GitHub monitor before the timeout instead of exhausting it", async () => {
++    process.env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED = "true";
++    const timeoutAt = new Date("2026-04-11T12:50:00.000Z");
++    const { issueId, agentId } = await seedFixture({ monitor: {
++      kind: "external_service", serviceName: "github-actions", timeoutAt: timeoutAt.toISOString(), recoveryPolicy: "escalate_to_board",
++    } });
++    const heartbeat = heartbeatService(db);
++    expect((await heartbeat.tickTimers(TICK_AT)).enqueued).toBe(1);
++    expect((await heartbeat.tickTimers(timeoutAt)).enqueued).toBe(0);
++    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
++    expect(wakes.map((row) => row.reason)).toEqual(["issue_monitor_due"]);
++    expect((await activityActions(issueId)).map((row) => row.action)).not.toContain("issue.monitor_exhausted");
++  });
++
++  it("dispatches before the next scheduler tick can exhaust a near-target timeout", async () => {
++    process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS = "30000";
++    const timeoutAt = new Date("2026-04-11T14:10:20.000Z");
++    const { issueId, agentId } = await seedFixture({ monitor: {
++      timeoutAt: timeoutAt.toISOString(), recoveryPolicy: "escalate_to_board",
++    } });
++    const heartbeat = heartbeatService(db);
++
++    const firstTick = await heartbeat.tickTimers(TICK_AT);
++    const secondTick = await heartbeat.tickTimers(new Date("2026-04-11T14:10:31.000Z"));
++    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
++    expect(firstTick.enqueued).toBe(1);
++    expect(secondTick.enqueued).toBe(0);
++    expect(wakes.map((row) => row.reason)).toEqual(["issue_monitor_due"]);
++    const actions = (await activityActions(issueId)).map((row) => row.action);
++    expect(actions).not.toContain("issue.monitor_deferred");
++    expect(actions).not.toContain("issue.monitor_exhausted");
++  });
++
 +  it("still defers timer monitors with a null service name", async () => {
 +    const { issueId } = await seedFixture({ monitor: { serviceName: null } });
 +    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(0);
@@ -937,7 +1026,7 @@ index 0000000..6b891e1
 +  });
 +});
 diff --git a/server/src/services/heartbeat.ts b/server/src/services/heartbeat.ts
-index 73df4f7..21291ab 100644
+index 73df4f745..21291abf9 100644
 --- a/server/src/services/heartbeat.ts
 +++ b/server/src/services/heartbeat.ts
 @@ -137,6 +137,8 @@ import {
@@ -1225,10 +1314,10 @@ index 73df4f7..21291ab 100644
  
 diff --git a/server/src/services/issue-monitor-wake-policy.ts b/server/src/services/issue-monitor-wake-policy.ts
 new file mode 100644
-index 0000000..6e7685d
+index 000000000..5f39fa145
 --- /dev/null
 +++ b/server/src/services/issue-monitor-wake-policy.ts
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,251 @@
 +/**
 + * Monitor wakes are a timer, not an event. An agent arms a monitor to look at
 + * something again later, and every due monitor starts a full adapter session.
@@ -1252,8 +1341,9 @@ index 0000000..6e7685d
 + *
 + * Exempt: manual (on-demand) checks, provider-quota recovery, monitors a
 + * board user scheduled, and monitors with `kind: external_service` or a
-+ * non-empty service name. The host does not observe what they watch (CI,
-+ * deploys), so a quiet card proves nothing.
++ * non-empty service name. GitHub services only lose that exemption after
++ * PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED=true confirms check/review
++ * coverage. Normalization alone does not prove events reach the host.
 + */
 +
 +export type IssueMonitorWakePolicyMode = "off" | "shadow" | "enforce";
@@ -1271,6 +1361,10 @@ index 0000000..6e7685d
 +  mode: IssueMonitorWakePolicyMode;
 +  minIntervalMs: number;
 +  quietBackstopMs: number;
++  /** Operator-confirmed check/review delivery coverage, never inferred from normalization. */
++  githubEventsConfirmed: boolean;
++  /** Dispatch early enough to beat a timeout between scheduler ticks. */
++  timeoutDispatchMarginMs: number;
 +}
 +
 +function readBoundedMs(raw: string | undefined, fallback: number): number {
@@ -1288,6 +1382,8 @@ index 0000000..6e7685d
 + * - `PAPERCLIP_MONITOR_MIN_INTERVAL_MS` and
 + *   `PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS`: integers in [60000, 86400000].
 + *   The backstop never drops below the minimum interval.
++ * - `PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED`: exactly `true` lifts the
++ *   GitHub service exemption after the operator confirms delivery coverage.
 + */
 +export function resolveIssueMonitorWakePolicyConfig(
 +  env: Readonly<Record<string, string | undefined>>,
@@ -1303,7 +1399,13 @@ index 0000000..6e7685d
 +    minIntervalMs,
 +    readBoundedMs(env.PAPERCLIP_MONITOR_QUIET_BACKSTOP_MS, ISSUE_MONITOR_QUIET_BACKSTOP_MS),
 +  );
-+  return { mode, minIntervalMs, quietBackstopMs };
++  const githubEventsConfirmed = env.PAPERCLIP_GITHUB_MONITOR_EVENTS_CONFIRMED === "true";
++  const schedulerIntervalMs = Math.max(
++    10_000,
++    Number(env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30_000,
++  );
++  const timeoutDispatchMarginMs = 2 * schedulerIntervalMs;
++  return { mode, minIntervalMs, quietBackstopMs, githubEventsConfirmed, timeoutDispatchMarginMs };
 +}
 +
 +export type IssueMonitorWakeExemptReason =
@@ -1335,7 +1437,9 @@ index 0000000..6e7685d
 +  if (input.source === "on_demand") return "on_demand";
 +  if (input.isProviderQuotaMonitor) return "provider_quota";
 +  if (input.monitor?.scheduledBy === "board") return "board_scheduled";
-+  if (input.monitor?.kind === "external_service" || input.monitor?.serviceName?.trim()) {
++  const serviceName = input.monitor?.serviceName?.trim();
++  const confirmedGithub = input.config.githubEventsConfirmed && serviceName?.toLowerCase().includes("github");
++  if ((input.monitor?.kind === "external_service" || serviceName) && !confirmedGithub) {
 +    return "external_service";
 +  }
 +  return null;
@@ -1415,9 +1519,9 @@ index 0000000..6e7685d
 +
 +  const timeoutAt = parseDate(input.timeoutAt);
 +  // The scheduler exhausts a monitor at now >= timeoutAt before this policy
-+  // runs. Deferring to the timeout would lose the check, so dispatch now when
-+  // the bound would cap the proposed deferral, including exact equality.
-+  if (timeoutAt && timeoutAt.getTime() <= deferUntilMs) {
++  // runs. A due time can land just after the target and still be passed by the
++  // next scheduler tick, so include two ticks of margin before deferring.
++  if (timeoutAt && timeoutAt.getTime() <= deferUntilMs + config.timeoutDispatchMarginMs) {
 +    return { action: "dispatch", reason: "timeout_window_reached" };
 +  }
 +
@@ -1466,7 +1570,7 @@ index 0000000..6e7685d
 +  };
 +}
 diff --git a/ui/src/lib/activity-format.ts b/ui/src/lib/activity-format.ts
-index a898b1d..154aa14 100644
+index a898b1dc3..154aa14d3 100644
 --- a/ui/src/lib/activity-format.ts
 +++ b/ui/src/lib/activity-format.ts
 @@ -46,6 +46,8 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
