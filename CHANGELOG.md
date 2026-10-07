@@ -12,6 +12,25 @@ version is not present here.
 
 ### Added
 
+- **Rolling error-rate circuit breaker.**
+  `src/health/` gains a per-model outcome ring: when a failed routed call
+  leaves 10+ calls in the window with a failure rate at or above 20%, the
+  model degrades exactly like the consecutive-failure path (deprioritized to
+  last resort, avoided for the existing 30-minute probation, then half-open).
+  The window is the last 15 minutes or the last 100 calls, whichever is
+  shorter. Consecutive streaks still catch hard-down lanes on their own; the
+  rate catches flaky lanes whose interleaved successes kept resetting the
+  streak. Only a failure opens the breaker or restarts the avoid window, so
+  the cooldown ends 30 minutes after the last failure; a success never trips
+  a lane and, on an avoided lane, only holds the verdict until probation or
+  until the failures age out of the window. Probation starts with a fresh
+  ring so one trial failure cannot re-trip on old evidence.
+  Compatibility: stored state from older versions normalizes to an empty
+  ring (streak behavior unchanged); no config keys change. `tests/health.spec.ts`
+  pins the trip, the 20% and 10-sample boundaries, window edges, avoid-window
+  slide, success handling, half-open, ring clearing, and ring bounds; the
+  streak-replay expectation now holds degraded under a 40% window rate.
+
 - **Invocation-derived model health (TOG-7160, port of TOG-930).**
   `src/health/` (types, reconcile, catalogue probe) tracks per-model health
   in company-scoped plugin state: catalogue presence keeps a model unknown
@@ -119,6 +138,13 @@ version is not present here.
   its error while the healthy lanes keep their evidence.
 
 ### Fixed
+
+- **Host-validator UI slot mirror.** The local install-check mirror now requires
+  `ui.action.register` for `appShellOverlay` and `ui.sidebar.register` for
+  `organizationSwitcher`, matching the installed Paperclip capability table.
+  Behavior guards cover missing, correct and unrelated capabilities, combined
+  slots and duplicate slots. Strict host drift detection is unchanged; no plugin
+  manifest, runtime, configuration or host changes.
 
 - **MCP tools never throw on failure paths.** `model_router_invoke`
   and `model_router_invoke_async` resolve unexpected infrastructure failures
