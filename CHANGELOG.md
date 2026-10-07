@@ -10,6 +10,16 @@ version is not present here.
 
 ## [Unreleased]
 
+### Added
+
+- **No-op run share measurement.** `scripts/noop-run-share.mjs` reads heartbeat
+  runs per agent and each touched issue's activity, classifies no-event wakes
+  with a port of the host's progress rule, and reports the no-op and idle share
+  of runs by wake reason plus the monitor deferral counters, as JSON and a short
+  markdown table. `tests/noop-run-share.spec.ts` and
+  `scripts/noop-run-share-mutation-gate.mjs` (`npm run check:noop-share-mutants`)
+  pin the classifier. See `docs/operator/noop-run-share.md`.
+
 ## [0.9.0] - 2026-10-07
 
 ### Release notes

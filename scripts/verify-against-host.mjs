@@ -330,6 +330,8 @@ const FEATURE_CAPABILITIES = {
 };
 
 const UI_SLOT_CAPABILITIES = {
+  appShellOverlay: "ui.action.register",
+  organizationSwitcher: "ui.sidebar.register",
   sidebar: "ui.sidebar.register",
   sidebarPanel: "ui.sidebar.register",
   projectSidebarItem: "ui.sidebar.register",
