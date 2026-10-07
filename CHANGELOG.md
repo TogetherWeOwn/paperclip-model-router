@@ -18,7 +18,8 @@ version is not present here.
   review is 5/5), scored rounds per PR, and the share of checks that carried no
   verdict (manual-review-required and incomplete runs, which say nothing about
   the code and stay out of the rate), by repository and by PR author.
-  `tests/review-first-pass.spec.ts` (17 tests) pins the definitions.
+  `tests/review-first-pass.spec.ts` (21 tests) pins the definitions and the
+  argument checks.
   `docs/PROCESS.md` rule 7 and `AGENTS.md` ask authors to review their own diff
   against the 0-5 rubric before requesting review.
 

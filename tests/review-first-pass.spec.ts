@@ -12,7 +12,7 @@
  *   - "first" means earliest by start time, whatever order the caller lists runs,
  *   - a review still in progress is not a review yet.
  *
- * Offline: no GitHub access, only the pure functions.
+ * Offline: no GitHub access, only the pure functions and the argument parser.
  */
 
 import { describe, expect, it } from "vitest";
@@ -54,10 +54,11 @@ type Mod = {
   };
   summarize: (rs: PrRecord[]) => Summary;
   render: (s: Summary) => string;
+  parseArgs: (argv: string[]) => { repos: string[]; limit: number; since: string | null; json: boolean; fromFile: string | null };
 };
 const spec = "../scripts/review-first-pass.mjs";
 const mod = (await import(/* @vite-ignore */ spec)) as Mod;
-const { parseScore, classifyReview, summarizePr, summarize, render } = mod;
+const { parseScore, classifyReview, summarizePr, summarize, render, parseArgs } = mod;
 
 const scored = (n: number, at: string): Run => ({
   status: "completed",
@@ -214,5 +215,38 @@ describe("summarize", () => {
     const text = render(s);
     expect(text).toContain("first pass (5/5 first):      1 / 3 = 33.3%");
     expect(text).toContain("o/a");
+  });
+});
+
+describe("parseArgs", () => {
+  it("reads every flag", () => {
+    expect(parseArgs(["--repo", "o/a", "--repo", "o/b.c", "--limit", "5", "--since", "2026-10-05", "--json"])).toEqual({
+      repos: ["o/a", "o/b.c"],
+      limit: 5,
+      since: "2026-10-05",
+      json: true,
+      fromFile: null,
+    });
+    expect(parseArgs(["--from-file", "records.json"]).fromFile).toBe("records.json");
+  });
+
+  it("refuses a --since it cannot compare, instead of silently not filtering", () => {
+    for (const since of ["10/05/2026", "05-10-2026", "2026-10-5", "yesterday", "2026-13-45"]) {
+      expect(() => parseArgs(["--repo", "o/a", "--since", since]), since).toThrow(/--since/);
+    }
+    expect(parseArgs(["--repo", "o/a", "--since", "2026-10-05T10:00:00Z"]).since).toBe("2026-10-05T10:00:00Z");
+  });
+
+  it("refuses a flag with no value, including one swallowed by the next flag", () => {
+    expect(() => parseArgs(["--repo"])).toThrow(/needs a value/);
+    expect(() => parseArgs(["--repo", "o/a", "--since"])).toThrow(/needs a value/);
+    expect(() => parseArgs(["--repo", "--json"])).toThrow(/needs a value/);
+  });
+
+  it("refuses a repository that is not owner/name, a bad limit, an unknown flag, and no source", () => {
+    for (const repo of ["a", "a/b/c", "/b", "a/"]) expect(() => parseArgs(["--repo", repo]), repo).toThrow(/owner\/name/);
+    for (const limit of ["0", "-1", "abc", "1.5"]) expect(() => parseArgs(["--repo", "o/a", "--limit", limit]), limit).toThrow(/--limit/);
+    expect(() => parseArgs(["--repo", "o/a", "--nope"])).toThrow(/unknown argument/);
+    expect(() => parseArgs([])).toThrow(/--repo owner\/name or --from-file/);
   });
 });

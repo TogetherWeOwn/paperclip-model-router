@@ -29,6 +29,12 @@
  * printed beside it as `naive`, so the two can be compared with any figure
  * produced by another method.
  *
+ * BLIND SPOT: reviews are read from the commits GitHub lists for the merged PR.
+ * A review that landed on a head the author later amended or force-pushed away
+ * sits on a commit that is no longer in the PR, so it is not seen. For such a PR
+ * the first-pass rate reads high and the rounds read low. Fix commits pushed on
+ * top (what the fleet does) are all seen.
+ *
  * Read-only. It shells out to `gh api`, so it uses whatever GitHub access the
  * calling session already has and never reads, prints or exports a token.
  *
@@ -49,8 +55,10 @@ import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const execFileAsync = promisify(execFile);
-/** Parallel `gh api` calls per repository. Enough to be quick, few enough not to trip secondary rate limits. */
-const CONCURRENCY = 6;
+/** Concurrent `gh api` processes across the whole run, all repositories and PRs together. */
+const MAX_PARALLEL_GH = 8;
+/** Retries, with doubling back-off from one second, for rate limits and server errors. */
+const MAX_RETRIES = 3;
 
 export const CHECK_NAME = "Paperclip Review";
 
@@ -161,9 +169,31 @@ export function summarize(records) {
   };
 }
 
+let active = 0;
+const waiting = [];
+async function withSlot(fn) {
+  if (active >= MAX_PARALLEL_GH) await new Promise((resolve) => waiting.push(resolve));
+  active++;
+  try {
+    return await fn();
+  } finally {
+    active--;
+    waiting.shift()?.();
+  }
+}
+
 async function gh(path) {
-  const { stdout } = await execFileAsync("gh", ["api", path], { maxBuffer: 64 * 1024 * 1024 });
-  return JSON.parse(stdout);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const { stdout } = await withSlot(() => execFileAsync("gh", ["api", path], { maxBuffer: 64 * 1024 * 1024 }));
+      return JSON.parse(stdout);
+    } catch (err) {
+      const detail = `${err.stderr ?? ""} ${err.message ?? ""}`;
+      const transient = /HTTP (429|5\d\d)|rate limit|secondary/i.test(detail);
+      if (!transient || attempt >= MAX_RETRIES) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
+    }
+  }
 }
 
 /** Every item of a list endpoint. `pick` returns the page's array from its body. */
@@ -174,21 +204,6 @@ async function ghAll(path, pick = (body) => body) {
     items.push(...batch);
     if (batch.length < 100) return items;
   }
-}
-
-/** Run `fn` over `items`, at most `limit` at a time, keeping input order. */
-async function pool(items, limit, fn) {
-  const out = new Array(items.length);
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (next < items.length) {
-        const i = next++;
-        out[i] = await fn(items[i]);
-      }
-    }),
-  );
-  return out;
 }
 
 /** Merged PRs most recently updated first, up to `limit`. */
@@ -210,25 +225,43 @@ async function mergedPrs(repo, limit, since) {
 /** Collect one repository's PR records from GitHub. */
 export async function collect(repo, { limit = 50, since = null } = {}) {
   const prs = await mergedPrs(repo, limit, since);
-  return pool(prs, CONCURRENCY, async (pr) => {
-    const commits = await ghAll(`repos/${repo}/pulls/${pr.number}/commits`);
-    const perCommit = await pool(commits, CONCURRENCY, (c) =>
-      ghAll(`repos/${repo}/commits/${c.sha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}`, (b) => b.check_runs ?? []),
-    );
-    const reviews = perCommit.flat().filter((cr) => cr.name === CHECK_NAME);
-    return { repo, number: pr.number, author: pr.user?.login ?? null, commits: commits.length, reviews };
-  });
+  return Promise.all(
+    prs.map(async (pr) => {
+      const commits = await ghAll(`repos/${repo}/pulls/${pr.number}/commits`);
+      const perCommit = await Promise.all(
+        commits.map((c) =>
+          ghAll(`repos/${repo}/commits/${c.sha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}`, (b) => b.check_runs ?? []),
+        ),
+      );
+      const reviews = perCommit.flat().filter((cr) => cr.name === CHECK_NAME);
+      return { repo, number: pr.number, author: pr.user?.login ?? null, commits: commits.length, reviews };
+    }),
+  );
 }
 
-function parseArgs(argv) {
+/** Parse and validate argv. Throws on anything it cannot read, so a typo is an error, never a different number. */
+export function parseArgs(argv) {
   const args = { repos: [], limit: 50, since: null, json: false, fromFile: null };
+  const value = (i, flag) => {
+    const v = argv[i];
+    if (v === undefined || v.startsWith("--")) throw new Error(`${flag} needs a value`);
+    return v;
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--repo") args.repos.push(argv[++i]);
-    else if (a === "--limit") args.limit = Number(argv[++i]);
-    else if (a === "--since") args.since = argv[++i];
-    else if (a === "--json") args.json = true;
-    else if (a === "--from-file") args.fromFile = argv[++i];
+    if (a === "--repo") {
+      const repo = value(++i, a);
+      if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error(`--repo must be owner/name, got "${repo}"`);
+      args.repos.push(repo);
+    } else if (a === "--limit") args.limit = Number(value(++i, a));
+    else if (a === "--since") {
+      const since = value(++i, a);
+      if (!/^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/.test(since) || Number.isNaN(Date.parse(since))) {
+        throw new Error(`--since must be an ISO date such as 2026-10-05, got "${since}"`);
+      }
+      args.since = since;
+    } else if (a === "--json") args.json = true;
+    else if (a === "--from-file") args.fromFile = value(++i, a);
     else throw new Error(`unknown argument: ${a}`);
   }
   if (!args.fromFile && !args.repos.length) throw new Error("give --repo owner/name or --from-file");
