@@ -98,7 +98,10 @@ New `server/src/services/chat-github-review-template.ts`:
 - Summary: verdict + score line, commit permalink, files-reviewed count,
   summary, findings table (`#` / severity emoji / title / `path:line`
   permalink), one `<details>` per finding (What / Evidence / Fix +
-  `suggestion` block), Coverage line. No Task/Run links.
+  `suggestion` block), Coverage line. No Task/Run links. The HTML `<summary>`
+  contains only the server-owned index/severity; the title, category and Markdown
+  location link appear after a blank line, outside the raw HTML block, so GFM
+  renders punctuation and clickable evidence correctly.
 - Inline: `**🔴 Error · reliability** — {title} · {score}/5 · [`sha7`](commit)`,
   body, Evidence permalink, safe `suggestion` block, `<details>` with long text.
 - Truncation at 60,000 chars with `…truncated, see the PR comment`,
@@ -185,13 +188,16 @@ pre-deploy catalog schemas, and quarantine denial. Replacement regressions cover
 significant indentation and omission when sanitization or truncation would alter code.
 
 Verification for patch SHA-256
-`97999b5f4d6a8a66fae85ee54463c575903d29a3a41edd27019c3274b8ead77d`:
+`d11936dfa6eadc49a7f2c197dd506416d5ea78c1e9a8c15561e94cb50cda7cff`:
 
 - Downloaded the public source archive at the pinned host commit into an isolated
   scratch fixture. Regenerated the patch with standard context: 12 host files
-  (+1700/−116). Plain `git apply --check` and `git apply` passed on a second pristine
+  (+1723/−116). Plain `git apply --check` and `git apply` passed on a second pristine
   fixture; all 12 resulting files were byte-identical to the tested source.
-- Host unit tests passed: 41/41 across template, reconciliation and review policy.
+- Host unit tests passed: 42/42 across template, reconciliation and review policy.
+  A separate local GFM render probe using Marked 16.4.2 passed: the HTML summary
+  remains short, title punctuation is literal, and the evidence location is an
+  actual anchor. This probe is not a live GitHub review.
   Focused host integration passed: 9/9 GitHub workflow tests (1,033 unrelated tests were
   skipped by the explicit name filter). Both `packages/shared` and `server`
   `tsc --noEmit --pretty false` passed with no diagnostics.
@@ -199,7 +205,11 @@ Verification for patch SHA-256
   4.1.11 and Zod 4.4.3), with workspace links redirected to the pinned source.
   Test processes had live credential and database environment variables removed;
   integration used its isolated embedded PostgreSQL. The live host source was
-  not modified. This was source verification, not a deployment.
+  not modified. This was source verification, not a deployment. Initial fixture
+  attempts failed on links to newer live adapter source and unbuilt workspace
+  exports. Repointing all workspace-package links to the pinned fixture and
+  building its eval-kernel/runner exports resolved those failures before the
+  successful server typecheck and focused integration run.
 - Model-router checks passed against the current `origin/main`:
   `npm run typecheck`, `npm test` (106 files, 1,384 tests), `npm run build`,
   `npm run verify:host`, and `npm run rehearse`. The host validator emitted two

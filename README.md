@@ -300,4 +300,9 @@ Build before running `npm run verify:host`: it runs the built manifest through P
 
 `npm run rehearse` loads the built worker once, invokes two isolated sync company configurations through different compatible protocols, and submits an async invocation (submit → poll) plus a run-end cancel on a third.
 
+Secret scanning retains both working-tree and all-ref history gates. The
+CI-executed scanner self-test also pins the [sole immutable historical synthetic
+finding](docs/operator/historical-scanner-exception.md) and proves that no new
+commit or working-tree match can inherit its disposition.
+
 Licensed under the [MIT License](./LICENSE). No install or release is performed by the build or test commands.
