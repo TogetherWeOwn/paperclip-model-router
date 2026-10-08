@@ -48,7 +48,8 @@ In `packages/shared/src/validators/chat-github.ts`:
 - Both validators derive from one unrefined strict Zod object shape. New
   submissions use `githubReviewAssessmentSchema`: `summary` ≤2000 chars;
   finding `title` required (1–120, single line, no `|`), `evidence` ≤500,
-  `suggestion` ≤4000. `line: null` remains rejected. This avoids relying on
+  `suggestion` ≤4000 without trimming replacement-code whitespace. `line: null`
+  remains rejected. This avoids relying on
   `innerType()` to unwrap a refined Zod 4 object.
 - Publication and retry use `githubPersistedReviewAssessmentSchema` for stored
   assessments only. It accepts the previous 24,000-character summary bound and
@@ -64,9 +65,17 @@ New `server/src/services/chat-github-review-template.ts`:
   `Incomplete review` at the call site).
 - Permalinks use full SHAs: commit `…/commit/{headSha}`, RIGHT-side file
   `…/blob/{headSha}/{path}#L{line}`, and LEFT-side file
-  `…/blob/{baseSha}/{basePath}#L{line}`. Every new LEFT finding must provide
+  `…/blob/{diffBaseSha}/{basePath}#L{line}`. The compare API resolves the merge
+  base from pinned target/head SHAs; submission persists `event.diffBaseSha`
+  with the immutable assessment. Publication retries retain that diff base;
+  older rows needing a LEFT link resolve it from their stored commit pair.
+  Metadata exposes `diffBaseSha`, and `read_file(base)` reads that merge base,
+  not the independently advancing target-branch tip. Every new LEFT finding must provide
   `basePath` (equal to `path` when unchanged, or the previous filename for a
-  rename) and list it in `coverage.reviewedPaths`. A persisted pre-template LEFT
+  rename) and list it in `coverage.reviewedPaths`. Submission checks the base
+  filename against GitHub's `previous_filename` (or the current filename when
+  unchanged); coverage accepts both names for permitted renamed files. A
+  persisted pre-template LEFT
   finding without `basePath` gets an unlinked `LEFT side, line N` label; the
   renderer does not guess the previous filename. The sanitizer strips URL
   fragments on publish, so the visible `` `path:line` `` label carries the line
@@ -74,8 +83,10 @@ New `server/src/services/chat-github-review-template.ts`:
   form.
 - Model-controlled titles, categories, paths, keys, body, evidence, summary,
   rationale and limitations pass through `projectSafeChatPublicationText`
-  before flattening and Markdown escaping. Suggestions are sanitized before
-  entering their code block. Server-generated permalinks remain clickable;
+  before flattening and Markdown escaping. Suggestions are checked by projecting
+  their complete fenced block, preserving indentation. If sanitization would
+  change the executable replacement, the suggestion is omitted with a fixed
+  explanation instead of publishing edited code. Server-generated permalinks remain clickable;
   model-provided links and formatting do not.
 - The caller still sanitizes the completed rendered post before appending its
   idempotency marker. This second pass preserves the existing publication
@@ -92,8 +103,9 @@ New `server/src/services/chat-github-review-template.ts`:
   body, Evidence permalink, safe `suggestion` block, `<details>` with long text.
 - Truncation at 60,000 chars with `…truncated, see the PR comment`,
   enforced on UTF-16 length (astral emoji no longer push the post over the
-  ceiling), cutting only on line boundaries and re-closing any open fence or
-  `<details>` block.
+  ceiling), cutting only on line boundaries and re-closing any open `<details>`
+  block. A suggestion intersected by the cut is omitted in full, never presented
+  as an executable partial replacement.
 
 In `server/src/services/chat-github-review-policy.ts` and
 `server/src/services/chat-github-reviews.ts`:
@@ -110,8 +122,9 @@ In `server/src/services/chat-github-review-policy.ts` and
   completed check-run writes use a public GitHub PR `details_url`. For eligible
   actions, reconciliation checks on state changes and when a bounded process-local
   cache lacks a recent verification (512 entries, five-minute TTL). The lookup
-  paginates up to 100 pages of 100 checks, and a verified stale URL is corrected
-  even when action state is unchanged. Already-terminal actions are not revisited
+  requests `filter=all` and paginates up to 100 pages of 100 checks, so a public
+  duplicate cannot conceal another matching run's stale URL. A verified stale URL
+  is corrected even when action state is unchanged. Already-terminal actions are not revisited
   for historical URL backfill.
 
 In `server/src/services/chat-github-tools.ts` (`submit_review` description)
@@ -121,6 +134,9 @@ and `githubReviewPrompt` (`chat-github-review-policy.ts`):
   Every LEFT-side finding supplies `basePath` at the pull-request base (the
   same as `path` unless the file was renamed) and lists that path in
   `coverage.reviewedPaths`.
+- Discovery serves the running server's canonical built-in schema and description,
+  so existing bots do not need a configuration save after deployment. Persisted
+  catalog status, quarantine, connection and task policy remain the access gates.
 
 ## Artifact
 
@@ -140,8 +156,10 @@ cd server
 ../node_modules/.bin/vitest run src/services/chat-github-review-template.test.ts
 ../node_modules/.bin/vitest run src/services/chat-github-check-reconciliation.test.ts
 ../node_modules/.bin/vitest run src/services/chat-github-review-policy.test.ts
-../node_modules/.bin/vitest run src/__tests__/chat-channels.integration.test.ts -t "public PR URL|task-bound bot tools"
+../node_modules/.bin/vitest run src/__tests__/chat-channels.integration.test.ts -t "GitHub agent review workflow"
 ../node_modules/.bin/tsc --noEmit --pretty false
+cd ../packages/shared
+../../node_modules/.bin/tsc --noEmit --pretty false
 ```
 
 New tests exercise each builder with explicit assertions: pass, issues,
@@ -159,21 +177,37 @@ rendered block. The 300-finding truncation regression embeds a literal
 closes the real details block. The compatibility regression verifies a
 pre-deploy assessment with a 2,001-character summary and no finding title is
 rejected by the strict submission validator but accepted by the stored-assessment
-validator, which fills the title from the finding category. Verification for patch sha256 `4e9f8d4031143329a454324dac395ad701d63a393c9638565b9d12a343c42f4d`:
+validator, which fills the title from the finding category. The integration
+regression also accepts a renamed LEFT-side finding, rejects an incorrect base
+filename, and checks the published evidence URL at a merge-base SHA distinct
+from the target tip. It verifies base-file reads, pinned retry evidence, stale
+pre-deploy catalog schemas, and quarantine denial. Replacement regressions cover
+significant indentation and omission when sanitization or truncation would alter code.
 
-- `git apply --stat` parsed the current patch as 12 host files (+1510/−92).
-  This checks patch syntax only; `git apply --check` and application against
-  the host source tree were not run for this revision. Earlier fixture-application
-  evidence belongs to a previous patch revision and does not establish that this
-  revision applies cleanly.
-- Model-router checks passed after merging the current `origin/main`:
+Verification for patch SHA-256
+`3721078966130ca927457dc60524d0b58173e46e9a9444ffe2cf3b03ec90e0b7`:
+
+- Downloaded the public source archive at the pinned host commit into an isolated
+  scratch fixture. Regenerated the patch with standard context: 12 host files
+  (+1700/−116). Plain `git apply --check` and `git apply` passed on a second pristine
+  fixture; all 12 resulting files were byte-identical to the tested source.
+- Host unit tests passed: 41/41 across template, reconciliation and review policy.
+  Focused host integration passed: 9/9 GitHub workflow tests (1,033 unrelated tests were
+  skipped by the explicit name filter). Both `packages/shared` and `server`
+  `tsc --noEmit --pretty false` passed with no diagnostics.
+- The fixture reused the installed host dependencies through links (Vitest
+  4.1.11 and Zod 4.4.3), with workspace links redirected to the pinned source.
+  Test processes had live credential and database environment variables removed;
+  integration used its isolated embedded PostgreSQL. The live host source was
+  not modified. This was source verification, not a deployment.
+- Model-router checks passed against the current `origin/main`:
   `npm run typecheck`, `npm test` (106 files, 1,384 tests), `npm run build`,
   `npm run verify:host`, and `npm run rehearse`. The host validator emitted two
   AJV `strictTypes` warnings; all checks passed. These verify the router plugin
-  and stock-host probes, not the host source changes carried by this patch.
-- Host Vitest and the full server typecheck were not run in this model-router
-  workspace. The operator port must rerun them, along with `git apply --check`,
-  against the host checkout using this exact patch revision.
+  and stock-host probes, separately from the host source tests above.
+- The operator port must repeat apply checks and host verification against its
+  actual release checkout. The complete host test suite and live deployment
+  were not run.
 
 The port PR still needs Paperclip Review 5/5 on its merge head.
 
