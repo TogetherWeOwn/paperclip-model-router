@@ -185,7 +185,7 @@ pre-deploy catalog schemas, and quarantine denial. Replacement regressions cover
 significant indentation and omission when sanitization or truncation would alter code.
 
 Verification for patch SHA-256
-`3721078966130ca927457dc60524d0b58173e46e9a9444ffe2cf3b03ec90e0b7`:
+`97999b5f4d6a8a66fae85ee54463c575903d29a3a41edd27019c3274b8ead77d`:
 
 - Downloaded the public source archive at the pinned host commit into an isolated
   scratch fixture. Regenerated the patch with standard context: 12 host files
