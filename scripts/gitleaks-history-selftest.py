@@ -2,8 +2,8 @@
 """Prove the sole historical exception cannot suppress any new finding.
 
 Called by the CI-executed scanner self-test. No repository refs are changed.
-Synthetic inputs are recovered privately from the immutable test object and
-assembled only in disposable fixtures; scanner output is captured, never echoed.
+Synthetic inputs are recovered privately when the immutable object is present,
+otherwise assembled at runtime; scanner output is captured, never echoed.
 """
 
 import hashlib
@@ -73,13 +73,50 @@ def expect_rejected(label, operation):
     raise SelfTestError(f"{label}: invalid control was accepted")
 
 
-def git(directory, *arguments):
+def git_environment():
+    # Inherited repository/index/object/config overrides can redirect fixture
+    # writes despite cwd. Resolve Git from each requested checkout, never a caller.
+    return {**{key: value for key, value in os.environ.items() if not key.startswith("GIT_")}, "GIT_NO_LAZY_FETCH": "1"}
+
+
+def git(directory, *arguments, input=None, strict=False):
     result = subprocess.run(
         ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", *arguments],
-        cwd=directory, capture_output=True, timeout=30,
+        cwd=directory, input=input, capture_output=True, timeout=30,
+        env=git_environment(),
     )
     require(result.returncode == 0, "git fixture/object operation failed")
+    require(not strict or result.stderr == b"", "git object/checkout query emitted diagnostics")
     return result.stdout
+
+
+def historical_control_input():
+    # Only structured missing-object output without diagnostics is absence,
+    # not corruption, a Git error or an incomplete checkout. Never fetch it.
+    require(git(ROOT, "rev-parse", "--is-inside-work-tree", strict=True) == b"true\n", "historical controls require a working checkout")
+    require(git(ROOT, "rev-parse", "--is-shallow-repository", strict=True) == b"false\n", "historical controls require a complete checkout")
+    config = git(ROOT, "config", "--name-only", "--list", strict=True)
+    keys = [line.partition(b"=")[0].lower() for line in config.splitlines()]
+    require(not any(key == b"extensions.partialclone" or key.endswith((b".promisor", b".partialclonefilter")) for key in keys), "historical controls reject partial checkout ambiguity")
+    identity = git(ROOT, "cat-file", "--batch-check=%(objectname) %(objecttype)", input=(COMMIT + "\n").encode(), strict=True)
+    if identity == (COMMIT + " missing\n").encode():
+        return None
+    require(identity == (COMMIT + " commit\n").encode(), "historical object identity malformed")
+    content = git(ROOT, "show", f"{COMMIT}:{FILE}")
+    require(git(ROOT, "rev-parse", f"{COMMIT}:{FILE}").decode().strip() == BLOB, "historical blob identity changed")
+    require(hashlib.sha256(content).hexdigest() == PATCH_SHA256, "historical patch identity changed")
+    lines = content.splitlines()
+    require(len(lines) >= LINE, "historical finding line missing")
+    original = lines[LINE - 1]
+    require(hashlib.sha256(original).hexdigest() == LINE_SHA256, "historical finding line identity changed")
+    return original
+
+
+def synthetic_control_input():
+    # No historical finding can be suppressed when its immutable object is
+    # absent. Still exercise every new-match control under the actual policy.
+    value = hashlib.sha256(b"inert historical row scanner positive control").hexdigest()[:32].encode()
+    return b'SERVICE_' + b'API_KEY = "' + value + b'"'
 
 
 def validator_controls(work):
@@ -117,18 +154,17 @@ def validator_controls(work):
 
 def main(scanner):
     scanner = shutil.which(scanner) or str(Path(scanner).resolve())
-    version = subprocess.run([scanner, "version"], capture_output=True, timeout=10)
+    version = subprocess.run([scanner, "version"], capture_output=True, timeout=10, env=git_environment())
     require(version.returncode == 0 and version.stdout.strip() == b"8.21.2", "historical controls require CI-pinned Gitleaks 8.21.2")
     ignore = ROOT / ".gitleaksignore"
     validate_ignore(ignore)
-    content = git(ROOT, "show", f"{COMMIT}:{FILE}")
-    require(git(ROOT, "rev-parse", f"{COMMIT}:{FILE}").decode().strip() == BLOB, "historical blob identity changed")
-    require(hashlib.sha256(content).hexdigest() == PATCH_SHA256, "historical patch identity changed")
-    lines = content.splitlines()
-    require(len(lines) >= LINE, "historical finding line missing")
-    original = lines[LINE - 1]
-    require(hashlib.sha256(original).hexdigest() == LINE_SHA256, "historical finding line identity changed")
-    # Recover only the known synthetic token, never print it or embed it in source.
+    original = historical_control_input()
+    historical_present = original is not None
+    if not historical_present:
+        print("AUDIT historical object=absent disposition=inert; no historical finding was scanned or suppressed")
+        print("NOTICE historical row should be removed through independent cleanup review; no refs or policy changed")
+        original = synthetic_control_input()
+    # Recover or assemble only synthetic control input, never print it.
     tokens = list(re.finditer(rb"\b[A-Za-z0-9_-]{20,}\b", original))
     require(len(tokens) == 1, "historical synthetic token shape changed")
     token = tokens[0]
@@ -152,7 +188,7 @@ def main(scanner):
             args = [scanner, mode, ".", "--config", str(config), "--redact=100", "--no-banner", "--report-format", "json", "--report-path", str(report), "--gitleaks-ignore-path", str(policy)]
             if log_opts is not None:
                 args += ["--log-opts", log_opts]
-            result = subprocess.run(args, cwd=target, capture_output=True, timeout=60)
+            result = subprocess.run(args, cwd=target, capture_output=True, timeout=60, env=git_environment())
             # Reports are parsed only after enforcing redaction of all captured data.
             data = result.stdout + result.stderr + (report.read_bytes() if report.exists() else b"")
             require(value not in data and adjacent not in data, "scanner exposed synthetic input")
@@ -160,16 +196,17 @@ def main(scanner):
             print(f"PASS  {label}: exit={result.returncode} findings={count}")
             return count
 
-        # The pinned scanner ALSO loads source/.gitleaksignore, even with an
-        # explicit empty --gitleaks-ignore-path. Use a local no-checkout clone
-        # so the raw control cannot silently inherit the repository exception.
-        history = work / "history"
-        git(work, "clone", "--shared", "--no-checkout", str(ROOT), str(history))
-        identity = (COMMIT, FILE, RULE, LINE)
-        commit_range = f"{COMMIT}^..{COMMIT}"
-        raw = scan("historical raw positive control", "git", history, empty, [identity], commit_range)
-        remaining = scan("historical exact disposition", "git", history, ignore, [], commit_range)
-        print(f"AUDIT historical raw={raw} adjudicated={raw - remaining} unsuppressed={remaining}")
+        if historical_present:
+            # The pinned scanner ALSO loads source/.gitleaksignore, even with an
+            # explicit empty --gitleaks-ignore-path. A local no-checkout clone
+            # prevents the raw control from inheriting the repository exception.
+            history = work / "history"
+            git(work, "clone", "--shared", "--no-checkout", str(ROOT), str(history))
+            identity = (COMMIT, FILE, RULE, LINE)
+            commit_range = f"{COMMIT}^..{COMMIT}"
+            raw = scan("historical raw positive control", "git", history, empty, [identity], commit_range)
+            remaining = scan("historical exact disposition", "git", history, ignore, [], commit_range)
+            print(f"AUDIT historical raw={raw} adjudicated={raw - remaining} unsuppressed={remaining}")
         fields = FINGERPRINT.split(":")
         for index, replacement in enumerate(["0" * 40, FILE + ".adjacent", RULE + "-adjacent", str(LINE + 1)]):
             changed = fields.copy()
@@ -177,7 +214,8 @@ def main(scanner):
             policy = work / f"wrong-field-{index}"
             policy.write_text(":".join(changed) + "\n", encoding="utf-8")
             expect_rejected(f"wrong fingerprint field {index + 1}", lambda: validate_ignore(policy))
-            scan(f"wrong fingerprint field {index + 1} restores detection", "git", history, policy, [identity], commit_range)
+            if historical_present:
+                scan(f"wrong fingerprint field {index + 1} restores detection", "git", history, policy, [identity], commit_range)
 
         def fixture(label, path, line, text, commit):
             target = work / label

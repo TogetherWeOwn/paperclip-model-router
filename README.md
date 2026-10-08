@@ -302,7 +302,10 @@ Build before running `npm run verify:host`: it runs the built manifest through P
 
 Secret scanning retains both working-tree and all-ref history gates. The
 CI-executed scanner self-test also pins the [sole immutable historical synthetic
-finding](docs/operator/historical-scanner-exception.md) and proves that no new
-commit or working-tree match can inherit its disposition.
+finding](docs/operator/historical-scanner-exception.md) when its object is present
+and proves that no new commit or working-tree match can inherit its disposition.
+A main-only squash checkout may lack that object: the row is then inert, but all
+policy/report and new-match controls remain required; no historical audit counts
+are claimed and no refs or scan scope change.
 
 Licensed under the [MIT License](./LICENSE). No install or release is performed by the build or test commands.

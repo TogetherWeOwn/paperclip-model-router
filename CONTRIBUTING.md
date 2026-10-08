@@ -48,6 +48,9 @@ The CI-executed `scripts/gitleaks-selftest.sh` includes fail-closed controls for
 one independently reviewed, immutable historical synthetic finding. The sole
 commit-scoped `.gitleaksignore` row is not a path/rule/value allowance. New
 matches remain forbidden; both normal scans and the scanner integrity pin are
-unchanged. See [the provenance contract](docs/operator/historical-scanner-exception.md)
-for the verified-binary command, redacted counts and unauthorized-match controls.
-Do not broaden the row or rewrite history to obtain a passing scan.
+unchanged. A main-only squash checkout can lack that immutable object; only its
+historical provenance controls then become inapplicable. Policy/report validation
+and all new-commit and working-tree controls still run. See
+[the provenance contract](docs/operator/historical-scanner-exception.md) for both
+modes, the verified-binary command and redacted audit evidence. Do not broaden
+the row, fetch missing history or rewrite history to obtain a passing scan.

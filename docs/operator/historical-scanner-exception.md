@@ -23,7 +23,17 @@ The existing CI step runs `scripts/gitleaks-selftest.sh`, which now also invokes
 bash scripts/gitleaks-selftest.sh /path/to/verified/gitleaks
 ```
 
-The history helper fails closed unless all of these hold:
+The history helper first requires the pinned scanner, the exact sole policy row
+and a working, non-shallow Git checkout without partial-clone/promisor metadata.
+Object lookup uses structured `git cat-file` output with lazy fetching disabled:
+only exit 0, empty stderr and the exact single missing-object response establish
+absence. Git/tool failures, any stderr (including exit-0 corruption diagnostics),
+and malformed or non-commit responses fail. It never fetches an unavailable object.
+Git and scanner subprocesses clear inherited `GIT_*` overrides before enforcing
+`GIT_NO_LAZY_FETCH=1`, so repository/index/object/config environment selectors cannot
+redirect disposable fixture operations into the caller's checkout.
+
+When the immutable commit is present, it fails closed unless all of these hold:
 
 - `.gitleaksignore` contains the sole exact authorized non-comment row. Missing,
   malformed, unscoped, whitespace-altered, duplicate and extra entries fail.
@@ -41,6 +51,35 @@ The history helper fails closed unless all of these hold:
   scanner's overbroad suppression for that global key, then proves the legitimate
   new-commit control rejects that verdict. It also tests malformed/missing
   reports, wrong counts/identities, unredacted output and scanner error exits.
+
+### Absent-object mode after a squash merge
+
+Squash merging does not put the original feature commits in `main`. A main-only
+checkout may therefore report the exact immutable commit as missing. Its row
+cannot suppress a nonexistent object: only the historical blob/patch/line checks,
+introducing-commit scans and historical wrong-field scans are inapplicable.
+
+The helper prints `historical object=absent disposition=inert`, states that no
+historical finding was scanned or suppressed, and recommends independently
+reviewing removal of the inert row. It does not remove the row or any ref itself,
+and does not print the present-object `1/1/0` audit counts for this mode.
+
+All exact-policy, wrong-field-policy, report/error and new-match controls still
+run. The new-commit, adjacent-value/path/line, working-tree and global-mutant
+controls use a deterministic high-entropy synthetic assignment assembled at
+runtime when the original line is unavailable. This is a scanner-positive
+control, not a substitute historical identity or an additional exception. If the
+object becomes available again, all original provenance controls run again.
+
+Fast regressions run with `python3 scripts/test_gitleaks_history_selftest.py -v`
+and through `npm test`. They cover structured absence, Git errors/timeouts,
+non-repositories, shallow/partial checkouts, malformed/non-commit responses,
+immutable identity drift, unchanged refs, policy/version rejection and scanner/report
+errors. A real corrupt loose object reproduces Git's exit-0 missing response with
+stderr and verifies rejection. A polluted `GIT_DIR` regression snapshots the
+caller's HEAD, refs and staged index before fixture initialization and verifies all
+remain unchanged afterward. The orchestration tests use a scanner simulator; the
+CI scanner job independently runs the real pinned binary.
 
 Gitleaks 8.21.2 automatically loads `source/.gitleaksignore` **in addition to** an
 explicit `--gitleaks-ignore-path` ([pinned implementation](https://github.com/gitleaks/gitleaks/blob/v8.21.2/cmd/root.go)).
