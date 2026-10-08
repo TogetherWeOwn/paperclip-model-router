@@ -41,3 +41,16 @@ an installed host adds a UI slot, derive its capability from the host's
 Pin rejection without the capability and acceptance with it in a behavior test.
 Against a reachable host, a passing strict run must execute every required check
 without skips; host-contract drift is a repair, not a reason to waive the gate.
+
+## Scanner provenance
+
+The CI-executed `scripts/gitleaks-selftest.sh` includes fail-closed controls for
+one independently reviewed, immutable historical synthetic finding. The sole
+commit-scoped `.gitleaksignore` row is not a path/rule/value allowance. New
+matches remain forbidden; both normal scans and the scanner integrity pin are
+unchanged. A main-only squash checkout can lack that immutable object; only its
+historical provenance controls then become inapplicable. Policy/report validation
+and all new-commit and working-tree controls still run. See
+[the provenance contract](docs/operator/historical-scanner-exception.md) for both
+modes, the verified-binary command and redacted audit evidence. Do not broaden
+the row, fetch missing history or rewrite history to obtain a passing scan.

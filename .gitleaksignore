@@ -1,0 +1,6 @@
+# One immutable historical sanitizer-test finding; not a live credential.
+# The current fixture is inert. History is preserved and remains fully scanned.
+# scripts/gitleaks-history-selftest.py pins object identity and rejects any
+# broader entry. New commits, adjacent values/paths/lines and working-tree
+# copies must still be detected by the unchanged rules and pinned scanner.
+cd0f27a548cc0d93fd5679b36a14341d04123894:docs/operator/deterministic-review-post-template.patch:generic-api-key:1520

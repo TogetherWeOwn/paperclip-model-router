@@ -34,7 +34,7 @@ if ! command -v "$GITLEAKS" >/dev/null 2>&1 && [ ! -x "$GITLEAKS" ]; then
   exit 1
 fi
 
-WORK="$(mktemp -d)"
+WORK="$(mktemp -d "${PAPERCLIP_RUN_SCRATCH_DIR:-${PAPERCLIP_SCRATCH_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}}}/gitleaks-selftest.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 cp "$CONFIG" "$WORK/.gitleaks.toml"
 
@@ -121,6 +121,11 @@ if printf '%s' "$redacted" | grep -q "$N_SVC"; then
 else
   failures=$((failures + 1))
   echo "FAIL  --redact hid the variable name — the finding names no location"
+fi
+
+echo "-- the sole historical exception is immutable and commit-scoped"
+if ! python3 "$(dirname "$CONFIG")/scripts/gitleaks-history-selftest.py" "$GITLEAKS"; then
+  failures=$((failures + 1))
 fi
 
 echo "======================================================================"
